@@ -1,0 +1,198 @@
+"""Run folders for in-game measurements of the cpuopt plugin.
+
+  prepare <name> [--dll D] [--toggles N] [--marker M] [--note TEXT]
+      New folder local/runs/<name>; installs the DLL into the MO2 slot if it
+      differs (previous slot DLL backed up byte for byte), points the slot's
+      .output-dir sidecar at the folder and writes a receipt.
+  control <run> [--toggles N] [--marker M] [--window-ms N]
+      Changes control.ini while the game runs; the plugin closes the current
+      window and logs the change within about 300 ms.
+  status <run> [--last N]
+      The last windows of the newest log: fps, frame times, busiest threads.
+  seal <run>
+      Hash manifest of the finished folder (tools/evidence.py).
+
+The slot path comes from local/machine.json ("slot"), never from defaults in
+code. Refuses to install while MonsterHunterWorld.exe runs. The game
+directory is never written.
+"""
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+from evidence import game_running, seal
+
+REPO = Path(__file__).resolve().parents[1]
+RUNS = REPO / 'local' / 'runs'
+BUILD_DLL = REPO / 'build' / 'bin' / 'Release' / 'mhw_cpuopt.dll'
+
+
+def machine():
+    path = REPO / 'local' / 'machine.json'
+    if not path.exists():
+        raise SystemExit(f'missing {path} (machine-local paths: "slot")')
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def git_identity():
+    def git(*args):
+        return subprocess.run(['git', '-C', str(REPO), *args], capture_output=True, text=True, check=True).stdout.strip()
+    return dict(commit=git('rev-parse', 'HEAD'), dirty=bool(git('status', '--porcelain', '--untracked-files=no')))
+
+
+def run_folder(name):
+    path = Path(name)
+    return path.resolve() if path.is_absolute() or path.exists() else (RUNS / name).resolve()
+
+
+def read_control(run):
+    values = {}
+    path = run / 'control.ini'
+    if path.exists():
+        for line in path.read_text(encoding='utf-8').splitlines():
+            if '=' in line and not line.lstrip().startswith((';', '#', '[')):
+                key, value = line.split('=', 1)
+                values[key.strip()] = value.strip()
+    return values
+
+
+def write_control(run, values):
+    text = '[control]\n' + ''.join(f'{k}={v}\n' for k, v in values.items())
+    tmp = run / 'control.ini.tmp'
+    tmp.write_text(text, encoding='utf-8', newline='\n')
+    os.replace(tmp, run / 'control.ini')  # the plugin never sees a half-written file
+
+
+def prepare(a):
+    if game_running():
+        raise SystemExit('close MonsterHunterWorld.exe first')
+    slot = Path(machine()['slot'])
+    dll = Path(a.dll).resolve() if a.dll else BUILD_DLL
+    run = (RUNS / a.name).resolve()
+    run.mkdir(parents=True, exist_ok=False)
+    slot.parent.mkdir(parents=True, exist_ok=True)
+    previous = None
+    if slot.exists() and sha(slot) != sha(dll):
+        backup = run / 'previous-slot'
+        backup.mkdir()
+        shutil.copyfile(slot, backup / slot.name)
+        previous = dict(path=str(slot), sha256=sha(slot))
+    shutil.copyfile(dll, run / dll.name)
+    if dll.with_suffix('.map').exists():  # symbols for tools/profile_report.py
+        shutil.copyfile(dll.with_suffix('.map'), run / dll.with_suffix('.map').name)
+    if not slot.exists() or sha(slot) != sha(dll):
+        shutil.copyfile(dll, slot)
+    if sha(slot) != sha(dll):
+        raise SystemExit('installed DLL does not match')
+    Path(str(slot) + '.output-dir').write_text(str(run) + '\n', encoding='utf-8')
+    control = {}
+    if a.toggles is not None:
+        control['toggles'] = str(a.toggles)
+    if a.marker:
+        control['marker'] = a.marker
+    if control:
+        write_control(run, control)
+    receipt = dict(schema=1, prepared_utc=datetime.now(timezone.utc).isoformat(), run=str(run), slot=str(slot),
+                   dll=dll.name, dll_sha256=sha(dll), previous_slot=previous, git=git_identity(), note=a.note,
+                   control=control)
+    with (run / 'run-receipt.json').open('x', encoding='utf-8') as f:
+        json.dump(receipt, f, indent=2)
+    return receipt
+
+
+def control(a):
+    run = run_folder(a.run)
+    if not run.is_dir():
+        raise SystemExit(f'no run folder {run}')
+    values = read_control(run)
+    if a.toggles is not None:
+        values['toggles'] = str(a.toggles)
+    if a.marker is not None:
+        values['marker'] = a.marker
+    if a.window_ms is not None:
+        values['window_ms'] = str(a.window_ms)
+    write_control(run, values)
+    return dict(run=str(run), control=values)
+
+
+def newest_log(run):
+    logs = sorted(run.glob('cpuopt-*.jsonl'), key=lambda p: p.stat().st_mtime)
+    if not logs:
+        raise SystemExit(f'no cpuopt-*.jsonl in {run}')
+    return logs[-1]
+
+
+def rows(path):
+    out = []
+    with path.open(encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith('{') and line.endswith('}'):
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass  # a line being written
+    return out
+
+
+def status(a):
+    run = run_folder(a.run)
+    log = newest_log(run)
+    events = rows(log)
+    start = next((e for e in events if e.get('event') == 'start'), {})
+    clock = next((e for e in events if e.get('event') == 'frame_clock'), {})
+    print(f"{log.name}: {len(events)} events; exe tested_build={start.get('exe', {}).get('tested_build')} "
+          f"cpu={start.get('cpu', {}).get('brand')} frame_clock={clock.get('reason')}")
+    for e in events:
+        if e.get('event') in ('control', 'exit', 'stopped', 'log_full'):
+            print('  ', json.dumps(e))
+    for w in [e for e in events if e.get('event') == 'window'][-a.last:]:
+        iv = w['intervals']
+        top = ', '.join(f"{t[0]}:{t[1] / max(w['frames'], 1):.2f}ms/f" for t in w['threads'][:4])
+        print(f"#{w['seq']:4d} t={w['t_ms'] / 1000:7.1f}s {w['marker'] or '-':14s} sw={w['toggles']} fps={w['fps']:7.1f} "
+              f"avg={w['frame_ms_avg']:.3f} p50={iv['p50']:.2f} p95={iv['p95']:.2f} p99={iv['p99']:.2f} max={iv['max']:.1f} "
+              f"thr={w['thread_count']} gap={w['poll_gap_avg_us']}us | {top}")
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest='action', required=True)
+    s = sub.add_parser('prepare')
+    s.add_argument('name')
+    s.add_argument('--dll')
+    s.add_argument('--toggles', type=lambda v: int(v, 0))
+    s.add_argument('--marker')
+    s.add_argument('--note', default='')
+    s = sub.add_parser('control')
+    s.add_argument('run')
+    s.add_argument('--toggles', type=lambda v: int(v, 0))
+    s.add_argument('--marker')
+    s.add_argument('--window-ms', type=int)
+    s = sub.add_parser('status')
+    s.add_argument('run')
+    s.add_argument('--last', type=int, default=12)
+    s = sub.add_parser('seal')
+    s.add_argument('run')
+    a = p.parse_args()
+    if a.action == 'prepare':
+        print(json.dumps(prepare(a), indent=2))
+    elif a.action == 'control':
+        print(json.dumps(control(a)))
+    elif a.action == 'status':
+        status(a)
+    else:
+        print(json.dumps(seal(run_folder(a.run))))
+
+
+if __name__ == '__main__':
+    sys.exit(main())
