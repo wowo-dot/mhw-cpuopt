@@ -7,6 +7,9 @@
   control <run> [--toggles N] [--marker M] [--window-ms N]
       Changes control.ini while the game runs; the plugin closes the current
       window and logs the change within about 300 ms.
+  sequence <run> --marker M [--baseline 60] [--profile 60]
+      One scene: marker M with every switch off, then with the sampler on,
+      then "M-done".
   status <run> [--last N]
       The last windows of the newest log: fps, frame times, busiest threads.
   seal <run>
@@ -125,6 +128,20 @@ def control(a):
     return dict(run=str(run), control=values)
 
 
+def sequence(a):
+    """One scene: baseline windows with every switch off, then the sampler."""
+    import time
+    run = run_folder(a.run)
+    steps = [(dict(marker=a.marker, toggles='0'), a.baseline), (dict(marker=a.marker, toggles='1'), a.profile),
+             (dict(marker=f'{a.marker}-done', toggles='0'), 0)]
+    for values, seconds in steps:
+        current = read_control(run)
+        current.update(values)
+        write_control(run, current)
+        print(f'{time.strftime("%H:%M:%S")} {values} for {seconds} s', flush=True)
+        time.sleep(seconds)
+
+
 def newest_log(run):
     logs = sorted(run.glob('cpuopt-*.jsonl'), key=lambda p: p.stat().st_mtime)
     if not logs:
@@ -178,6 +195,11 @@ def main():
     s.add_argument('--toggles', type=lambda v: int(v, 0))
     s.add_argument('--marker')
     s.add_argument('--window-ms', type=int)
+    s = sub.add_parser('sequence')
+    s.add_argument('run')
+    s.add_argument('--marker', required=True)
+    s.add_argument('--baseline', type=int, default=60)
+    s.add_argument('--profile', type=int, default=60)
     s = sub.add_parser('status')
     s.add_argument('run')
     s.add_argument('--last', type=int, default=12)
@@ -188,6 +210,8 @@ def main():
         print(json.dumps(prepare(a), indent=2))
     elif a.action == 'control':
         print(json.dumps(control(a)))
+    elif a.action == 'sequence':
+        sequence(a)
     elif a.action == 'status':
         status(a)
     else:
