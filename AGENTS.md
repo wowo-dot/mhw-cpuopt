@@ -18,10 +18,18 @@ Start with `docs/handoff-20261008.md`.
 - Sibling DLSS project (read-only reference from here): `D:\mh world modding\dlssupdate`
 - Game directory: `D:\SteamLibrary\steamapps\common\Monster Hunter World`
 - Game executable: `D:\SteamLibrary\steamapps\common\Monster Hunter World\MonsterHunterWorld.exe`
-- IDA directory: `C:\Program Files\IDA Professional 9.3`
-- IDA executable: `C:\Program Files\IDA Professional 9.3\ida.exe`
+- IDA directory: `C:\Program Files\IDA Professional 9.4` (the Hex-Rays IDA MCP
+  needs 9.4; 9.3 stays installed)
+- IDA executable: `C:\Program Files\IDA Professional 9.4\ida.exe`
+- Private IDA database: `local\ida\MonsterHunterWorld_C2EBBBD2.i64` (a copy of
+  the DLSS project's static database; its input is the tested exe)
 - Private decoded audit image (never commit or copy into the repository):
-  `D:\mh world modding\ai\glavenus\MonsterHunterWorld_decrypted.exe`
+  `D:\mh world modding\ai\glavenus\MonsterHunterWorld_decrypted.exe`, SHA-256
+  `d78611731e4a5f214e306d1d577d4782b59adaf1c75de54d2983caa45074884c`. The exe
+  on disk has SteamStub-encrypted code, so offline signature checks run on
+  this image.
+- Claude Code reversing tools: `C:\Users\akifs\.claude\re-tools\` (Python 3.12:
+  `py -3.12 -B`); x64dbg: `D:\reverse engine jank\x64dbg\release\x96dbg.exe`
 - Mod Organizer 2 (portable): `C:\Modding\MO2\ModOrganizer.exe`, data directory `D:\MO2\MHW`
 - Python 3.10: `C:\Users\akifs\AppData\Local\Programs\Python\Python310\python.exe` (run with `-B`)
 - CMake/CTest (Visual Studio 18 2026, x64):
@@ -63,7 +71,8 @@ distributable binaries or assume other contributors use the same paths.
   DLLs/mods are loaded (DLSS mod on or off, other plugins).
 - External tools that read the game process must be strictly read-only:
   `PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ`, no writes, no thread
-  suspension, no remote threads or allocations.
+  suspension, no remote threads or allocations (x64dbg and Frida: see
+  Reverse-Engineering Tools).
 - When screenshotting the desktop, crop to the game window.
 
 ## Reverse-Engineering Workflow
@@ -76,6 +85,49 @@ distributable binaries or assume other contributors use the same paths.
    threading and ownership assumptions, and the tested executable hash.
 5. Attribute CPU time to functions with a profile before proposing any change.
    A hotspot claim needs sample counts, the scene and the thread.
+
+## Reverse-Engineering Tools
+
+Claude Code has an IDA MCP (Hex-Rays), an x64dbg MCP, a Frida MCP and
+`sigscan.py`; the user-level `reversing` skill describes them. This file's
+rules come first.
+
+- **IDA:** open only `local\ida\MonsterHunterWorld_C2EBBBD2.i64`, never the
+  DLSS project's databases or anything in `ai\glavenus`. Ask through the MCP's
+  `execute_python` instead of writing one-off headless scripts. Write-back
+  and exports stay under `local\`.
+- **Names for profiles:** `tools/ida_names.py` runs inside IDA and writes
+  `local\ida\names.tsv` (`rva<TAB>name`, chunks as `name.part`) plus
+  `names.meta.json` (source database, exe SHA-256, counts).
+  `tools/profile_report.py` picks it up automatically.
+  - Run it with the IDA MCP: `execute_python` on the script text plus
+    `export(r'<repo>\local\ida\names.tsv')`. Or use IDA's File > Script file.
+  - The 2026-10-10 export has 77 named functions (106 lines), mostly Wwise
+    `AK::` and NGX entry points. When a hotspot is understood, name it in
+    the private database, save, and re-export.
+- **Signatures** (`py -3.12 -B C:\Users\akifs\.claude\re-tools\sigscan.py`, on
+  the decoded image):
+  - `audit <image> src` before staging a build that changes a pattern. A
+    searched pattern must match exactly once; the frame-clock signature
+    matched once, at `0x23922C2`, on 2026-10-10.
+  - `make <image> <VA>` and `scan <image> "<pattern>"` find and check patterns
+    for new sites.
+- **x64dbg and Frida on the running game** are the only exception to the
+  read-only rule in the Runtime Testing Protocol:
+  - the user launches through MO2 as always and says OK in the session before
+    each attach; never attach during startup (SteamStub);
+  - offline only, as for experimental builds;
+  - prefer x64dbg hardware breakpoints and non-stopping logging breakpoints:
+    they change no code bytes, and the game re-checks its code with CRC;
+  - Frida hooks only functions this project, the DLSS mod or Astera Loader
+    already hooks. Software breakpoints, memory writes, other hooks and calls
+    into game code each need their own OK;
+  - attaching changes timing, so never measure while attached and never mix
+    attached windows into a profile;
+  - detach when done (x64dbg `detach`, never `terminate_session`) and note
+    what was attached, when and why in the run folder.
+- Point the tools at the game's code only, never at NVIDIA binaries or other
+  mods' DLLs.
 
 ## Implementation Conventions
 
