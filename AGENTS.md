@@ -21,13 +21,22 @@ Start with `docs/handoff-20261008.md`.
 - IDA directory: `C:\Program Files\IDA Professional 9.4` (the Hex-Rays IDA MCP
   needs 9.4; 9.3 stays installed)
 - IDA executable: `C:\Program Files\IDA Professional 9.4\ida.exe`
-- Private IDA database: `local\ida\MonsterHunterWorld_C2EBBBD2.i64` (a copy of
-  the DLSS project's static database; its input is the tested exe)
-- Private decoded audit image (never commit or copy into the repository):
-  `D:\mh world modding\ai\glavenus\MonsterHunterWorld_decrypted.exe`, SHA-256
-  `d78611731e4a5f214e306d1d577d4782b59adaf1c75de54d2983caa45074884c`. The exe
-  on disk has SteamStub-encrypted code, so offline signature checks run on
-  this image.
+- Clean decoded game image (Capcom code: never commit or redistribute):
+  `D:\mh world modding\CMFM\local\runs\20261011-clean-dump\dump\image.exe`,
+  SHA-256 `a78ea69b0566414a42f16d0f8ff7d729e095041e2ae76a34cc02dbe0939f1d80`.
+  A read-only memory copy of the tested exe at the title screen, plain Steam
+  start, no mods (CMFM `docs/handoff-clean-image-20261011.md`). The exe on
+  disk has SteamStub-encrypted code, so offline signature checks run on this
+  image; read it in place, never write into CMFM's folder.
+- Private IDA database: `local\ida\MonsterHunterWorld_C2EBBBD2_clean.i64`,
+  built from `local\ida\MonsterHunterWorld_C2EBBBD2_clean.exe` (a copy of the
+  clean image, same SHA-256) with `tools/ida_build.py`, plus Fexty's names
+  (`docs/research/ida-database.md`).
+- Do not use the old decoded image
+  `D:\mh world modding\ai\glavenus\MonsterHunterWorld_decrypted.exe`
+  (SHA-256 `d7861173…884c`): it was dumped with mods loaded and differs from
+  the original code in 29 places. The old database
+  `local\ida\MonsterHunterWorld_C2EBBBD2.i64` is retired with it.
 - Claude Code reversing tools: `C:\Users\akifs\.claude\re-tools\` (Python 3.12:
   `py -3.12 -B`); x64dbg: `D:\reverse engine jank\x64dbg\release\x96dbg.exe`
 - Mod Organizer 2 (portable): `C:\Modding\MO2\ModOrganizer.exe`, data directory `D:\MO2\MHW`
@@ -92,8 +101,9 @@ Claude Code has an IDA MCP (Hex-Rays), an x64dbg MCP, a Frida MCP and
 `sigscan.py`; the user-level `reversing` skill describes them. This file's
 rules come first.
 
-- **IDA:** open only `local\ida\MonsterHunterWorld_C2EBBBD2.i64`, never the
-  DLSS project's databases or anything in `ai\glavenus`. Ask through the MCP's
+- **IDA:** open only `local\ida\MonsterHunterWorld_C2EBBBD2_clean.i64`, never
+  the DLSS project's or CMFM's databases or anything in `ai\glavenus`. Open a
+  fresh binary with `-Opdb:off` (no symbol-server request). Ask through the MCP's
   `execute_python` instead of writing one-off headless scripts. Write-back
   and exports stay under `local\`.
 - **Names for profiles:** `tools/ida_names.py` runs inside IDA and writes
@@ -102,14 +112,14 @@ rules come first.
   `tools/profile_report.py` picks it up automatically.
   - Run it with the IDA MCP: `execute_python` on the script text plus
     `export(r'<repo>\local\ida\names.tsv')`. Or use IDA's File > Script file.
-  - The 2026-10-10 export has 77 named functions (106 lines), mostly Wwise
-    `AK::` and NGX entry points. When a hotspot is understood, name it in
+  - The 2026-10-11 export (clean database with Fexty's names) has 53,197
+    named functions (53,229 lines). When a hotspot is understood, name it in
     the private database, save, and re-export.
 - **Signatures** (`py -3.12 -B C:\Users\akifs\.claude\re-tools\sigscan.py`, on
-  the decoded image):
+  the clean image):
   - `audit <image> src` before staging a build that changes a pattern. A
     searched pattern must match exactly once; the frame-clock signature
-    matched once, at `0x23922C2`, on 2026-10-10.
+    matched once, at `0x23922C2`, on the clean image on 2026-10-11.
   - `make <image> <VA>` and `scan <image> "<pattern>"` find and check patterns
     for new sites.
 - **x64dbg and Frida on the running game** are the only exception to the
