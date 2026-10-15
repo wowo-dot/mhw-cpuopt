@@ -284,3 +284,65 @@ measured in game.
 The sampler now also counts the exact innermost instruction in the game exe
 (`profile_report.py --leaves N`), so the next profile can show which loop of
 a function (`sub_142570A40`, the effect jobs) the time goes to.
+
+### v0.6 in game (al-09, al-10; 2026-10-15)
+
+**al-09:** the first v0.6 launch froze on a black screen right after the
+title (game_ready at 15.0 s; no frames from about 16 s), with no switch on.
+The game thread waited in `cD3DRender::present12` on the frame fence; the
+GPU was idle (10%, 77 W), all threads were waiting, and there was no TDR.
+The only module differing from al-08 was cpuopt.dll, which at that point had
+done only read-only work (`local/runs/al-09/notes.md`). No cause found; the
+relaunch (al-10) and its clean exit did not repeat it.
+
+**al-10:** hub start, stock scheduling; 30 s steps, each new switch on top of
+order_jobs (8), the list run twice (the first window of each step left out):
+
+| Step | fps | mean frame | process CPU per frame |
+|---|---|---|---|
+| 8 (baseline), eight steps | 258.2-263.4 (260.9 pooled) | 3.832 ms | 16.8-17.2 ms |
+| 24 (+ plain_prim_stores) | 287.7, 287.0 | 3.476, 3.485 ms | 13.6 ms |
+| 40 (+ reuse_server_time) | 267.4, 270.2 | 3.740, 3.702 ms | 16.9 ms |
+| 72 (+ inline_rounds) | 264.1, 263.6 | 3.786, 3.793 ms | 16.5-16.8 ms |
+| 120 (all) | 287.7, 285.6 | 3.476, 3.502 ms | 13.7-13.9 ms |
+
+- **plain_prim_stores: +10.1%** (3.83 to 3.48 ms a frame), every step above
+  every baseline step; the process's CPU time per frame fell by 3.4 ms
+  (-20%). The ring is write-combined (`prim_buffer`: protect 0x404,
+  MEM_PRIVATE), as supposed. Profile (toggles 9 against 25): the loop's
+  read-modify-write instructions were the hottest game instructions after the
+  spin (each ~0.75% of the game thread); with the change, samples under the
+  effect draw job (`sub_141FAF590`) fell from 3,653 to 361 and those in
+  `sub_142570A40` from 3,063 to 9; the game thread's spin fell from 35.8% to
+  18.8% of its samples. Applied and removed four times while the game ran;
+  the game exited cleanly with it on.
+- **reuse_server_time: +3.0%**, both steps above every baseline step; 48
+  reads answered by Steam against 80,088 reused.
+- **inline_rounds: +1.2%**, inside the baseline's spread: not shown. Six of
+  nine sites ran alone (about 4 rounds a frame).
+- **All together** equals plain_prim_stores alone: with it on, the median
+  frame is 3.40 ms against the engine's 300 fps cap (3.33 ms), and the game
+  thread spends 9.3% waiting for the frame fence of two frames back and 3.1%
+  in the frame limiter's QPC loop (`sub_14225F9F0+0x416`). The hub cannot
+  show further CPU gains; heavier scenes (fights, many effects) can.
+
+### Candidates after v0.6 (not yet changed)
+
+- **Waking the job threads** (`NtReleaseSemaphore`, 5.8% of the game thread
+  with the prim fix on). A stand-alone test on the test PC (30 threads asleep
+  on a semaphore, 400 rounds each): releasing 30 costs the caller 70 us
+  (p50), 15 cost 40 us, 7 cost 19 us, 1 cost 6 us; a fan-out (release 3,
+  each woken thread releases 3 more) costs the caller 10 us and wakes all 30
+  in the same 67 us. In the game, threads start their jobs while the call is
+  still waking the rest, so the call may be off the critical path; H2's null
+  result points the same way.
+- **The render threads' descriptor cache** (`sub_1423A9200` →
+  `sub_142624870`): each lookup hashes the descriptors with a byte-wise
+  CRC32 (table at 0x34FFDA0) and scans an append-only array under a shared
+  SRW lock; the 8 `sRender::renderingSub` threads contend on that lock (44%
+  of the samples under `sub_1423A9200` are in `RtlAcquireSRWLockShared`,
+  12% in the release). About 10% of the render threads' busy time at the
+  hub, where they are 88% idle.
+- **Per-unit timers**: `sub_142C76350`/`sub_142C764F0` call QPC in every
+  unit move (4% of the samples under `cUnit::genericMove`, roughly 10 us a
+  frame).

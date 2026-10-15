@@ -5,8 +5,17 @@ what can be recovered safely. On most PCs the CPU, not the graphics card,
 sets MHW's frame rate, which is also why DLSS alone adds little there.
 
 **Status:** research builds, not a release. Every switch is off by default.
-The first one that changes the game, the camera draw round's job order, gave
-+4.8% at the hub (244.5 to 256.2 fps, measured on and off in one session).
+Measured at the hub, each on and off in one session:
+
+- the camera draw round's job order: +4.8% (244.5 to 256.2 fps);
+- on top of it, effect drawing writing its vertex records without reading
+  them back from GPU upload memory: +10.1% (260.9 to 287.3 fps), and 20%
+  less CPU time per frame for the whole game;
+- reusing Steam's server time instead of asking Steam several times a frame:
+  +3.0%.
+
+With these on, the hub reaches the engine's 300 fps cap; heavier scenes come
+next.
 Measurement comes first: no game code is changed until a profile shows where
 the time goes, and every change is a runtime switch measured on and off in
 the same scene.
@@ -33,6 +42,16 @@ every number in `docs/research/engine-notes.md`):
   modes: reversed, or learned per object class) saved 0.19 ms per frame at
   the hub: +4.8%, every reordered step faster than every step in the game's
   order, no visual change.
+- The hottest game code outside the job wait was one loop in effect drawing
+  (`sub_142570A40`): it fills vertex records in GPU upload memory, which is
+  write-combined (uncached for reads), with eight read-modify-write steps
+  per record whose results do not depend on what it reads. Switch 16
+  rewrites 56 bytes of that loop to store the same values without reading
+  (checked as machine code on random inputs): the effect draw jobs became
+  about ten times cheaper.
+- The game asks Steam for the server time several times a frame, and each
+  call waits on a lock inside Steam (4.3% of the game thread). Switch 32
+  reuses one answer for a second.
 
 ## How it works
 
