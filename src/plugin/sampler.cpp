@@ -14,7 +14,7 @@
 namespace cpuopt::sampler {
 namespace {
 constexpr unsigned module_capacity = 512, name_capacity = 512, thread_capacity = 1024;
-constexpr unsigned depth_capacity = 48, stack_capacity = 1U << 14, tracked_capacity = 4, rotation = 2;
+constexpr unsigned depth_capacity = 48, stack_capacity = 1U << 14, tracked_capacity = 6, rotation = 2;
 constexpr unsigned thread_stat_capacity = 256, unknown_module = 0xFFFF;
 constexpr std::uint32_t raw_address = 0x80000000U;  // frame RVA without an unwind entry: instruction address
 
@@ -57,7 +57,8 @@ SRWLOCK lock = SRWLOCK_INIT;
 std::unique_ptr<Table> tables[2];
 unsigned active{};
 std::atomic<DWORD> sampler_thread{};
-std::atomic<bool> started{};
+std::atomic<bool> started{}, stopping{};
+HANDLE run_thread{};
 // Set by the window thread, read by the sampler at each tick.
 std::array<std::atomic<DWORD>, tracked_capacity> tracked{};
 std::array<std::atomic<DWORD>, 8> excluded{};
@@ -286,7 +287,7 @@ DWORD WINAPI run(void*) noexcept {
     const auto timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     std::uint64_t refreshed{};
     bool was_on = false;
-    for (;;) {
+    while (!stopping.load(std::memory_order_relaxed)) {
         if (!on(sample_profile)) {
             was_on = false;
             Sleep(50);
@@ -319,6 +320,10 @@ DWORD WINAPI run(void*) noexcept {
             Sleep(1);
         }
     }
+    for (unsigned i = 0; i < thread_count; ++i) CloseHandle(threads[i].handle);
+    thread_count = 0;
+    if (timer) CloseHandle(timer);
+    return 0;
 }
 }  // namespace
 
@@ -331,7 +336,12 @@ void start() noexcept {
         return;
     }
     tables[0]->opened = qpc_now();
-    if (const auto thread = CreateThread(nullptr, 0, run, nullptr, 0, nullptr)) CloseHandle(thread);
+    run_thread = CreateThread(nullptr, 0, run, nullptr, 0, nullptr);
+}
+
+bool stop(unsigned timeout_ms) noexcept {
+    stopping.store(true);
+    return !run_thread || WaitForSingleObject(run_thread, timeout_ms) == WAIT_OBJECT_0;
 }
 
 DWORD thread_id() noexcept { return sampler_thread.load(); }

@@ -1,10 +1,31 @@
 #pragma once
+#include "frame_clock.hpp"
 #include <windows.h>
+#include <cstdint>
+#include <string>
 
 namespace cpuopt::runtime {
-// DllMain, process attach: starts the window thread. Without the sidecar
-// <dll>.output-dir naming a run folder the plugin does nothing at all.
-void start(HMODULE self) noexcept;
-// DllMain, process exit: one last line if the log is free.
+// What the plugin entry (al_entry.cpp) learned from Astera Loader.
+struct Host {
+    std::wstring folder;                  // the plugin folder (real path)
+    std::uint32_t api_version{};          // Astera Loader's API version
+    std::string game_version, exe_sha256; // from al.game, if it answered
+    frame_clock::Discovery discovery;     // the frame counter, searched at PRE_MAIN
+    std::string scanner;                  // "al.scanner" or "own"
+    bool frame_events{}, present_events{};  // subscribed to al.frame / al.d3d12
+    // al.frame's state (AL_FRAME_*), or -1 without al.frame; any thread.
+    int (*frame_state)() noexcept {};
+};
+
+// al_plugin_init: reads the run folder from <folder>\cpuopt.dll.output-dir,
+// opens the log there and starts the window thread. False, with the reason,
+// when there is no run folder: the plugin then stays idle.
+bool start(HMODULE self, const Host& host, std::string& reason) noexcept;
+// EXITING: the last window, the sampler and poller stopped, the window
+// thread joined (at most about 2 s). Safe to call more than once.
+void stop(const char* why) noexcept;
+// One line into the run log from a phase callback (GAME_READY, SHUTDOWN).
+void note(const char* event, const char* key, long long value) noexcept;
+// DllMain at process exit: a last line if the log is free.
 void at_exit() noexcept;
 }  // namespace cpuopt::runtime

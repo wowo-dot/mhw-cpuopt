@@ -221,7 +221,7 @@ std::wstring folder_of(const std::wstring& path) {
     return slash == std::wstring::npos ? std::wstring{} : path.substr(0, slash);
 }
 
-std::string start_event(HMODULE self, const std::wstring& control_path) {
+std::string start_event(HMODULE self, const std::wstring& control_path, const LoaderInfo& loader) {
     std::string out = "{";
     json::key(out, "event");
     json::string(out, "start");
@@ -244,6 +244,20 @@ std::string start_event(HMODULE self, const std::wstring& control_path) {
     json::number(out, std::uint64_t(qpc_frequency()));
     json::key(out, "pid");
     json::number(out, std::uint64_t(GetCurrentProcessId()));
+
+    json::key(out, "loader");
+    out += '{';
+    json::key(out, "name");
+    json::string(out, loader.name);
+    json::key(out, "api");
+    char api[24];
+    std::snprintf(api, sizeof(api), "%u.%u", loader.api_version >> 16, loader.api_version & 0xFFFFu);
+    json::string(out, api);
+    json::key(out, "game_version");
+    json::string(out, loader.game_version);
+    json::key(out, "exe_sha256");
+    json::string(out, loader.exe_sha256);
+    out += '}';
 
     const auto exe_path = module_path(nullptr);
     const auto exe_hash = sha256_file(exe_path);

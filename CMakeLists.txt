@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mhw_cpuopt VERSION 0.1.0 LANGUAGES CXX)
+project(mhw_cpuopt VERSION 0.2.0 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "64-bit Windows only")
@@ -40,6 +40,8 @@ target_compile_options(cpuopt_core PRIVATE ${CPUOPT_WARNINGS} /guard:cf)
 set(CPUOPT_PLUGIN_SOURCES
     src/plugin/frame_clock.cpp
     src/plugin/frame_clock.hpp
+    src/plugin/frame_events.cpp
+    src/plugin/frame_events.hpp
     src/plugin/log.cpp
     src/plugin/log.hpp
     src/plugin/runtime.cpp
@@ -52,16 +54,18 @@ set(CPUOPT_PLUGIN_SOURCES
     src/plugin/thread_census.hpp
 )
 
-# Loaded by Stracker's Loader from nativePC\plugins (an MO2 mod folder).
-add_library(mhw_cpuopt SHARED src/plugin/dllmain.cpp ${CPUOPT_PLUGIN_SOURCES})
+# An Astera Loader plugin: <game>\AsteraLoader\plugins\cpuopt\cpuopt.dll (an MO2
+# mod folder). The plugin API header is vendored (third_party/astera_loader).
+add_library(mhw_cpuopt SHARED src/plugin/dllmain.cpp src/plugin/al_entry.cpp ${CPUOPT_PLUGIN_SOURCES})
 target_compile_features(mhw_cpuopt PRIVATE cxx_std_20)
+target_include_directories(mhw_cpuopt PRIVATE third_party/astera_loader/include)
 target_compile_definitions(mhw_cpuopt PRIVATE ${CPUOPT_DEFINES}
     CPUOPT_VERSION="${PROJECT_VERSION}" CPUOPT_COMMIT="${CPUOPT_COMMIT}")
 target_compile_options(mhw_cpuopt PRIVATE ${CPUOPT_WARNINGS} /guard:cf)
 target_link_libraries(mhw_cpuopt PRIVATE cpuopt_core bcrypt)
 # The map file gives the report symbols for the plugin's own frames.
 target_link_options(mhw_cpuopt PRIVATE /guard:cf /DEBUG /MAP /OPT:REF /OPT:NOICF)
-set_target_properties(mhw_cpuopt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set_target_properties(mhw_cpuopt PROPERTIES OUTPUT_NAME cpuopt RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 enable_testing()
 
@@ -80,11 +84,13 @@ target_link_libraries(plugin_tests PRIVATE cpuopt_core bcrypt)
 set_target_properties(plugin_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_test(NAME plugin_tests COMMAND plugin_tests)
 
-# The built DLL in a stand-in process: log, control file, fail-closed frame clock.
-add_executable(runtime_smoke tests/runtime_smoke.cpp)
-target_compile_features(runtime_smoke PRIVATE cxx_std_20)
-target_compile_definitions(runtime_smoke PRIVATE ${CPUOPT_DEFINES})
-target_compile_options(runtime_smoke PRIVATE ${CPUOPT_WARNINGS})
-set_target_properties(runtime_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-add_dependencies(runtime_smoke mhw_cpuopt)
-add_test(NAME runtime_smoke COMMAND runtime_smoke $<TARGET_FILE:mhw_cpuopt> "${CMAKE_BINARY_DIR}/smoke")
+# The built DLL under a stand-in Astera Loader: frames, Presents, control file,
+# the frame counter found through the host's scanner, EXITING.
+add_executable(al_host_smoke tests/al_host_smoke.cpp)
+target_compile_definitions(al_host_smoke PRIVATE ${CPUOPT_DEFINES})
+target_compile_options(al_host_smoke PRIVATE ${CPUOPT_WARNINGS})
+target_include_directories(al_host_smoke PRIVATE third_party/astera_loader/include)
+target_link_libraries(al_host_smoke PRIVATE cpuopt_core)
+set_target_properties(al_host_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+add_dependencies(al_host_smoke mhw_cpuopt)
+add_test(NAME al_host_smoke COMMAND al_host_smoke $<TARGET_FILE:mhw_cpuopt> "${CMAKE_BINARY_DIR}/smoke")

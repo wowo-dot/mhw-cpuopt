@@ -6,6 +6,7 @@
 // - the sampler records whole stacks that contain the busy thread's functions.
 #include "../src/core/toggles.hpp"
 #include "../src/plugin/frame_clock.hpp"
+#include "../src/plugin/frame_events.hpp"
 #include "../src/plugin/log.hpp"
 #include "../src/plugin/sampler.hpp"
 #include "../src/plugin/system_info.hpp"
@@ -37,7 +38,23 @@ __declspec(allocate(".cpotest")) unsigned char planted[] = {
     0x49, 0xB9, 0xAB, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,  // mov r9,0AAAAAAAAAAAAAAABh
     0x4C, 0x8B, 0x80, 0x10, 0xF2, 0x01, 0x00,                    // mov r8,[rax+1F210h]
     0xC3};
+// A second copy whose displacement points elsewhere: matches that disagree.
+__declspec(allocate(".cpotest")) unsigned char planted_other[] = {
+    0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00,
+    0x49, 0xB9, 0xAB, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+    0x4C, 0x8B, 0x80, 0x10, 0xF2, 0x01, 0x00,
+    0xC3};
 std::uintptr_t fake_renderer;  // writable data, like the game's singleton
+std::uintptr_t other_renderer;
+
+void plant(unsigned char* site, const void* target) {
+    const auto displacement =
+        static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(target) - static_cast<std::intptr_t>(reinterpret_cast<std::uintptr_t>(site) + 7));
+    DWORD old{};
+    VirtualProtect(site, 24, PAGE_EXECUTE_READWRITE, &old);
+    std::memcpy(site + 3, &displacement, 4);
+    VirtualProtect(site, 24, old, &old);
+}
 
 std::atomic<bool> stop{};
 volatile std::uint64_t sink{};
@@ -67,14 +84,22 @@ long long number_after(const std::string& text, const std::string& key) {
 
 void frame_clock_test() {
     const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-    const auto site = reinterpret_cast<std::uintptr_t>(planted);
-    const auto displacement = static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(&fake_renderer) - static_cast<std::intptr_t>(site + 7));
-    DWORD old{};
-    VirtualProtect(planted, sizeof(planted), PAGE_EXECUTE_READWRITE, &old);
-    std::memcpy(planted + 3, &displacement, 4);
-    VirtualProtect(planted, sizeof(planted), old, &old);
+    using namespace cpuopt::frame_clock;
+    plant(planted, &fake_renderer);
+    plant(planted_other, &other_renderer);
+    std::uintptr_t matches[match_capacity]{};
+    CHECK(scan(base, matches, match_capacity) == 2);  // both planted copies, in address order
+    const std::uintptr_t first[] = {reinterpret_cast<std::uintptr_t>(planted)};
+    const std::uintptr_t both[] = {reinterpret_cast<std::uintptr_t>(planted), reinterpret_cast<std::uintptr_t>(planted_other)};
+    const std::uintptr_t same[] = {first[0], first[0]};
+    CHECK(std::string(discover(base, both, 2).reason) == "matches disagree");
+    CHECK(std::string(discover(base, first, 0).reason) == "signature not found");
+    CHECK(std::string(discover(base, first, match_capacity + 1).reason) == "too many matches");
+    const std::uintptr_t outside[] = {1};
+    CHECK(std::string(discover(base, outside, 1).reason) == "match unreadable");
+    CHECK(discover(base, same, 2).found);  // repeated sites that agree
 
-    const auto d = cpuopt::frame_clock::discover(base);
+    const auto d = discover(base, first, 1);
     CHECK(d.found);
     CHECK(d.matches == 1);
     CHECK(d.site_rva == rva_of(planted));
@@ -84,10 +109,17 @@ void frame_clock_test() {
 
     auto renderer = std::make_unique<std::uint64_t[]>(0x20000 / 8);
     auto& counter = renderer[0x1F210 / 8];
-    cpuopt::frame_clock::start(base, d);
+    std::uintptr_t validated{};
+    std::uint64_t value{};
+    CHECK(!read(validated, value));  // no target yet
+    set_target(base, d);
+    CHECK(!read(validated, value));  // no renderer yet
+    start_poller();
+    CHECK(poller_thread() != 0);
     Sleep(50);
     CHECK(!cpuopt::frame_clock::take().renderer);  // no renderer yet
     fake_renderer = reinterpret_cast<std::uintptr_t>(renderer.get());
+    CHECK(read(validated, value) && value == 0 && validated == fake_renderer);
     Sleep(20);
     cpuopt::frame_clock::take();
     const auto t0 = cpuopt::qpc_now();
@@ -107,7 +139,42 @@ void frame_clock_test() {
     CHECK(w.frames == 250);  // exact
     CHECK(w.intervals.count >= 240);
     CHECK(w.intervals.p50_us >= 3500 && w.intervals.p50_us <= 4600);
+    CHECK(read(validated, value) && value == 250);
+    stop_poller();
     fake_renderer = 0;
+}
+
+// Synthetic callbacks with known time stamps: 4 ms frames with 1.5 ms of
+// update, Presents 4 ms apart taking 0.2 ms, the render counter one ahead.
+void frame_events_test() {
+    namespace fe = cpuopt::frame_events;
+    fe::take();
+    const auto f = cpuopt::qpc_frequency();
+    const auto at = [f](double ms) { return static_cast<std::int64_t>(1000 + ms * double(f) / 1000.0); };
+    for (int i = 0; i < 100; ++i) {
+        fe::on_begin(at(i * 4.0), 77);
+        fe::on_render_counter(1000 + static_cast<std::uint64_t>(i));
+        fe::on_end(at(i * 4.0 + 1.5));
+        fe::on_present(at(i * 4.0 + 2.0), i ? at((i - 1) * 4.0 + 2.0) : 0, 88);
+        fe::on_present_returned(at(i * 4.0 + 2.0), at(i * 4.0 + 2.2));
+    }
+    const auto w = fe::take();
+    CHECK(w.updates == 100 && w.presents == 100);
+    // Upper bucket edges: 50 us buckets for intervals, 10 us for durations.
+    CHECK(w.update_interval.count == 99 && w.update_interval.p50_us >= 4000 && w.update_interval.p50_us <= 4050);
+    CHECK(w.update_interval.max_us >= 3999 && w.update_interval.max_us <= 4001);
+    CHECK(w.update_work.count == 100 && w.update_work.p50_us >= 1500 && w.update_work.p50_us <= 1510);
+    CHECK(w.update_work.total_us >= 149900 && w.update_work.total_us <= 150100);
+    CHECK(w.present_interval.count == 99 && w.present_interval.p99_us >= 4000 && w.present_interval.p99_us <= 4050);
+    CHECK(w.present_call.count == 100 && w.present_call.p50_us >= 200 && w.present_call.p50_us <= 210);
+    CHECK(w.render_seen && w.render_frames == 99 && w.render_counter == 1099);
+    CHECK(w.game_thread == 77 && w.present_thread == 88);
+    std::string out = "{";
+    fe::append(out, w, 400.0);
+    out += '}';
+    CHECK(out.find("\"update\":{\"frames\":100,\"fps\":250.00,\"thread\":77,\"interval\":{\"count\":99,") != std::string::npos);
+    CHECK(out.find("\"render\":{\"seen\":true,\"frames\":99,\"counter\":1099}") != std::string::npos);
+    CHECK(fe::take().updates == 0);  // take() resets
 }
 
 void census_and_sampler_test() {
@@ -119,7 +186,7 @@ void census_and_sampler_test() {
     census.append_window(first, own);
     cpuopt::sampler::start();
     for (int i = 0; i < 100 && !cpuopt::sampler::thread_id(); ++i) Sleep(10);
-    const DWORD excluded[] = {GetCurrentThreadId(), cpuopt::frame_clock::thread_id(), cpuopt::sampler::thread_id()};
+    const DWORD excluded[] = {GetCurrentThreadId(), cpuopt::frame_clock::poller_thread(), cpuopt::sampler::thread_id()};
     cpuopt::sampler::set_excluded(excluded);
     Sleep(300);
     std::string window = "{";
@@ -159,7 +226,9 @@ void census_and_sampler_test() {
 }
 
 void start_event_test() {
-    const auto e = cpuopt::system_info::start_event(GetModuleHandleW(nullptr), L"x");
+    const cpuopt::system_info::LoaderInfo loader{"Test Loader", 0x10008, "421810", "ab"};
+    const auto e = cpuopt::system_info::start_event(GetModuleHandleW(nullptr), L"x", loader);
+    CHECK(e.find("\"loader\":{\"name\":\"Test Loader\",\"api\":\"1.8\",\"game_version\":\"421810\",\"exe_sha256\":\"ab\"}") != std::string::npos);
     CHECK(e.front() == '{' && e.back() == '}');
     CHECK(e.find("\"brand\":\"") != std::string::npos);
     const auto at = e.find("\"sha256\":\"");
@@ -172,6 +241,7 @@ void start_event_test() {
 
 int main() {
     frame_clock_test();
+    frame_events_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);

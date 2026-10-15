@@ -33,7 +33,7 @@ from evidence import game_running, seal
 
 REPO = Path(__file__).resolve().parents[1]
 RUNS = REPO / 'local' / 'runs'
-BUILD_DLL = REPO / 'build' / 'bin' / 'Release' / 'mhw_cpuopt.dll'
+BUILD_DLL = REPO / 'build' / 'bin' / 'Release' / 'cpuopt.dll'
 
 
 def machine():
@@ -174,11 +174,14 @@ def status(a):
         if e.get('event') in ('control', 'exit', 'stopped', 'log_full'):
             print('  ', json.dumps(e))
     for w in [e for e in events if e.get('event') == 'window'][-a.last:]:
-        iv = w['intervals']
-        top = ', '.join(f"{t[0]}:{t[1] / max(w['frames'], 1):.2f}ms/f" for t in w['threads'][:4])
-        print(f"#{w['seq']:4d} t={w['t_ms'] / 1000:7.1f}s {w['marker'] or '-':14s} sw={w['toggles']} fps={w['fps']:7.1f} "
-              f"avg={w['frame_ms_avg']:.3f} p50={iv['p50']:.2f} p95={iv['p95']:.2f} p99={iv['p99']:.2f} max={iv['max']:.1f} "
-              f"thr={w['thread_count']} gap={w['poll_gap_avg_us']}us | {top}")
+        u, p = w['update'], w['present']
+        frames = max(u['frames'], 1)
+        roles = {u['thread']: 'game', p['thread']: 'present'}
+        top = ', '.join(f"{roles.get(t[0], t[0])}:{t[1] / frames:.2f}" for t in w['threads'][:4])
+        print(f"#{w['seq']:4d} t={w['t_ms'] / 1000:7.1f}s {w['marker'] or '-':14s} sw={w['toggles']} "
+              f"fps={u['fps']:6.1f} p50={u['interval']['p50']:.2f} p95={u['interval']['p95']:.2f} p99={u['interval']['p99']:.2f} "
+              f"max={u['interval']['max']:.1f} | update {u['work']['mean']:.2f} ms | present {p['fps']:6.1f}/s "
+              f"call {p['call']['mean']:.2f} ms | render {w['render']['frames']} | thr={w['thread_count']} | ms/frame {top}")
 
 
 def main():

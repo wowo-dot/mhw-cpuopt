@@ -89,7 +89,7 @@ class Symbolizer:
     def __init__(self, run, module_paths):
         self.paths = module_paths  # lower-case file name -> full path
         self.cache = {}
-        maps = sorted(run.glob('mhw_cpuopt.map'))
+        maps = sorted(run.glob('cpuopt.map'))
         self.own = MapSymbols(maps[0]) if maps else None
         self.game_names = {}
         names = REPO / 'local' / 'ida' / 'names.tsv'
@@ -118,7 +118,7 @@ class Symbolizer:
         if module == GAME:
             name = self.game_names.get(rva)
             return f'game!{at}{name}' if name else f'game!{at}sub_{GAME_BASE + rva:X}'
-        if module.lower() == 'mhw_cpuopt.dll' and self.own:
+        if module.lower() == 'cpuopt.dll' and self.own:
             return f'cpuopt!{self.own.name(rva) or hex(rva)}'
         r = self.resolver(module)
         sym = r.name(rva) if r else None
@@ -138,7 +138,7 @@ def main():
     run = run_folder(a.run)
     log = run / f'cpuopt-{a.pid}.jsonl' if a.pid else newest_log(run)
     events = rows(log)
-    paths, thread_info = {}, {}
+    paths, thread_info, roles = {}, {}, {}
     for e in events:
         if e.get('event') == 'modules':
             for m in e['modules']:
@@ -146,6 +146,9 @@ def main():
         elif e.get('event') == 'window':
             for t in e['threads']:
                 thread_info[t[0]] = (t[4], t[5])
+            for role, label in (('update', 'GAME THREAD'), ('present', 'PRESENT THREAD')):
+                if e.get(role, {}).get('thread'):
+                    roles[e[role]['thread']] = label
     profiles = [e for e in events if e.get('event') == 'profile' and (a.marker is None or e['marker'] == a.marker)
                 and (a.toggles is None or e['toggles'] == a.toggles)]
     if not profiles:
@@ -168,10 +171,12 @@ def main():
     print(f'{log.name}: {len(profiles)} profile windows, {ms / 1000:.1f} s, markers {sorted({e["marker"] for e in profiles})}, '
           f'toggles {sorted({e["toggles"] for e in profiles})}')
     folded = []
-    for tid, total in samples.most_common(a.threads):
+    # The game and present threads first, then the most sampled.
+    order = sorted(samples, key=lambda t: (t not in roles, roles.get(t, ""), -samples[t]))[:a.threads]
+    for tid, total in ((t, samples[t]) for t in order):
         start, name = thread_info.get(tid, ('', ''))
         stacks = per_thread[tid]
-        print(f'\n=== thread {tid} {name or ""} start {start}: {total} samples ({failed[tid]} failed)')
+        print(f'\n=== thread {tid} {roles.get(tid, "")} {name or ""} start {start}: {total} samples ({failed[tid]} failed)')
         by_module, self_time, inclusive, inner_game = (collections.Counter() for _ in range(4))
         for stack, n in stacks.items():
             leaf_module = stack[0][0] if stack else None

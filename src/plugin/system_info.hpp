@@ -11,10 +11,17 @@ std::string sha256_file(const std::wstring& path);
 std::wstring module_path(HMODULE module);
 std::wstring folder_of(const std::wstring& path);
 
-// The "start" event: build identity, executable and DLL hashes, CPU and cache
-// layout, CPU sets and affinity, OS build and the game's own graphics and CPU
-// settings files (read only).
-std::string start_event(HMODULE self, const std::wstring& control_path);
+// What the loader reported about itself and the game.
+struct LoaderInfo {
+    std::string name;
+    std::uint32_t api_version{};
+    std::string game_version, exe_sha256;  // empty when the loader did not say
+};
+
+// The "start" event: build identity, loader, executable and DLL hashes, CPU
+// and cache layout, CPU sets and affinity, OS build and the game's own
+// graphics and CPU settings files (read only).
+std::string start_event(HMODULE self, const std::wstring& control_path, const LoaderInfo& loader);
 
 // Loaded modules; hashes are computed once per path for modules outside the
 // Windows directory (game folder, mods, overlays).

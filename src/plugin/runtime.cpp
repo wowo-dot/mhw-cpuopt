@@ -2,7 +2,7 @@
 #include "../core/control.hpp"
 #include "../core/json.hpp"
 #include "../core/toggles.hpp"
-#include "frame_clock.hpp"
+#include "frame_events.hpp"
 #include "log.hpp"
 #include "sampler.hpp"
 #include "system_info.hpp"
@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -18,7 +19,11 @@ namespace cpuopt::runtime {
 namespace {
 HMODULE self_module{};
 EventLog event_log;
+Host host;
+HANDLE stop_event{}, worker_thread{};
+std::atomic<bool> started{}, stopped{};
 std::atomic<std::uint64_t> windows_written{};
+constexpr unsigned tracked_max = 6;
 
 std::wstring trim(std::wstring s) {
     while (!s.empty() && (s.back() == L'\r' || s.back() == L'\n' || s.back() == L' ' || s.back() == L'\t')) s.pop_back();
@@ -58,10 +63,11 @@ struct State {
     std::uint64_t control_stamp{};
     std::string marker;
     unsigned window_ms{5000};
-    std::uint64_t seq{};
+    std::uint64_t seq{}, updates{}, presents{};
     double window_start{};
     std::vector<DWORD> own;
     ThreadCensus census;
+    bool poller{};
 };
 
 void ms_field(std::string& out, const char* key, std::uint64_t us) {
@@ -69,11 +75,43 @@ void ms_field(std::string& out, const char* key, std::uint64_t us) {
     json::fixed(out, double(us) / 1000.0, 3);
 }
 
+// The poller's figures (only when al.frame cannot follow the game's frames).
+void append_poller(std::string& out, const frame_clock::Window& f, double ms) {
+    json::key(out, "poller");
+    out += '{';
+    json::key(out, "renderer");
+    out += f.renderer ? "true" : "false";
+    json::key(out, "counter");
+    json::number(out, f.counter);
+    json::key(out, "frames");
+    json::number(out, f.frames);
+    json::key(out, "fps");
+    json::fixed(out, ms > 0 ? double(f.frames) * 1000.0 / ms : 0.0, 2);
+    json::key(out, "intervals");
+    out += '{';
+    json::key(out, "count");
+    json::number(out, f.intervals.count);
+    ms_field(out, "p50", f.intervals.p50_us);
+    ms_field(out, "p95", f.intervals.p95_us);
+    ms_field(out, "p99", f.intervals.p99_us);
+    ms_field(out, "max", f.intervals.max_us);
+    out += '}';
+    json::key(out, "polls");
+    json::number(out, f.polls);
+    json::key(out, "poll_gap_avg_us");
+    json::number(out, f.polls ? f.poll_gap_total_us / f.polls : 0);
+    json::key(out, "multi_step");
+    json::number(out, f.multi_step);
+    out += '}';
+}
+
 void write_window(State& s) {
     const double t = now_ms();
     const double ms = t - s.window_start;
     s.window_start = t;
-    const auto f = frame_clock::take();
+    const auto frames = frame_events::take();
+    s.updates += frames.updates;
+    s.presents += frames.presents;
     std::string out = "{";
     json::key(out, "event");
     json::string(out, "window");
@@ -87,45 +125,22 @@ void write_window(State& s) {
     json::number(out, std::uint64_t(toggles.load()));
     json::key(out, "marker");
     json::string(out, s.marker);
-    json::key(out, "renderer");
-    out += f.renderer ? "true" : "false";
-    json::key(out, "counter");
-    json::number(out, f.counter);
-    json::key(out, "frames");
-    json::number(out, f.frames);
-    json::key(out, "fps");
-    json::fixed(out, ms > 0 ? double(f.frames) * 1000.0 / ms : 0.0, 2);
-    json::key(out, "frame_ms_avg");
-    json::fixed(out, f.frames ? ms / double(f.frames) : 0.0, 3);
-    json::key(out, "intervals");
-    out += '{';
-    json::key(out, "count");
-    json::number(out, f.intervals.count);
-    ms_field(out, "p50", f.intervals.p50_us);
-    ms_field(out, "p90", f.intervals.p90_us);
-    ms_field(out, "p95", f.intervals.p95_us);
-    ms_field(out, "p99", f.intervals.p99_us);
-    ms_field(out, "p999", f.intervals.p999_us);
-    ms_field(out, "max", f.intervals.max_us);
-    json::key(out, "over_25ms");
-    json::number(out, f.intervals.over_25ms);
-    json::key(out, "over_50ms");
-    json::number(out, f.intervals.over_50ms);
-    out += '}';
-    json::key(out, "polls");
-    json::number(out, f.polls);
-    json::key(out, "poll_gap_avg_us");
-    json::number(out, f.polls ? f.poll_gap_total_us / f.polls : 0);
-    json::key(out, "poll_gap_max_us");
-    json::number(out, f.max_poll_gap_us);
-    json::key(out, "multi_step");
-    json::number(out, f.multi_step);
+    json::key(out, "frame_state");
+    json::number(out, std::int64_t(host.frame_state ? host.frame_state() : -1));
+    frame_events::append(out, frames, ms);
+    if (s.poller) append_poller(out, frame_clock::take(), ms);
     const auto busiest = s.census.append_window(out, s.own);
     out += '}';
     event_log.write(out);
     const auto profile = sampler::take_event(t, toggles.load(), s.marker);
     if (!profile.empty()) event_log.write(profile);
-    sampler::set_tracked(std::span<const DWORD>(busiest.data(), std::min<std::size_t>(busiest.size(), 4)));
+    // Sampled every tick: the game thread, the present thread, then the busiest others.
+    std::vector<DWORD> tracked;
+    for (const DWORD tid : {DWORD(frames.game_thread), DWORD(frames.present_thread)})
+        if (tid && std::find(tracked.begin(), tracked.end(), tid) == tracked.end()) tracked.push_back(tid);
+    for (const DWORD tid : busiest)
+        if (tracked.size() < tracked_max && std::find(tracked.begin(), tracked.end(), tid) == tracked.end()) tracked.push_back(tid);
+    sampler::set_tracked(tracked);
     windows_written.fetch_add(1);
 }
 
@@ -167,60 +182,40 @@ void poll_control(State& s, bool initial) {
     event_log.write(out);
 }
 
-DWORD WINAPI worker(void*) noexcept {
+void own_threads(State& s) {
+    s.own = {GetCurrentThreadId(), sampler::thread_id()};
+    if (frame_clock::poller_thread()) s.own.push_back(frame_clock::poller_thread());
+    sampler::set_excluded(s.own);
+}
+
+DWORD WINAPI worker(void* parameter) noexcept {
+    std::unique_ptr<State> owned(static_cast<State*>(parameter));
+    auto& s = *owned;
     try {
-        const auto dll_path = system_info::module_path(self_module);
-        std::string sidecar;
-        if (!read_small(dll_path + L".output-dir", sidecar)) {
-            OutputDebugStringW(L"mhw_cpuopt: no .output-dir sidecar; idle\n");
-            return 0;
-        }
-        const auto folder = trim(widen(sidecar));
-        if (folder.empty() || !event_log.open(folder)) {
-            OutputDebugStringW(L"mhw_cpuopt: run folder not writable; idle\n");
-            return 0;
-        }
-        State s;
-        s.control_path = folder + L"\\control.ini";
-        event_log.write(system_info::start_event(self_module, s.control_path));
+        system_info::LoaderInfo loader{"Astera Loader", host.api_version, host.game_version, host.exe_sha256};
+        event_log.write(system_info::start_event(self_module, s.control_path, loader));
         poll_control(s, true);  // a run may start with switches already set
         system_info::ModuleCensus modules;
         if (auto e = modules.changed_event(now_ms()); !e.empty()) event_log.write(e);
+        event_log.write(frame_clock::discovery_event(host.discovery, now_ms(), host.scanner));
 
-        // The loader may run before the game's code is decrypted in memory, so
-        // the signature search repeats once a second for up to two minutes.
-        // The first attempt and the final one are logged.
-        const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        const double give_up = now_ms() + 120000;
-        unsigned attempts = 0;
-        const auto discover = [&]() -> bool {  // true when settled
-            const auto found = frame_clock::discover(base);
-            const bool settled = found.found || now_ms() >= give_up;
-            if (++attempts == 1 || settled) event_log.write(frame_clock::discovery_event(found, now_ms(), attempts, settled));
-            if (!found.found) return settled;
-            frame_clock::start(base, found);
-            for (int i = 0; i < 100 && !frame_clock::thread_id(); ++i) Sleep(10);
-            return true;
-        };
-        bool discovering = !discover();
         sampler::start();
         for (int i = 0; i < 100 && !sampler::thread_id(); ++i) Sleep(10);
-        // Our own threads are reported as such and never sampled.
-        const auto own = [&] {
-            s.own = {GetCurrentThreadId(), sampler::thread_id(), frame_clock::thread_id()};
-            sampler::set_excluded(s.own);
-        };
-        own();
-
+        own_threads(s);
         std::string baseline;
         s.census.append_window(baseline, s.own);  // first figures need a starting point
-        frame_clock::take();
+        frame_events::take();
         s.window_start = now_ms();
         for (unsigned tick = 0;; ++tick) {
-            Sleep(100);
-            if (discovering && tick % 10 == 9) {
-                discovering = !discover();
-                if (!discovering) own();  // the poller thread is ours now
+            if (WaitForSingleObject(stop_event, 100) == WAIT_OBJECT_0) break;
+            // Without al.frame, or when it cannot follow this game's frames,
+            // the poller counts frames from sRender's counter instead.
+            const int state = host.frame_state ? host.frame_state() : -1;
+            if (!s.poller && frame_clock::has_target() && (state < 0 || state == 3 /* AL_FRAME_UNAVAILABLE */)) {
+                frame_clock::start_poller();
+                s.poller = true;
+                own_threads(s);
+                event_log.write("{\"event\":\"poller_started\",\"reason\":\"al.frame unavailable\"}");
             }
             if (tick % 3 == 0) poll_control(s, false);
             if (now_ms() - s.window_start >= s.window_ms) {
@@ -228,6 +223,18 @@ DWORD WINAPI worker(void*) noexcept {
                 if (auto e = modules.changed_event(now_ms()); !e.empty()) event_log.write(e);
             }
         }
+        // EXITING: the partial window, then everything of ours stopped.
+        write_window(s);
+        const bool sampler_stopped = sampler::stop(1000);
+        frame_clock::stop_poller();
+        char line[320];
+        const int n = std::snprintf(line, sizeof(line),
+                                    "{\"event\":\"stopped\",\"t_ms\":%.3f,\"windows\":%llu,\"updates\":%llu,\"presents\":%llu,"
+                                    "\"sampler_stopped\":%s}",
+                                    now_ms(), static_cast<unsigned long long>(windows_written.load()),
+                                    static_cast<unsigned long long>(s.updates), static_cast<unsigned long long>(s.presents),
+                                    sampler_stopped ? "true" : "false");
+        if (n > 0) event_log.write(std::string_view(line, static_cast<std::size_t>(n)));
     } catch (...) {
         event_log.write("{\"event\":\"stopped\",\"reason\":\"exception\"}");
     }
@@ -235,12 +242,55 @@ DWORD WINAPI worker(void*) noexcept {
 }
 }  // namespace
 
-void start(HMODULE self) noexcept {
-    self_module = self;
-    // Pinned: the threads run until the process ends, so the DLL never unloads.
-    HMODULE pinned{};
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN, reinterpret_cast<LPCWSTR>(&start), &pinned);
-    if (const auto thread = CreateThread(nullptr, 0, worker, nullptr, 0, nullptr)) CloseHandle(thread);
+bool start(HMODULE self, const Host& h, std::string& reason) noexcept {
+    try {
+        if (started.exchange(true)) {
+            reason = "already started";
+            return false;
+        }
+        self_module = self;
+        host = h;
+        std::string sidecar;
+        const auto sidecar_path = host.folder + L"\\cpuopt.dll.output-dir";
+        if (!read_small(sidecar_path, sidecar)) {
+            reason = "no run folder (cpuopt.dll.output-dir): idle";
+            return false;
+        }
+        const auto folder = trim(widen(sidecar));
+        if (folder.empty() || !event_log.open(folder)) {
+            reason = "run folder not writable: idle";
+            return false;
+        }
+        auto state = std::make_unique<State>();
+        state->control_path = folder + L"\\control.ini";
+        stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        worker_thread = CreateThread(nullptr, 0, worker, state.get(), 0, nullptr);
+        if (!worker_thread) {
+            reason = "could not start its thread";
+            return false;
+        }
+        state.release();  // the worker owns it now
+        reason = utf8(event_log.path());
+        return true;
+    } catch (...) {
+        reason = "start failed";
+        return false;
+    }
+}
+
+void stop(const char* why) noexcept {
+    if (!worker_thread || stopped.exchange(true)) return;
+    char line[160];
+    const int n = std::snprintf(line, sizeof(line), "{\"event\":\"stopping\",\"t_ms\":%.3f,\"why\":\"%s\"}", now_ms(), why);
+    if (n > 0) event_log.write(std::string_view(line, static_cast<std::size_t>(n)));
+    SetEvent(stop_event);
+    if (WaitForSingleObject(worker_thread, 2000) != WAIT_OBJECT_0) event_log.write("{\"event\":\"stop_timeout\"}");
+}
+
+void note(const char* event, const char* key, long long value) noexcept {
+    char line[200];
+    const int n = std::snprintf(line, sizeof(line), "{\"event\":\"%s\",\"t_ms\":%.3f,\"%s\":%lld}", event, now_ms(), key, value);
+    if (n > 0) event_log.write(std::string_view(line, static_cast<std::size_t>(n)));
 }
 
 void at_exit() noexcept {
