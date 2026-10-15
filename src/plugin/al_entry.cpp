@@ -42,6 +42,7 @@ std::uint32_t query_hook{}, date_hook{};     // al.hooks handles, 0 until first 
 std::uintptr_t prim_target{}, query_target{}, date_target{};  // found at PRE_MAIN
 std::uintptr_t spin_target{};                // the job threads' wait call (match + 7), found at PRE_MAIN
 std::uint32_t spin_handle{};                 // al.patch handle, 0 until first switched on
+std::uintptr_t spin_stub{};                  // its jump stub, made at PRE_MAIN
 SRWLOCK switch_lock = SRWLOCK_INIT;
 std::uintptr_t validated_renderer{};  // game thread only
 
@@ -139,12 +140,12 @@ bool spin_patch(bool on, const char** reason) noexcept {
         *reason = "job threads' wait not found";
     } else if (!spin_handle) {
         if (on) {
-            static std::uintptr_t stub = cpuopt::worker_spin::make_stub(spin_target, reinterpret_cast<const void*>(&cpuopt::worker_spin::wait));
+            const auto stub = spin_stub;
             std::array<std::uint8_t, cpuopt::worker_spin::patch_length> expected{}, replacement{};
             std::memcpy(expected.data(), reinterpret_cast<const void*>(spin_target), expected.size());
             if (!stub || !cpuopt::worker_spin::build_replacement(spin_target, stub, replacement)) {
                 ok = false;
-                *reason = "no room for a jump stub within 2 GB";
+                *reason = stub ? "jump stub out of reach" : "no room for a jump stub within 2 GB at start-up";
             } else {
                 static const std::string pattern(cpuopt::worker_spin::signature);
                 al_patch_t p{};
@@ -351,7 +352,12 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         }
         std::uintptr_t wait_site[2]{};
         host.spin = cpuopt::worker_spin::discover(base, wait_site, find(cpuopt::worker_spin::signature, wait_site, 2));
-        if (host.spin.found) spin_target = wait_site[0] + cpuopt::worker_spin::patch_offset;
+        if (host.spin.found) {
+            spin_target = wait_site[0] + cpuopt::worker_spin::patch_offset;
+            // The jump stub now, while there is still room near the exe.
+            host.spin.stub = cpuopt::worker_spin::make_stub(spin_target, reinterpret_cast<const void*>(&cpuopt::worker_spin::wait));
+            spin_stub = host.spin.stub;
+        }
 
         std::string reason;
         frame = service<al_frame_t>(AL_FRAME_INTERFACE, AL_FRAME_VERSION);

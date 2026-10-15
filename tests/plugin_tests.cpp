@@ -806,6 +806,21 @@ void worker_spin_test() {
     MEMORY_BASIC_INFORMATION mbi{};
     VirtualQuery(reinterpret_cast<const void*>(stub), &mbi, sizeof(mbi));
     CHECK(mbi.Protect == PAGE_EXECUTE_READ);  // never writable and executable at once
+    // A site inside a large free region (as below the game exe).
+    for (const std::uintptr_t below : {0x40000000ULL, 0x100000000ULL, 0x400000000ULL}) {
+        if (exe < below + 0x100000000ULL) continue;
+        const auto far_site = exe - below;
+        MEMORY_BASIC_INFORMATION here{};
+        if (!VirtualQuery(reinterpret_cast<const void*>(far_site), &here, sizeof(here)) || here.State != MEM_FREE) continue;
+        const auto far_stub = ws::make_stub(far_site, reinterpret_cast<const void*>(&stub_target));
+        const auto far_distance = far_stub > far_site ? far_stub - far_site : far_site - far_stub;
+        std::printf("worker_spin: site %llx in a free region from %llx: stub %llx\n", static_cast<unsigned long long>(far_site),
+                    static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(here.AllocationBase ? here.AllocationBase : here.BaseAddress)),
+                    static_cast<unsigned long long>(far_stub));
+        CHECK(far_stub && far_distance < 0x80000000ULL);
+        CHECK(far_stub && reinterpret_cast<std::uintptr_t (*)(std::uintptr_t)>(far_stub)(2) == 7);
+        break;
+    }
     // discover: the planted wait must call through a slot holding WaitForSingleObject.
     const auto sig = signature_bytes(ws::signature);
     for (std::size_t i = 0; i < sig.size(); ++i) planted_wait[i] = static_cast<unsigned char>(sig[i] < 0 ? 0 : sig[i]);

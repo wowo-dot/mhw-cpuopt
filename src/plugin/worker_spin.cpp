@@ -76,6 +76,13 @@ std::string discovery_event(const Discovery& d, double t_ms, std::string_view sc
     json::number(out, std::uint64_t(d.matches));
     json::key(out, "site_rva");
     json::number(out, std::uint64_t(d.site_rva));
+    json::key(out, "stub");
+    out += d.stub ? "true" : "false";
+    if (d.stub) {
+        const auto site = static_cast<std::int64_t>(d.site_rva);
+        json::key(out, "stub_offset_mb");  // from the wait site, signed
+        json::fixed(out, double(static_cast<std::int64_t>(d.stub - reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr))) - site) / 1048576.0, 1);
+    }
     out += '}';
     return out;
 }
@@ -94,8 +101,10 @@ std::uintptr_t make_stub(std::uintptr_t site, const void* function) noexcept {
         const auto region = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
         const auto end = region + mbi.RegionSize;
         if (mbi.State == MEM_FREE) {
-            const auto candidate = (region + granularity - 1) & ~(granularity - 1);
-            if (candidate + si.dwPageSize <= end && candidate + si.dwPageSize <= hi && candidate >= lo)
+            // The part of the free region within reach.
+            const auto from = region > lo ? region : lo;
+            const auto candidate = (from + granularity - 1) & ~(granularity - 1);
+            if (candidate + si.dwPageSize <= end && candidate + si.dwPageSize <= hi)
                 page = static_cast<std::uint8_t*>(
                     VirtualAlloc(reinterpret_cast<void*>(candidate), si.dwPageSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
         }

@@ -53,6 +53,7 @@ struct Discovery {
     const char* reason{"not searched"};
     unsigned matches{};
     std::uint32_t site_rva{};
+    std::uintptr_t stub{};  // the jump stub, made at PRE_MAIN (0: no room)
 };
 // From the scanner's matches; the call must go through the exe's import of
 // WaitForSingleObject (the slot holds the same function this DLL imports).
@@ -60,7 +61,9 @@ Discovery discover(std::uintptr_t image_base, const std::uintptr_t* matches, uns
 std::string discovery_event(const Discovery&, double t_ms, std::string_view scanner);
 
 // A 14-byte `jmp [rip+0]` to `function` in a page within 2 GB of `site`
-// (read-execute once written); 0 if there is no room.
+// (read-execute once written); 0 if there is no room. Made at PRE_MAIN: once
+// the game runs, its heaps and the graphics driver's mappings can fill the
+// address space around the exe (al-12: no room when made at the switch).
 std::uintptr_t make_stub(std::uintptr_t site, const void* function) noexcept;
 // The 11 replacement bytes for the change at `target` (the match + 7),
 // calling `stub`; false if the stub is out of a rel32's reach.
