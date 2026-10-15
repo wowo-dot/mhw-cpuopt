@@ -12,6 +12,7 @@
 #include "job_cap.hpp"
 #include "log.hpp"
 #include "runtime.hpp"
+#include "sampler.hpp"
 #include <cstddef>
 #include <cstdio>
 #include <string>
@@ -134,13 +135,16 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         host.discovery = cpuopt::frame_clock::discover(base, matches, count);
         cpuopt::frame_clock::set_target(base, host.discovery);
 
-        std::uintptr_t instance_site[1]{}, unused[1]{};
+        std::uintptr_t instance_site[1]{}, spin_site[1]{}, unused[1]{};
         const unsigned job_counts[4] = {find(cpuopt::job_cap::instance_signature, instance_site, 1),
                                         find(cpuopt::job_cap::release_signature, unused, 1),
-                                        find(cpuopt::job_cap::spin_signature, unused, 1),
+                                        find(cpuopt::job_cap::spin_signature, spin_site, 1),
                                         find(cpuopt::job_cap::copy_signature, unused, 1)};
         host.job = cpuopt::job_cap::discover(base, job_counts, instance_site[0]);
         cpuopt::job_cap::set_target(base, host.job);
+        // The sampler reads the job slots when it catches the game thread in
+        // the spin (the spin signature's 20 bytes hold the whole loop).
+        if (host.job.found) cpuopt::sampler::set_spin_probe(spin_site[0], spin_site[0] + 20, base + host.job.global_rva);
 
         std::string reason;
         frame = service<al_frame_t>(AL_FRAME_INTERFACE, AL_FRAME_VERSION);

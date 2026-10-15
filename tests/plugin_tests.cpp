@@ -9,6 +9,7 @@
 #include "../src/plugin/image_scan.hpp"
 #include "../src/plugin/frame_events.hpp"
 #include "../src/plugin/job_cap.hpp"
+#include "../src/plugin/spin_probe.hpp"
 #include "../src/plugin/log.hpp"
 #include "../src/plugin/sampler.hpp"
 #include "../src/plugin/system_info.hpp"
@@ -187,6 +188,26 @@ void frame_events_test() {
 // job_cap against a stand-in sMain: the game's own count learned once the job
 // threads exist, caps written to +0xD0 and +0xCC, the native count back when
 // off, clamping, and the cases where it must keep its hands off.
+// spin_probe against a stand-in sMain: busy slots and their job functions.
+void spin_probe_test() {
+    namespace sp = cpuopt::spin_probe;
+    auto object = std::make_unique<std::uint8_t[]>(sp::slots_offset + sp::max_slots * sp::slot_stride);
+    std::memset(object.get(), 0, sp::slots_offset + sp::max_slots * sp::slot_stride);
+    const auto smain = reinterpret_cast<std::uintptr_t>(object.get());
+    const auto slot_job = [&](unsigned i) -> std::uintptr_t& {
+        return *reinterpret_cast<std::uintptr_t*>(object.get() + sp::slots_offset + i * sp::slot_stride + sp::slot_job);
+    };
+    std::uintptr_t job_a[4] = {0, 0x1111, 0, 0}, job_b[4] = {0, 0x2222, 0, 0};  // context, function, ...
+    sp::Reading r;
+    CHECK(sp::read(smain, r) && r.busy == 0);
+    slot_job(3) = reinterpret_cast<std::uintptr_t>(job_a);
+    slot_job(31) = reinterpret_cast<std::uintptr_t>(job_b);
+    CHECK(sp::read(smain, r) && r.busy == 2 && r.functions[0] == 0x1111 && r.functions[1] == 0x2222);
+    slot_job(7) = 0x10;  // an unreadable entry still counts as busy, function unknown
+    CHECK(sp::read(smain, r) && r.busy == 3 && r.functions[1] == 0);
+    CHECK(!sp::read(0, r));
+}
+
 void job_cap_test() {
     namespace jc = cpuopt::job_cap;
     const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
@@ -349,6 +370,7 @@ int main() {
     frame_clock_test();
     frame_events_test();
     job_cap_test();
+    spin_probe_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);

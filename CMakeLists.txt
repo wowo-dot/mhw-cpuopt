@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mhw_cpuopt VERSION 0.3.0 LANGUAGES CXX)
+project(mhw_cpuopt VERSION 0.3.1 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "64-bit Windows only")
@@ -52,6 +52,8 @@ set(CPUOPT_PLUGIN_SOURCES
     src/plugin/runtime.hpp
     src/plugin/sampler.cpp
     src/plugin/sampler.hpp
+    src/plugin/spin_probe.cpp
+    src/plugin/spin_probe.hpp
     src/plugin/system_info.cpp
     src/plugin/system_info.hpp
     src/plugin/thread_census.cpp

@@ -97,3 +97,31 @@ depended on modified bytes.
   v0.3's `job_thread_cap` switch (toggle 2, `job_threads=N`) sets `[+0D0h]`
   and `[+0CCh]` to N on the game thread at al.frame BEGIN; measured on and off
   in one session.
+
+### The job rounds the game thread waits on (al-02, tools/job_report.py)
+
+Game thread, hub start, 37,436 samples over 60 s (stock scheduling):
+
+| Job round started by | Share of the game thread | Spinning | Running jobs itself | Called from |
+|---|---|---|---|---|
+| `sub_14221A050` | 39.5% | 26.9% | 11.6% | `sCamera::draw` ← `sMhRender::move` ← the frame (`sub_141AF2B60`) |
+| `sub_14221ACE0` | 20.4% | 10.1% | 8.4% | `sub_14221B360` ← the frame (`sub_141AF2B60`) |
+| seven others | 4.7% | | | |
+
+- Jobs the game thread runs itself: `cUnit::genericMove` 8.3% (the
+  `sub_14221ACE0` round), `sub_141FAF590` 6.9% and smaller ones (the
+  `sub_14221A050` round).
+- The 30 job threads waited for work 92.4% of their samples; when busy they
+  ran the same two job functions.
+- `sub_14221A050` builds its rounds two ways: a prepared job list with a
+  125,680-byte buffer per thread slot (32 slots), and one job per object of a
+  linked object list (type and flag filter) running `sub_142228DE0`.
+- Job thread cap sweep (al-03, 31/15/11/7 threads per round, 25-125 s each,
+  interleaved with native): 256.5 / 259.8 / 255.3 / 246.9 fps. Fewer
+  threads per round did not shorten the rounds, and 7 lengthened them: the
+  game thread waits for job work, not for thread wake-ups. H2 (refined) is
+  rejected as the main cost; process CPU fell from 17.0 to 16.3 ms per frame
+  at 15.
+- Next (v0.3.1): the sampler reads sMain's job slots whenever it catches the
+  game thread in the spin (`src/plugin/spin_probe.hpp`), to see whether one
+  long job (load imbalance) or many jobs hold each round.

@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <cstdint>
 #include <span>
 #include <string>
 
@@ -19,6 +20,9 @@ DWORD thread_id() noexcept;
 // Window thread only. Threads are tracked from the next sampling tick.
 void set_tracked(std::span<const DWORD> threads) noexcept;
 void set_excluded(std::span<const DWORD> threads) noexcept;
+// When a sampled thread is in [begin, end) (executeJob's spin), also read
+// sMain's job slots (spin_probe.hpp) through the sMain pointer at `global`.
+void set_spin_probe(std::uintptr_t begin, std::uintptr_t end, std::uintptr_t global) noexcept;
 // The "profile" event with the samples since the last call, or empty.
 std::string take_event(double t_ms, unsigned toggles, const std::string& marker);
 }  // namespace cpuopt::sampler

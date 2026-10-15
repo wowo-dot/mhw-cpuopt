@@ -45,11 +45,24 @@ __declspec(allocate(".cpotest")) unsigned char planted_runner[] = {
 __declspec(allocate(".cpotest")) unsigned char planted_layout[] = {
     0x8B, 0x83, 0xCC, 0x00, 0x00, 0x00, 0x8B, 0xBB, 0xB0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x8B, 0xF0, 0xF1, 0x09, 0x00,
     0x44, 0x89, 0xA3, 0xF8, 0xF1, 0x09, 0x00, 0x44, 0x89, 0xA3, 0xFC, 0xF1, 0x09, 0x00, 0x3B, 0xF8, 0xCC,
-    0x8B, 0x83, 0xFC, 0xF1, 0x09, 0x00, 0x3B, 0xC7, 0x74, 0x0C, 0xF3, 0x90, 0x8B, 0x83, 0xFC, 0xF1, 0x09, 0x00, 0x3B, 0xC7, 0xCC,
     0x80, 0xB9, 0x8C, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0xD9, 0x8B, 0x81, 0xD0, 0x00, 0x00, 0x00, 0x89, 0x81, 0xCC, 0x00, 0x00, 0x00, 0xC3};
+// executeJob's spin loop as a callable function: spin(sMain, released) waits
+// until sMain's done counter [+9F1FCh] equals `released`, with the game's own
+// 20 bytes (the spin signature) plus the loop's closing jnz.
+__declspec(allocate(".cpotest")) unsigned char planted_spin[] = {
+    0x53, 0x57, 0x48, 0x89, 0xCB, 0x89, 0xD7,                    // push rbx; push rdi; mov rbx,rcx; mov edi,edx
+    0x8B, 0x83, 0xFC, 0xF1, 0x09, 0x00, 0x3B, 0xC7, 0x74, 0x0C,  // mov eax,[rbx+9F1FCh]; cmp eax,edi; jz done
+    0xF3, 0x90, 0x8B, 0x83, 0xFC, 0xF1, 0x09, 0x00, 0x3B, 0xC7,  // pause; mov eax,[rbx+9F1FCh]; cmp eax,edi
+    0x75, 0xF4,                                                  // jnz pause
+    0x5F, 0x5B, 0xC3};                                           // done: pop rdi; pop rbx; ret
+using SpinFn = void (*)(void* smain, int released);
 std::uintptr_t fake_smain;
 std::uint8_t smain_object[0xAF680 + 64];
 std::uint32_t& smain_field(std::uint32_t offset) { return *reinterpret_cast<std::uint32_t*>(smain_object + offset); }
+std::uintptr_t& job_slot(unsigned i) { return *reinterpret_cast<std::uintptr_t*>(smain_object + 0x9E8F0 + i * 0x48 + 0x30); }
+// The job a fake job thread "runs" for 0.5 ms each frame while the game thread spins.
+__declspec(noinline) void fake_job_function(void*) {}
+std::uintptr_t fake_job[4] = {0, reinterpret_cast<std::uintptr_t>(&fake_job_function), 0, 0};
 std::uintptr_t fake_srender;
 std::uint64_t srender_object[0x20000 / 8];
 std::atomic<std::uint64_t>& render_counter() { return reinterpret_cast<std::atomic<std::uint64_t>&>(srender_object[0x1F210 / 8]); }
@@ -63,7 +76,7 @@ al_frame_fn frame_callbacks[2]{};
 al_d3d12_event_fn present_callback{};
 std::uint32_t present_mask{};
 std::atomic<DWORD> game_tid{};
-std::atomic<bool> frames_stop{};
+std::atomic<bool> frames_stop{}, jobs_stop{};
 char plugin_token;  // stands in for al_plugin_t
 al_plugin_t* const self = reinterpret_cast<al_plugin_t*>(&plugin_token);
 
@@ -162,9 +175,28 @@ DWORD WINAPI game_thread(void*) {
         al_frame_info_t info{sizeof(al_frame_info_t), 0, i, qpc()};
         if (frame_callbacks[AL_FRAME_BEGIN]) frame_callbacks[AL_FRAME_BEGIN](self, AL_FRAME_BEGIN, &info, nullptr);
         spin_until(info.qpc + f / 1000);  // about 1 ms of "update"
+        // A job round: job thread 1 holds a job for about 0.5 ms while the
+        // game thread waits in the game's spin loop.
+        smain_field(0x9F1FC) = 0;
+        job_slot(1) = reinterpret_cast<std::uintptr_t>(fake_job);
+        reinterpret_cast<SpinFn>(static_cast<void*>(planted_spin))(smain_object, 1);
         render_counter().fetch_add(1);
         info.qpc = qpc();
         if (frame_callbacks[AL_FRAME_END]) frame_callbacks[AL_FRAME_END](self, AL_FRAME_END, &info, nullptr);
+    }
+    return 0;
+}
+
+DWORD WINAPI job_thread(void*) {
+    const auto f = frequency();
+    while (!jobs_stop.load()) {
+        if (!reinterpret_cast<std::atomic<std::uintptr_t>&>(job_slot(1)).load()) {
+            YieldProcessor();
+            continue;
+        }
+        spin_until(qpc() + f / 2000);  // 0.5 ms of "job"
+        reinterpret_cast<std::atomic<std::uintptr_t>&>(job_slot(1)).store(0);
+        reinterpret_cast<std::atomic<std::uint32_t>&>(smain_field(0x9F1FC)).fetch_add(1);
     }
     return 0;
 }
@@ -278,6 +310,7 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && present_callback);
     CHECK(present_mask == (AL_D3D12_EVENT_BIT(AL_D3D12_PRE_PRESENT) | AL_D3D12_EVENT_BIT(AL_D3D12_POST_PRESENT)));
 
+    const HANDLE jobs = CreateThread(nullptr, 0, job_thread, nullptr, 0, nullptr);
     const HANDLE threads[] = {CreateThread(nullptr, 0, game_thread, nullptr, 0, nullptr),
                               CreateThread(nullptr, 0, present_thread, nullptr, 0, nullptr)};
     Sleep(300);
@@ -297,6 +330,8 @@ int wmain(int argc, wchar_t** argv) {
     const double exiting_ms = double(qpc() - t_exit) * 1000.0 / double(frequency());
     frames_stop = true;
     WaitForMultipleObjects(2, threads, TRUE, 2000);
+    jobs_stop = true;  // after the game thread: it may be waiting for a job
+    WaitForSingleObject(jobs, 2000);
     const auto after_exit = smain_field(0xD0);
     const al_phase_shutdown_t shutdown{sizeof(al_phase_shutdown_t), 0};
     info->on_phase(self, AL_PHASE_SHUTDOWN, &shutdown);
@@ -342,7 +377,7 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(fps > 200 && fps < 260);
         CHECK(present_fps > 200 && present_fps < 260);
         CHECK(interval >= 3.5 && interval <= 4.6);
-        CHECK(work >= 0.9 && work <= 1.6);
+        CHECK(work >= 1.3 && work <= 2.3);  // 1 ms of update and about 0.5 ms waiting for the job
         CHECK(call >= 0.25 && call <= 0.8);
         CHECK(rendered >= updates - 2 && rendered <= updates + 2);
         CHECK(w.find("\"update\":{\"frames\":") != std::string::npos && w.find("\"thread\":" + game_id + ",") != std::string::npos);
@@ -351,6 +386,28 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(checked >= 3);
     // The sampler followed the game thread.
     CHECK(!profiles.empty() && profiles.back().find("\"tracked\":[" + game_id) != std::string::npos);
+    // The spin probe caught the game thread in the planted spin and saw job
+    // thread 1 busy with fake_job_function.
+    {
+        long long spin_samples = 0, one_busy = 0;
+        bool job_seen = false;
+        const auto exe = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+        const auto job_rva = std::to_string(reinterpret_cast<std::uintptr_t>(&fake_job_function) - exe);
+        for (const auto& line : profiles) {
+            const auto at = line.find("\"spin_probe\":{\"samples\":");
+            if (at == std::string::npos) continue;
+            spin_samples += std::atoll(line.c_str() + at + 24);
+            const auto busy = line.find("\"busy\":[", at);
+            const auto comma = line.find(',', busy + 8);
+            one_busy += std::atoll(line.c_str() + comma + 1);  // samples with exactly one busy slot
+            job_seen = job_seen || line.find(",1," + job_rva + ",") != std::string::npos;
+        }
+        std::printf("  spin probe: %lld samples, %lld with one busy slot, job function seen: %s\n", spin_samples, one_busy,
+                    job_seen ? "yes" : "no");
+        CHECK(spin_samples > 50);
+        CHECK(one_busy > spin_samples / 2);
+        CHECK(job_seen);
+    }
     // EXITING stopped everything in time; SHUTDOWN still logged.
     CHECK(exiting_ms < 2500);
     CHECK(text.find("\"event\":\"stopping\"") != std::string::npos);

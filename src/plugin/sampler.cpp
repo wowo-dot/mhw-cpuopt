@@ -2,6 +2,8 @@
 #include "../core/json.hpp"
 #include "../core/toggles.hpp"
 #include "log.hpp"
+#include "spin_probe.hpp"
+#include <psapi.h>
 #include <tlhelp32.h>
 #include <algorithm>
 #include <array>
@@ -38,13 +40,27 @@ struct ThreadStat {
     DWORD tid{};
     std::uint32_t samples{}, failed{};
 };
+// Spin probe readings: which job functions were still running, per job round
+// (the frame that called executeJob), while the game thread spun.
+struct SpinJob {
+    std::uint64_t caller{};  // frame id of executeJob's caller
+    std::uint64_t function{};  // job function (absolute address)
+    std::uint32_t count{};
+};
+constexpr unsigned spin_job_capacity = 512;
 struct Table {
     std::array<Stack, stack_capacity> stacks;
     std::array<ThreadStat, thread_stat_capacity> threads;
     unsigned used{}, thread_count{};
     std::uint64_t samples{}, overflow{}, ticks{};
     std::int64_t opened{};  // qpc when the table started collecting
+    std::uint64_t spin_samples{}, spin_unreadable{}, spin_overflow{};
+    std::array<std::uint32_t, spin_probe::max_slots + 1> spin_busy{};  // samples by number of busy slots
+    std::array<SpinJob, spin_job_capacity> spin_jobs{};
 };
+
+// The spin probe's code range and sMain's global (job_cap.hpp); set once.
+std::atomic<std::uintptr_t> spin_begin{}, spin_end{}, smain_global{};
 
 // Sampler thread only, apart from names (lock) and the tables (lock).
 std::array<Module, module_capacity> modules;
@@ -255,6 +271,37 @@ void failed(DWORD tid) noexcept {
     if (auto* s = stat_of(*tables[active], tid)) ++s->failed;
     ReleaseSRWLockExclusive(&lock);
 }
+void probe(std::uint64_t caller) noexcept {
+    std::uintptr_t smain{};
+    __try {
+        smain = *reinterpret_cast<volatile const std::uintptr_t*>(smain_global.load(std::memory_order_relaxed));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        smain = 0;
+    }
+    spin_probe::Reading r;
+    const bool ok = spin_probe::read(smain, r);
+    AcquireSRWLockExclusive(&lock);
+    auto& t = *tables[active];
+    ++t.spin_samples;
+    if (!ok) {
+        ++t.spin_unreadable;
+    } else {
+        ++t.spin_busy[r.busy];
+        for (unsigned i = 0; i < r.busy; ++i) {
+            bool stored = false;
+            for (auto& j : t.spin_jobs) {
+                if (j.count && (j.caller != caller || j.function != r.functions[i])) continue;
+                j.caller = caller;
+                j.function = r.functions[i];
+                ++j.count;
+                stored = true;
+                break;
+            }
+            if (!stored) ++t.spin_overflow;
+        }
+    }
+    ReleaseSRWLockExclusive(&lock);
+}
 void sample(const Thread& t) noexcept {
     std::array<std::uintptr_t, depth_capacity> pcs;
     CONTEXT c{};
@@ -274,6 +321,9 @@ void sample(const Thread& t) noexcept {
     std::array<std::uint64_t, depth_capacity> frames;
     for (unsigned i = 0; i < n; ++i) frames[i] = frame_of(pcs[i], i == 0);
     record(t.id, frames.data(), n, cut);
+    // Caught spinning in executeJob: which jobs are the others still running?
+    if (pcs[0] >= spin_begin.load(std::memory_order_relaxed) && pcs[0] < spin_end.load(std::memory_order_relaxed))
+        probe(n > 1 ? frames[1] : 0);
 }
 bool is_tracked(DWORD id) noexcept {
     for (const auto& t : tracked)
@@ -349,6 +399,12 @@ DWORD thread_id() noexcept { return sampler_thread.load(); }
 void set_tracked(std::span<const DWORD> list) noexcept {
     for (unsigned i = 0; i < tracked_capacity; ++i) tracked[i].store(i < list.size() ? list[i] : 0, std::memory_order_relaxed);
 }
+void set_spin_probe(std::uintptr_t begin, std::uintptr_t end, std::uintptr_t global) noexcept {
+    smain_global.store(global);
+    spin_end.store(end);
+    spin_begin.store(begin);
+}
+
 void set_excluded(std::span<const DWORD> list) noexcept {
     for (unsigned i = 0; i < excluded.size(); ++i) excluded[i].store(i < list.size() ? list[i] : 0, std::memory_order_relaxed);
 }
@@ -381,6 +437,26 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
         json::number(out, t.samples);
         json::key(out, "overflow");
         json::number(out, t.overflow);
+        // The spin probe: busy-slot counts, and running job functions per
+        // executeJob caller ([caller frame index, job function RVA or absolute
+        // address when outside the exe, samples]).
+        const auto exe = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+        json::key(out, "spin_probe");
+        out += '{';
+        json::key(out, "samples");
+        json::number(out, t.spin_samples);
+        json::key(out, "unreadable");
+        json::number(out, t.spin_unreadable);
+        json::key(out, "overflow");
+        json::number(out, t.spin_overflow);
+        json::key(out, "busy");
+        out += '[';
+        for (unsigned i = 0; i < t.spin_busy.size(); ++i) {
+            if (i) out += ',';
+            json::number(out, std::uint64_t(t.spin_busy[i]));
+        }
+        out += ']';
+        out += '}';
         json::key(out, "tracked");
         out += '[';
         for (unsigned i = 0; i < tracked_capacity; ++i) {
@@ -436,6 +512,36 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
             }
             stacks += "]]";
         }
+        // Spin probe jobs: their callers join the frame list.
+        std::string spin_jobs;
+        MODULEINFO image{};
+        GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr), &image, sizeof(image));
+        const auto exe_end = exe + image.SizeOfImage;
+        for (const auto& j : t.spin_jobs) {
+            if (!j.count) continue;
+            const auto [it, inserted] = index.try_emplace(j.caller, static_cast<std::uint32_t>(index.size()));
+            if (inserted) {
+                frames += index.size() == 1 ? "[" : ",[";
+                json::number(frames, j.caller >> 32);
+                frames += ',';
+                json::number(frames, j.caller & 0xFFFFFFFFULL);
+                frames += ']';
+            }
+            const bool in_exe = j.function >= exe && j.function < exe_end;
+            spin_jobs += spin_jobs.empty() ? "[" : ",[";
+            json::number(spin_jobs, std::uint64_t(it->second));
+            spin_jobs += in_exe ? ",1," : ",0,";
+            json::number(spin_jobs, std::uint64_t(in_exe ? j.function - exe : j.function));
+            spin_jobs += ',';
+            json::number(spin_jobs, std::uint64_t(j.count));
+            spin_jobs += ']';
+        }
+        json::key(out, "spin_job_columns");
+        out += "[\"caller_frame\",\"in_exe\",\"function\",\"samples\"]";
+        json::key(out, "spin_jobs");
+        out += '[';
+        out += spin_jobs;
+        out += ']';
         json::key(out, "frames");
         out += '[';
         out += frames;
@@ -451,6 +557,9 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
     for (auto& s : t.stacks) s.count = 0;
     t.used = t.thread_count = 0;
     t.samples = t.overflow = t.ticks = 0;
+    t.spin_samples = t.spin_unreadable = t.spin_overflow = 0;
+    t.spin_busy = {};
+    for (auto& j : t.spin_jobs) j = {};
     return out;
 }
 }  // namespace cpuopt::sampler

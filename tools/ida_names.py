@@ -47,6 +47,23 @@ def export(out_path, meta_path=None):
         for start, _ in idautils.Chunks(ea):
             if start != ea:
                 out.setdefault(start - base, name + ".part")
+    # The exe's unwind table splits some functions into several entries, and
+    # the sampler names frames by entry. An entry inside a function gets that
+    # function's name and offset ("sMain::executeJob+0x1b0"); inside an
+    # unnamed function, its sub_ name, which is still the IDA function to open.
+    pdata_entries = 0
+    nt = base + ida_bytes.get_dword(base + 0x3C)
+    pdata_rva = ida_bytes.get_dword(nt + 24 + 112 + 3 * 8)  # data directory 3: exceptions
+    pdata_size = ida_bytes.get_dword(nt + 24 + 112 + 3 * 8 + 4)
+    for at in range(base + pdata_rva, base + pdata_rva + pdata_size - 11, 12):
+        begin = ida_bytes.get_dword(at)
+        f = ida_funcs.get_func(base + begin)
+        if not begin or f is None or f.start_ea == base + begin or (begin in out):
+            continue
+        name = clean(ida_funcs.get_func_name(f.start_ea) or "")
+        if name:
+            out[begin] = f"{name}+0x{base + begin - f.start_ea:x}"
+            pdata_entries += 1
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("".join(f"{rva:x}\t{out[rva]}\n" for rva in sorted(out)), encoding="utf-8")
@@ -58,6 +75,7 @@ def export(out_path, meta_path=None):
         "imagebase": hex(base),
         "functions": functions,
         "named_functions": named,
+        "pdata_entries_inside_functions": pdata_entries,
         "lines": len(out),
         "exported": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
