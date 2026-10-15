@@ -351,7 +351,7 @@ int wmain(int argc, wchar_t** argv) {
     al_init_t start{sizeof(al_init_t), 0, self, folder.c_str(), folder.c_str(), nullptr};
     CHECK(init(&api, &start) == AL_OK);
     CHECK(last_status == AL_STATUS_ACTIVE);
-    CHECK(scans == 5);  // the frame counter and the four job_cap signatures
+    CHECK(scans == 7);  // the frame counter, the four job_cap signatures, executeJob and the camera call site
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && present_callback);
     CHECK(present_mask == (AL_D3D12_EVENT_BIT(AL_D3D12_PRE_PRESENT) | AL_D3D12_EVENT_BIT(AL_D3D12_POST_PRESENT)));
 
@@ -365,7 +365,7 @@ int wmain(int argc, wchar_t** argv) {
     const auto native_before = smain_field(0xD0);
     std::uintptr_t jobs_before[3][4];
     std::memcpy(jobs_before, host_jobs, sizeof(host_jobs));
-    write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-b\ntoggles=7\njob_threads=12\n");
+    write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-b\ntoggles=15\njob_threads=12\n");
     Sleep(2600);
     const auto capped = smain_field(0xD0), capped_participants = smain_field(0xCC);
     write_all(run + L"\\control.ini", "toggles=banana\n");  // rejected, nothing changes
@@ -410,9 +410,12 @@ int wmain(int argc, wchar_t** argv) {
         for (const auto& line : events) rounds += std::atoll(line.c_str() + line.find("\"rounds\":") + 9);
         std::printf("  job_timing: %u registration(s), %zu event(s), %lld rounds\n", hook_registrations.load(), events.size(), rounds);
         CHECK(hook_registrations == 1);
-        CHECK(text.find("\"event\":\"job_timing_switch\",\"on\":true,\"reason\":\"hook registered\"") != std::string::npos);
+        CHECK(text.find("\"event\":\"job_hook\",\"on\":true,\"reason\":\"hook registered\"") != std::string::npos);
         CHECK(!events.empty() && rounds > 200);
         CHECK(std::memcmp(jobs_before, host_jobs, sizeof(host_jobs)) == 0);
+        // No camera call site in this exe: job order is unavailable and off.
+        CHECK(text.find("\"event\":\"job_order_site\",\"reason\":\"executeJob not found once\"") != std::string::npos);
+        CHECK(text.find("\"order\":{\"mode\":0,\"available\":false") != std::string::npos);
     }
     std::printf("  job_cap: native %u, capped %u/%u, after EXITING %u\n", native_before, capped, capped_participants, after_exit);
     CHECK(text.find("\"event\":\"game_ready\"") != std::string::npos && text.find("\"frame\":75") != std::string::npos);

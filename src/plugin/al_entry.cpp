@@ -16,6 +16,7 @@
 #include "sampler.hpp"
 #include <atomic>
 #include <cstddef>
+#include <cstring>
 #include <cstdio>
 #include <string>
 
@@ -46,10 +47,11 @@ int frame_state() noexcept {
     return static_cast<int>(status.state);
 }
 
-// The job_timing switch. The detour on sMain::executeJob is registered the
-// first time it is switched on, so sessions that never time jobs carry no
-// hook there; afterwards set_enabled takes it in and out of the chain.
-bool job_timing(bool on, const char** reason) noexcept {
+// The detour on sMain::executeJob (job timing and job order). It is
+// registered the first time either switch is on, so sessions that use
+// neither carry no hook there; afterwards set_enabled takes it in and out of
+// the chain.
+bool job_hook(bool on, const char** reason) noexcept {
     AcquireSRWLockExclusive(&timing_lock);
     bool ok = true;
     if (!hooks) {
@@ -72,7 +74,6 @@ bool job_timing(bool on, const char** reason) noexcept {
         ok = hooks->set_enabled(self, timing_hook.load(), on ? 1 : 0) == AL_OK;
         *reason = ok ? (on ? "hook enabled" : "hook disabled") : "set_enabled failed";
     }
-    cpuopt::job_timing::set_measuring(on && ok);
     ReleaseSRWLockExclusive(&timing_lock);
     return ok;
 }
@@ -106,6 +107,7 @@ void AL_CALL on_phase(al_plugin_t*, al_phase_t phase, const void* data) {
     } else if (phase == AL_PHASE_EXITING) {
         cpuopt::job_cap::restore();  // the game's own job thread count for its teardown
         cpuopt::job_timing::set_measuring(false);  // rounds from now on run untouched
+        cpuopt::job_timing::set_order(0, 0);
         cpuopt::runtime::stop("exiting");
         say(AL_LOG_INFO, "stopped at EXITING");
     } else if (phase == AL_PHASE_SHUTDOWN) {
@@ -178,6 +180,21 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
                                         find(cpuopt::job_cap::spin_signature, spin_site, 1),
                                         find(cpuopt::job_cap::copy_signature, unused, 1)};
         host.job = cpuopt::job_cap::discover(base, job_counts, instance_site[0]);
+        // The camera draw round's call site: found once, and its call must go
+        // to executeJob (found once too).
+        std::uintptr_t execute_site[1]{}, camera_site[1]{};
+        const auto execute_count = find(cpuopt::job_timing::execute_job_signature, execute_site, 1);
+        const auto camera_count = find(cpuopt::job_timing::camera_signature, camera_site, 1);
+        host.order_site = "ok";
+        if (execute_count != 1 || camera_count != 1) {
+            host.order_site = execute_count != 1 ? "executeJob not found once" : "camera call site not found once";
+        } else {
+            std::int32_t rel{};
+            std::memcpy(&rel, reinterpret_cast<const void*>(camera_site[0] + cpuopt::job_timing::camera_call + 1), 4);
+            const auto target = camera_site[0] + cpuopt::job_timing::camera_return + static_cast<std::intptr_t>(rel);
+            if (target != execute_site[0]) host.order_site = "camera call does not go to executeJob";
+            else cpuopt::job_timing::set_camera_return(camera_site[0] + cpuopt::job_timing::camera_return);
+        }
         cpuopt::job_cap::set_target(base, host.job);
         // The sampler reads the job slots when it catches the game thread in
         // the spin (the spin signature's 20 bytes hold the whole loop).
@@ -187,7 +204,7 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         frame = service<al_frame_t>(AL_FRAME_INTERFACE, AL_FRAME_VERSION);
         host.frame_state = frame_state;
         hooks = service<al_hooks_t>(AL_HOOKS_INTERFACE, AL_HOOKS_VERSION);
-        host.job_timing = job_timing;
+        host.job_hook = job_hook;
         if (!cpuopt::runtime::start(reinterpret_cast<HMODULE>(&__ImageBase), host, reason)) {
             // Not measuring: no subscriptions, so AL hooks nothing for us.
             frame = nullptr;

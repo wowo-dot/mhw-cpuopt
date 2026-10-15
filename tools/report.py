@@ -52,7 +52,8 @@ def main():
     groups = collections.OrderedDict()
     last_key, settled = None, 0
     for w in (e for e in events if e.get('event') == 'window'):
-        key = (w['marker'], w['toggles'], w.get('job', {}).get('applied'))
+        order = w.get('order', {}).get('mode', 0)
+        key = (w['marker'], w['toggles'] | (order << 8), w.get('job', {}).get('applied'))
         settled = settled + 1 if key == last_key else 0
         last_key = key
         if settled < a.skip or not w['update']['frames']:
@@ -64,6 +65,13 @@ def main():
         med = lambda f: statistics.median(f(w) for w in ws)
         iv = lambda k: med(lambda w: w['update']['interval'][k])
         state = ws[-1].get('job', {}).get('state', '-')
+        order = toggles >> 8
+        toggles &= 0xFF
+        if order:
+            o = ws[-1]['order']
+            state += f', job order {("reversed", "learned")[order - 1]}: {sum(w["order"]["rounds"] for w in ws)} rounds reordered, '                      f'{sum(w["order"]["moved"] for w in ws)} jobs moved, {o["classes"]} classes known'
+            if not sum(w['order']['rounds'] for w in ws):
+                state += ' (NOTHING REORDERED)' 
         print(f'\n== marker {marker or "-"}  toggles {toggles}  job threads {jobs} ({state}): {len(ws)} windows, '
               f'{seconds:.0f} s, {frames} game frames')
         print(f'  game frames {frames / seconds:.1f} fps (windows {min(w["update"]["fps"] for w in ws):.1f}..'

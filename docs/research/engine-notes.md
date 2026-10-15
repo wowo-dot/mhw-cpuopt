@@ -160,3 +160,31 @@ which spin 39.0%, own jobs 20.2%):
   late in the list; ordering the list so expensive jobs start first (longest
   first) would shorten the rounds. Test: v0.4 times every job of every round
   (`src/plugin/job_timing.hpp`, toggle 4).
+
+### Job timing and replay (al-06, al-07; v0.4.0, v0.4.1)
+
+- Job timing costs about 3% while on (al-06: 260.6 to 252.7 fps; p99 4.62
+  to 4.80 ms); the executeJob detour ran without trouble in game.
+- Per round type (al-06, 16,503 frames): the camera draw round
+  (`sub_14221A050`'s prepared-list call at 0x221A39D, 3.7 per frame, about
+  470 jobs) took 383 us against a bound of 295 us; its last job sat on
+  average 94% of the way down the list, in the last tenth in 95% of rounds.
+  The unit move round (`sub_14221ACE0`, 6.1 per frame, about 140 jobs) took
+  112 us against 83 us; its last job sat at 36%.
+- Costliest job types per frame: effects (`uMhEffect` 1.9 ms, 31 jobs, 60 us
+  each, peaks of 2.8 ms; `uBindMhEffect` 1.65 ms), model instances
+  (`uBindBaseModelInstance` 1.1 ms, 748 jobs); in the move pass the player
+  (`uPlayer`, 144-161 us per update) and village NPCs (`uNpcVillage`, 94 us).
+- tools/job_sim.py replays traced rounds with greedy list scheduling. On 749
+  traced rounds (al-07) replaying the game's order matched the measured
+  rounds within 0.1 us on average. Predicted for the camera round (420.4 us
+  measured): longest first by the round's own durations 348.9 us; longest
+  first by job-type mean 352.6 us; job types of 20 us or more moved to the
+  front 357.1 us; the list reversed 353.2 us: 239-270 us per frame back.
+  The unit move round gains 13-37 us per frame at most; reversing it loses
+  57 us. Other rounds: under 3 us per frame.
+- H5 (expensive camera jobs start late) is supported by the replay; v0.5's
+  switch order_jobs (toggle 8) tests it in game: job_order 1 reverses the
+  camera round's list, job_order 2 learns each class's job time from one
+  camera round in 16 and moves classes at or over order_us (20 us) to the
+  front.

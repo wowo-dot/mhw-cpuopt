@@ -77,6 +77,10 @@
   registration, and per window the rounds per round type and per job type
   (`tools/job_report.py`); `job_trace`: whole rounds, one in 499, for
   `tools/job_sim.py`.
+- `job_hook`: the executeJob detour registered or switched (toggles 4 and
+  8 share it); `job_order_site`: whether the camera round's call site was
+  found; `order` in each window (toggle 8): mode, rounds reordered, jobs
+  moved, learning rounds, classes known.
 - `profile` (only while toggle 1 is on): whole stacks per sampled thread with
   counts; the game and present threads are always sampled.
 - `stopping` / `stopped` at EXITING (the last window, sampler joined),

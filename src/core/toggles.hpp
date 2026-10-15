@@ -12,8 +12,10 @@ enum Toggle : unsigned {
                           // count from all logical processors (job_cap.hpp)
     time_jobs = 4U,       // research: times every job of sMain's job rounds through a detour on
                           // executeJob, installed the first time this is on (job_timing.hpp)
+    order_jobs = 8U,      // the camera draw round's job list reordered (control.ini job_order:
+                          // 1 reversed, 2 learned expensive types first; job_timing.hpp)
 };
-inline constexpr unsigned toggle_mask = 7U;  // every defined bit
+inline constexpr unsigned toggle_mask = 15U;  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }

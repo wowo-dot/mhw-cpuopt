@@ -58,4 +58,29 @@ void set_trace_every(std::uint32_t every) noexcept;
 // TSC cycles from the round's start, threads numbered in order of first job
 // (the game thread's number in "game_thread").
 std::string take_traces(std::uintptr_t image_base);
+
+// Switch order_jobs: the camera draw round's job list reordered for the
+// round, and put back when it returns.
+//
+// The camera draw round is sMain::executeJob called from sub_14221A050's
+// prepared-list path (0x221A39D; the caller passes its own list and count).
+// Its call site is found by `camera_signature` (exactly once, and its call
+// must go to executeJob) and recognised by the return address.
+// - mode 1: the list reversed. al-07's replay predicted 254 us per frame back.
+// - mode 2: learned: one camera round in 16 is timed (as job_timing does)
+//   and each object class keeps a running mean of its job's duration; job
+//   types whose mean is at least the threshold go first, slowest first, the
+//   rest in the game's order. Predicted 239-256 us per frame back at 20 us.
+// Jobs are independent, and which thread draws which object already varies
+// from round to round, so the order changes nothing but timing.
+inline constexpr std::string_view camera_signature =
+    "46 8B 8C B6 B0 DE 3D 00 4E 8B 04 C6 48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 45 8B C7 48 8B D3 48 8B CD E8";
+inline constexpr unsigned camera_call = 19, camera_return = 24;  // offsets of the call and the return address
+inline constexpr unsigned learn_every = 16;
+// The camera round's return address; 0 leaves ordering unavailable.
+void set_camera_return(std::uintptr_t address) noexcept;
+// 0 off, 1 reversed, 2 learned with this threshold. False if unavailable.
+bool set_order(int mode, unsigned threshold_us) noexcept;
+// "order": the switch's state and counts into an open JSON object.
+void append_order(std::string& out);
 }  // namespace cpuopt::job_timing

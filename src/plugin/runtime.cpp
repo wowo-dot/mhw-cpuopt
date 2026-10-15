@@ -64,7 +64,8 @@ struct State {
     std::uint64_t control_stamp{};
     std::string marker;
     unsigned job_threads{16};  // participants while toggle job_thread_cap is on
-    bool timing{};             // the job_timing detour is in the chain
+    bool hook{};               // the executeJob detour is in the chain
+    unsigned job_order{2}, order_us{20};  // toggle order_jobs: mode and threshold
     unsigned window_ms{5000};
     std::uint64_t seq{}, updates{}, presents{};
     double window_start{};
@@ -132,6 +133,7 @@ void write_window(State& s) {
     json::number(out, std::int64_t(host.frame_state ? host.frame_state() : -1));
     frame_events::append(out, frames, ms);
     job_cap::append(out);
+    job_timing::append_order(out);
     if (s.poller) append_poller(out, frame_clock::take(), ms);
     const auto busiest = s.census.append_window(out, s.own);
     out += '}';
@@ -183,20 +185,26 @@ void poll_control(State& s, bool initial) {
     if (parsed->window_ms) s.window_ms = *parsed->window_ms;
     if (parsed->job_threads) s.job_threads = *parsed->job_threads;
     job_cap::request(on(job_thread_cap) ? s.job_threads : 0);  // applied on the game thread at the next frame
-    if (on(time_jobs) != s.timing && host.job_timing) {
+    if (parsed->job_order) s.job_order = *parsed->job_order;
+    if (parsed->order_us) s.order_us = *parsed->order_us;
+    // One detour serves job timing and job order.
+    const bool need = on(time_jobs) || on(order_jobs);
+    if (need != s.hook && host.job_hook) {
         const char* why = "";
-        const bool ok = host.job_timing(on(time_jobs), &why);
-        s.timing = on(time_jobs) && ok;
+        const bool ok = host.job_hook(need, &why);
+        s.hook = need && ok;
         std::string note = "{";
         json::key(note, "event");
-        json::string(note, "job_timing_switch");
+        json::string(note, "job_hook");
         json::key(note, "on");
-        note += s.timing ? "true" : "false";
+        note += s.hook ? "true" : "false";
         json::key(note, "reason");
         json::string(note, why);
         note += '}';
         event_log.write(note);
     }
+    job_timing::set_measuring(on(time_jobs) && s.hook);
+    job_timing::set_order(on(order_jobs) && s.hook ? static_cast<int>(s.job_order) : 0, s.order_us);
     json::key(out, "t_ms");
     json::fixed(out, now_ms(), 3);
     json::key(out, "toggles");
@@ -209,6 +217,10 @@ void poll_control(State& s, bool initial) {
     json::number(out, std::uint64_t(s.window_ms));
     json::key(out, "job_threads");
     json::number(out, std::uint64_t(s.job_threads));
+    json::key(out, "job_order");
+    json::number(out, std::uint64_t(s.job_order));
+    json::key(out, "order_us");
+    json::number(out, std::uint64_t(s.order_us));
     out += '}';
     event_log.write(out);
 }
@@ -230,6 +242,15 @@ DWORD WINAPI worker(void* parameter) noexcept {
         if (auto e = modules.changed_event(now_ms()); !e.empty()) event_log.write(e);
         event_log.write(frame_clock::discovery_event(host.discovery, now_ms(), host.scanner));
         event_log.write(job_cap::discovery_event(host.job, now_ms(), host.scanner));
+        {
+            std::string site = "{";
+            json::key(site, "event");
+            json::string(site, "job_order_site");
+            json::key(site, "reason");
+            json::string(site, host.order_site);
+            site += '}';
+            event_log.write(site);
+        }
 
         sampler::start();
         for (int i = 0; i < 100 && !sampler::thread_id(); ++i) Sleep(10);

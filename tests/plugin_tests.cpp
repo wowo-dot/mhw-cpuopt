@@ -309,6 +309,88 @@ void job_timing_test() {
     jt::set_trace_every(499);
 }
 
+// Job order on a stand-in executeJob that runs the list in order on this
+// thread: reversed, learned (the slow class first), restored after each round,
+// and only for the camera round's caller.
+const std::uintptr_t slow_class[2] = {}, fast_class[2] = {};
+std::uintptr_t ran_order[16];
+unsigned ran_count;
+__declspec(noinline) std::uintptr_t order_job(std::uintptr_t context, std::uintptr_t, std::uintptr_t, std::uintptr_t) {
+    const auto* object = reinterpret_cast<const std::uintptr_t*>(context);  // vtable, id
+    if (ran_count < 16) ran_order[ran_count++] = object[1];
+    if (object[0] == reinterpret_cast<std::uintptr_t>(slow_class)) {
+        const auto due = cpuopt::qpc_now() + cpuopt::qpc_frequency() * 3 / 10000;  // 0.3 ms
+        while (cpuopt::qpc_now() < due) {}
+    }
+    return 0;
+}
+__declspec(noinline) void camera_round(std::uintptr_t smain, std::uintptr_t list, std::uint32_t n) {
+    cpuopt::job_timing::detour(smain, 1, list, n, 0);
+}
+volatile unsigned other_rounds;  // keeps the linker from folding other_round into camera_round
+__declspec(noinline) void other_round(std::uintptr_t smain, std::uintptr_t list, std::uint32_t n) {
+    other_rounds = other_rounds + 1;
+    cpuopt::job_timing::detour(smain, 1, list, n, 0);
+}
+
+void job_order_test() {
+    namespace jt = cpuopt::job_timing;
+    const auto exe = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    *jt::next_slot() = &stand_in_execute_job;
+    auto smain = std::make_unique<std::uint8_t[]>(0x200);
+    std::memset(smain.get(), 0, 0x200);
+    *reinterpret_cast<std::uint32_t*>(smain.get() + jt::participants_offset) = 2;
+    const auto s = reinterpret_cast<std::uintptr_t>(smain.get());
+    // Five jobs: ids 0..4, job 3 of the slow class.
+    std::uintptr_t objects[5][2], list[5][4];
+    for (std::uintptr_t i = 0; i < 5; ++i) {
+        objects[i][0] = reinterpret_cast<std::uintptr_t>(i == 3 ? slow_class : fast_class);
+        objects[i][1] = i;
+        list[i][0] = reinterpret_cast<std::uintptr_t>(objects[i]);
+        list[i][1] = reinterpret_cast<std::uintptr_t>(&order_job);
+        list[i][2] = list[i][3] = 0;
+    }
+    std::uintptr_t before[5][4];
+    std::memcpy(before, list, sizeof(list));
+    const auto run = [&](auto round) {
+        ran_count = 0;
+        round(s, reinterpret_cast<std::uintptr_t>(list), 5);
+        return std::to_string(ran_order[0]) + std::to_string(ran_order[1]) + std::to_string(ran_order[2]) + std::to_string(ran_order[3]) +
+               std::to_string(ran_order[4]);
+    };
+    // The camera round's return address: from one timed round's caller.
+    jt::take_event(0, exe);
+    jt::set_trace_every(0);
+    jt::set_measuring(true);
+    run(camera_round);
+    jt::set_measuring(false);
+    const auto e = jt::take_event(0, exe);
+    const auto caller_rva = std::strtoull(e.c_str() + e.find("\"callers\":[[") + 12, nullptr, 10);
+    CHECK(caller_rva > rva_of(reinterpret_cast<const void*>(&camera_round)));
+    CHECK(!jt::set_order(1, 20));  // no camera site yet: unavailable
+    jt::set_camera_return(exe + caller_rva);
+
+    CHECK(run(camera_round) == "01234");  // switch off
+    CHECK(jt::set_order(1, 20));
+    CHECK(run(camera_round) == "43210");  // reversed
+    CHECK(std::memcmp(before, list, sizeof(list)) == 0);  // the game's order back
+    CHECK(run(other_round) == "01234");  // not the camera round
+    CHECK(jt::set_order(2, 100));
+    CHECK(run(camera_round) == "01234");  // nothing learned yet
+    for (unsigned i = 0; i < jt::learn_every * 5; ++i) run(camera_round);  // five learning rounds
+    CHECK(run(camera_round) == "30124");  // the slow class first, the rest in order
+    CHECK(std::memcmp(before, list, sizeof(list)) == 0);
+    CHECK(run(other_round) == "01234");
+    std::string out = "{";
+    jt::append_order(out);
+    std::printf("job_order: %s}\n", out.c_str());
+    CHECK(out.find("\"mode\":2,\"available\":true,\"threshold_us\":100,") != std::string::npos);
+    CHECK(out.find("\"timed\":5,") != std::string::npos && out.find("\"classes\":2") != std::string::npos);
+    jt::set_order(0, 20);
+    CHECK(run(camera_round) == "01234");
+    jt::set_trace_every(499);
+}
+
 void spin_probe_test() {
     namespace sp = cpuopt::spin_probe;
     auto object = std::make_unique<std::uint8_t[]>(sp::done_offset + 8);
@@ -499,6 +581,7 @@ int main() {
     job_cap_test();
     spin_probe_test();
     job_timing_test();
+    job_order_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);

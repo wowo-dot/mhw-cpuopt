@@ -59,6 +59,32 @@ std::uint64_t timed_rounds{};  // game thread only
 std::unique_ptr<std::array<Trace, trace_slots>> traces;
 std::atomic<std::uint32_t> trace_head{}, trace_tail{};  // head: next to fill (game thread); tail: next to drain
 std::atomic<std::uint64_t> traces_dropped{};
+
+// Ordering (switch order_jobs): the camera draw round only.
+struct Entry {
+    std::uint64_t q[4];  // context, function, argument, spare
+};
+struct ClassCost {
+    std::uintptr_t vtable{};
+    std::uint64_t mean{};  // cycles, running mean
+    std::uint32_t samples{};
+};
+constexpr unsigned class_capacity = 4096;
+std::atomic<std::uintptr_t> camera_return_address{};
+std::atomic<int> order_mode{};
+std::atomic<std::uint64_t> order_threshold{};  // cycles
+std::atomic<unsigned> order_threshold_us{};
+// Game thread only.
+std::array<Entry, capacity> backup;
+std::array<std::uint8_t, capacity> moved_flag{};
+std::array<std::pair<std::uint64_t, std::uint32_t>, capacity> front;  // (mean, index)
+std::array<ClassCost, class_capacity> class_costs{};
+std::uint64_t camera_rounds{};
+std::atomic<std::uint32_t> classes_known{};
+std::atomic<std::uint64_t> order_rounds{}, order_moved{}, order_timed{};
+// TSC rate, from the TSC and QPC at start and when a threshold is set.
+const std::uint64_t calibration_tsc = __rdtsc();
+const std::int64_t calibration_qpc = qpc_now();
 std::int64_t opened = qpc_now();
 
 bool writable(std::uintptr_t address, std::size_t bytes) noexcept {
@@ -127,6 +153,69 @@ void keep_trace(std::uintptr_t caller, int mode, std::uint32_t participants, std
         t.list[i] = {mode <= 1 ? vtable_of(r.context) : 0, r.function, r.start, r.end, r.thread};
     }
     trace_head.store(head + 1, std::memory_order_release);
+}
+std::uintptr_t vtable_of(std::uintptr_t context) noexcept;
+ClassCost* class_slot(std::uintptr_t vtable, bool insert) noexcept {
+    auto slot = static_cast<unsigned>((vtable * 0x9E3779B97F4A7C15ULL) >> 52) & (class_capacity - 1);
+    for (unsigned probe = 0; probe < 64; ++probe, slot = (slot + 1) & (class_capacity - 1)) {
+        auto& c = class_costs[slot];
+        if (c.vtable == vtable) return &c;
+        if (!c.vtable) {
+            if (!insert) return nullptr;
+            c.vtable = vtable;
+            classes_known.fetch_add(1, std::memory_order_relaxed);
+            return &c;
+        }
+    }
+    return nullptr;
+}
+// Each timed job's duration into its class's running mean (weight 1/8).
+void learn(std::uint32_t n) noexcept {
+    for (std::uint32_t i = 0; i < n; ++i) {
+        const auto& rec = records[i];
+        if (!rec.end || rec.end < rec.start) continue;
+        const auto vtable = vtable_of(rec.context);
+        auto* c = vtable ? class_slot(vtable, true) : nullptr;
+        if (!c) continue;
+        const auto d = rec.end - rec.start;
+        c->mean = c->samples ? c->mean - c->mean / 8 + d / 8 : d;
+        ++c->samples;
+    }
+}
+// The list in its round order; the game's order stays in `backup`. Returns
+// how many jobs were moved to the front (all of them when reversed).
+std::uint32_t reorder(std::uintptr_t list, std::uint32_t n, int mode) noexcept {
+    auto* entries = reinterpret_cast<Entry*>(list);
+    std::copy(entries, entries + n, backup.begin());
+    if (mode == 1) {
+        for (std::uint32_t i = 0; i < n; ++i) entries[i] = backup[n - 1 - i];
+        return n;
+    }
+    const auto threshold = order_threshold.load(std::memory_order_relaxed);
+    std::uint32_t k = 0;
+    for (std::uint32_t i = 0; i < n; ++i) {
+        const auto vtable = vtable_of(backup[i].q[0]);
+        const auto* c = vtable ? class_slot(vtable, false) : nullptr;
+        if (c && c->samples >= 4 && c->mean >= threshold) front[k++] = {c->mean, i};
+    }
+    if (!k) return 0;
+    std::stable_sort(front.begin(), front.begin() + k, [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::uint32_t at = 0;
+    for (std::uint32_t j = 0; j < k; ++j) {
+        entries[at++] = backup[front[j].second];
+        moved_flag[front[j].second] = 1;
+    }
+    for (std::uint32_t i = 0; i < n; ++i) {
+        if (moved_flag[i]) {
+            moved_flag[i] = 0;
+            continue;
+        }
+        entries[at++] = backup[i];
+    }
+    return k;
+}
+void restore_order(std::uintptr_t list, std::uint32_t n) noexcept {
+    std::copy(backup.begin(), backup.begin() + n, reinterpret_cast<Entry*>(list));
 }
 void merge(std::uintptr_t caller, const Round& r, std::uint32_t n) noexcept {
     AcquireSRWLockExclusive(&lock);
@@ -218,11 +307,14 @@ Round analyse(const Record* recs, std::uint32_t count, std::uint64_t round_start
 
 void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std::uint32_t count, std::uintptr_t extra) {
     const auto original = next_fn;
-    if (!measuring.load(std::memory_order_acquire) || mode < 0 || mode > 5) {  // acquire: the trace ring exists
+    const bool timing = measuring.load(std::memory_order_acquire);  // acquire: the trace ring exists
+    const int order = order_mode.load(std::memory_order_relaxed);
+    const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+    const bool camera = order && caller == camera_return_address.load(std::memory_order_relaxed);
+    if ((!timing && !camera) || mode < 0 || mode > 5) {
         original(smain, mode, jobs, count, extra);
         return;
     }
-    const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     std::uintptr_t list = jobs;
     std::uint32_t n = count, participants = 1;
     if (!list) {  // the caller filled sMain's own list and count
@@ -237,13 +329,64 @@ void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std:
         original(smain, mode, jobs, count, extra);
         return;
     }
-    wrap(list, n);
+    // Reorder first: timing then wraps the entries in their round order.
+    std::uint32_t moved = 0;
+    if (camera && n >= 2) {
+        moved = reorder(list, n, order);
+        order_rounds.fetch_add(1, std::memory_order_relaxed);
+        order_moved.fetch_add(moved, std::memory_order_relaxed);
+    }
+    const bool learn_round = camera && order == 2 && (timing || ++camera_rounds % learn_every == 0);
+    const bool wrapped = timing || learn_round;
+    if (wrapped) wrap(list, n);
     const auto t0 = __rdtsc();
     original(smain, mode, jobs, count, extra);
     const auto t1 = __rdtsc();
-    unwrap(list, n);
-    merge(caller, analyse(records.data(), n, t0, t1, participants), n);
-    keep_trace(caller, mode, participants, n, t0, t1);
+    if (wrapped) unwrap(list, n);
+    if (learn_round) {
+        learn(n);
+        order_timed.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (moved) restore_order(list, n);
+    if (timing) {
+        merge(caller, analyse(records.data(), n, t0, t1, participants), n);
+        keep_trace(caller, mode, participants, n, t0, t1);
+    }
+}
+
+void set_camera_return(std::uintptr_t address) noexcept { camera_return_address.store(address); }
+
+bool set_order(int mode, unsigned threshold_us) noexcept {
+    if (mode && !camera_return_address.load()) {
+        order_mode.store(0);
+        return false;
+    }
+    const auto seconds = double(qpc_now() - calibration_qpc) / double(qpc_frequency());
+    const auto tsc_hz = seconds > 0.01 ? double(__rdtsc() - calibration_tsc) / seconds : 4.0e9;
+    order_threshold.store(static_cast<std::uint64_t>(threshold_us * tsc_hz / 1e6));
+    order_threshold_us.store(threshold_us);
+    order_mode.store(mode);
+    return true;
+}
+
+void append_order(std::string& out) {
+    json::key(out, "order");
+    out += '{';
+    json::key(out, "mode");
+    json::number(out, std::uint64_t(order_mode.load(std::memory_order_relaxed)));
+    json::key(out, "available");
+    out += camera_return_address.load(std::memory_order_relaxed) ? "true" : "false";
+    json::key(out, "threshold_us");
+    json::number(out, std::uint64_t(order_threshold_us.load(std::memory_order_relaxed)));
+    json::key(out, "rounds");
+    json::number(out, order_rounds.exchange(0, std::memory_order_relaxed));
+    json::key(out, "moved");
+    json::number(out, order_moved.exchange(0, std::memory_order_relaxed));
+    json::key(out, "timed");
+    json::number(out, order_timed.exchange(0, std::memory_order_relaxed));
+    json::key(out, "classes");
+    json::number(out, std::uint64_t(classes_known.load(std::memory_order_relaxed)));
+    out += '}';
 }
 
 std::string take_event(double t_ms, std::uintptr_t image_base) {

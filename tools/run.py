@@ -10,9 +10,9 @@
   sweep <run> --marker M --steps 0:45,15:45,0:45,11:45 [--profile]
       job_thread_cap A/B: each step is job threads (0 = the game's own count,
       switch off) and seconds; the sampler stays off unless --profile.
-  steps <run> --marker M --steps 0:30,4:60,0:30
-      Any switch states in order: each step is toggles and seconds; then
-      "M-done" with every switch off.
+  steps <run> --marker M --steps 0:30,4:60,8/1:30,8/2:30
+      Any switch states in order: each step is toggles[/job_order] and
+      seconds; then "M-done" with every switch off.
   sequence <run> --marker M [--baseline 60] [--profile 60]
       One scene: marker M with every switch off, then with the sampler on,
       then "M-done".
@@ -184,11 +184,15 @@ def steps(a):
     import time
     run = run_folder(a.run)
     for item in a.steps.split(','):
-        toggles, seconds = (int(v, 0) for v in item.split(':'))
+        state, seconds = item.split(':')
+        toggles, _, order = state.partition('/')  # "8/1": toggles 8 with job_order 1
         values = read_control(run)
-        values.update(marker=a.marker, toggles=str(toggles))
+        values.update(marker=a.marker, toggles=str(int(toggles, 0)))
+        if order:
+            values['job_order'] = order
         write_control(run, values)
-        print(f'{time.strftime("%H:%M:%S")} toggles {toggles} for {seconds} s', flush=True)
+        print(f'{time.strftime("%H:%M:%S")} toggles {toggles}{" job_order " + order if order else ""} for {seconds} s', flush=True)
+        seconds = int(seconds)
         time.sleep(seconds)
     values = read_control(run)
     values.update(marker=f'{a.marker}-done', toggles='0')

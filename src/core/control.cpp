@@ -45,6 +45,12 @@ std::optional<Control> parse_control(std::string_view text) {
         } else if (key == "job_threads") {
             c.job_threads = number(value);
             if (!c.job_threads || *c.job_threads < 1 || *c.job_threads > 64) return std::nullopt;
+        } else if (key == "job_order") {
+            c.job_order = number(value);
+            if (!c.job_order || *c.job_order < 1 || *c.job_order > 2) return std::nullopt;
+        } else if (key == "order_us") {
+            c.order_us = number(value);
+            if (!c.order_us || *c.order_us < 1 || *c.order_us > 10000) return std::nullopt;
         } else if (key == "marker") {
             if (value.size() > 64) return std::nullopt;
             for (const char ch : value)
