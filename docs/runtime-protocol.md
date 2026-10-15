@@ -91,8 +91,12 @@
   applied or switched, with the reason when they cannot be. In each window:
   `prim_stores` (true while the change is in), `server_time` (active,
   time_ms, reads answered by the game's code, reads reused, calls in another
-  session state) and `inline` (on, threshold, rounds run alone, timed
-  rounds, and per call site: RVA, mean work in 0.1 us, timed rounds, alone).
+  session state), `inline` (on, threshold, rounds run alone, timed
+  rounds, and per call site: RVA, mean work in 0.1 us, timed rounds, alone)
+  and `spin` (active, spin_us, rounds announced, permits taken by spinning
+  threads, waits that blocked, claimed places whose permit did not come).
+  `worker_spin` / `spin_patch`: the job threads' wait found, and the change
+  applied or switched.
 - `profile` (only while toggle 1 is on): whole stacks per sampled thread with
   counts; the game and present threads are always sampled. From v0.6 also
   `leaves`: the game exe's hottest exact instructions ([rva, game thread,
@@ -123,7 +127,9 @@
 | 16 | plain_prim_stores | sPrimitive's record loop stores without reading (al.patch, 56 bytes) | |
 | 32 | reuse_server_time | Steam's server time read once per time_ms (two detours) | time_ms (1000) |
 | 64 | inline_rounds | rounds with little work run on the game thread alone | inline_us (25) |
+| 128 | spin_workers | job threads spin after a round and take the next round's places without being woken (al.patch, 11 bytes, and a jump stub) | spin_us (300) |
 
-Toggles add up: 8 + 16 + 32 + 64 = 120 is every optimization switch. A
+Toggles add up: 8 + 16 + 32 + 64 = 120 is every optimization switch of
+v0.6, 248 with spin_workers (v0.7). A
 switch whose code is not found, or that Astera Loader refuses, stays off and
 says why in the log; the rest still apply.

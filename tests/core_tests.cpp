@@ -98,7 +98,10 @@ void control() {
     CHECK(parse_control("time_ms=1000")->time_ms == 1000u);
     CHECK(!parse_control("time_ms=9"));
     CHECK(!parse_control("time_ms=60001"));
-    CHECK(parse_control("toggles=127")->toggles == 127u);
+    CHECK(parse_control("toggles=255")->toggles == 255u);
+    CHECK(parse_control("spin_us=300")->spin_us == 300u);
+    CHECK(!parse_control("spin_us=9"));
+    CHECK(!parse_control("spin_us=5001"));
     CHECK(!parse_control("unknown=1"));
     CHECK(!parse_control("toggles"));
     CHECK(parse_control("\xEF\xBB\xBFtoggles=2")->toggles == 2u);  // UTF-8 BOM

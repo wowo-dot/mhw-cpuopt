@@ -1,6 +1,7 @@
 #include "job_timing.hpp"
 #include "../core/json.hpp"
 #include "log.hpp"
+#include "worker_spin.hpp"
 #include <windows.h>
 #include <intrin.h>
 #include <algorithm>
@@ -128,6 +129,7 @@ bool threads_created(std::uintptr_t smain) noexcept {
 void execute(ExecuteJob original, std::uintptr_t smain, int mode, std::uintptr_t jobs, std::uint32_t count, std::uintptr_t extra,
              bool alone) {
     if (!alone) {
+        worker_spin::before_round(smain, jobs, count);  // spinning job threads claim their places
         original(smain, mode, jobs, count, extra);
         return;
     }
@@ -377,7 +379,7 @@ void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std:
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     const bool camera = order && caller == camera_return_address.load(std::memory_order_relaxed);
     if ((!timing && !camera && !inl) || mode < 0 || mode > 5) {
-        original(smain, mode, jobs, count, extra);
+        execute(original, smain, mode, jobs, count, extra, false);
         return;
     }
     // Inline rounds: this site's decision, and whether this round is timed for it.

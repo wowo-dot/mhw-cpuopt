@@ -15,6 +15,7 @@ namespace cpuopt {
 //   inline_us=<1..1000>           toggle inline_rounds: call sites whose rounds take less
 //                                 work than this run on the game thread alone
 //   time_ms=<10..60000>           toggle server_time: how long a server time read is reused
+//   spin_us=<10..5000>            toggle spin_workers: how long job threads spin after a round
 // Blank lines, [sections] and lines starting with ';' or '#' are ignored. A
 // malformed line rejects the whole file, so a half-written file changes nothing.
 struct Control {
@@ -23,7 +24,7 @@ struct Control {
     std::optional<unsigned> window_ms;
     std::optional<unsigned> job_threads;
     std::optional<unsigned> job_order, order_us;
-    std::optional<unsigned> inline_us, time_ms;
+    std::optional<unsigned> inline_us, time_ms, spin_us;
     bool operator==(const Control&) const = default;
 };
 std::optional<Control> parse_control(std::string_view text);

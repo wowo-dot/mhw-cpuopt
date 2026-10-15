@@ -69,6 +69,8 @@ struct State {
     unsigned inline_us{25};               // toggle inline_rounds: threshold
     unsigned time_ms{1000};               // toggle reuse_server_time: how long a read is reused
     bool prim{}, server{};                // the prim_stores change / the server_time detours are in
+    unsigned spin_us{300};                // toggle spin_workers: spin window
+    bool spin{};                          // the worker_spin change is in
     bool prim_buffer{};                   // the prim ring's memory has been reported
     unsigned window_ms{5000};
     std::uint64_t seq{}, updates{}, presents{};
@@ -140,6 +142,7 @@ void write_window(State& s) {
     job_timing::append_order(out);
     job_timing::append_inline(out, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)));
     server_time::append(out);
+    worker_spin::append(out);
     json::key(out, "prim_stores");
     out += s.prim ? "true" : "false";
     if (s.poller) append_poller(out, frame_clock::take(), ms);
@@ -219,8 +222,10 @@ void poll_control(State& s, bool initial) {
     if (parsed->order_us) s.order_us = *parsed->order_us;
     if (parsed->inline_us) s.inline_us = *parsed->inline_us;
     if (parsed->time_ms) s.time_ms = *parsed->time_ms;
-    // One detour serves job timing, job order and inline rounds.
-    const bool need = on(time_jobs) || on(order_jobs) || on(inline_rounds);
+    if (parsed->spin_us) s.spin_us = *parsed->spin_us;
+    // One detour serves job timing, job order, inline rounds and the spinning
+    // job threads' round announcements.
+    const bool need = on(time_jobs) || on(order_jobs) || on(inline_rounds) || on(spin_workers);
     if (need != s.hook && host.job_hook) {
         const char* why = "";
         const bool ok = host.job_hook(need, &why);
@@ -247,6 +252,17 @@ void poll_control(State& s, bool initial) {
         switched("server_hooks", s.server, why);
     }
     if (on(reuse_server_time) && s.server) server_time::set_active(true, s.time_ms);
+    // Spinning job threads: the wait is ready before the change sends threads
+    // to it, and the change is out before the wait stops spinning.
+    const bool spin = on(spin_workers) && s.hook;
+    if (spin) worker_spin::set_active(true, s.spin_us);
+    if (spin != s.spin && host.spin_patch) {
+        const char* why = "";
+        const bool ok = host.spin_patch(spin, &why);
+        s.spin = spin ? ok : !ok;
+        switched("spin_patch", s.spin, why);
+    }
+    if (!s.spin) worker_spin::set_active(false, s.spin_us);
     json::key(out, "t_ms");
     json::fixed(out, now_ms(), 3);
     json::key(out, "toggles");
@@ -267,6 +283,8 @@ void poll_control(State& s, bool initial) {
     json::number(out, std::uint64_t(s.inline_us));
     json::key(out, "time_ms");
     json::number(out, std::uint64_t(s.time_ms));
+    json::key(out, "spin_us");
+    json::number(out, std::uint64_t(s.spin_us));
     out += '}';
     event_log.write(out);
 }
@@ -299,6 +317,7 @@ DWORD WINAPI worker(void* parameter) noexcept {
         }
         event_log.write(prim_stores::discovery_event(host.prim, now_ms(), host.scanner));
         event_log.write(server_time::discovery_event(host.server, now_ms(), host.scanner));
+        event_log.write(worker_spin::discovery_event(host.spin, now_ms(), host.scanner));
 
         sampler::start();
         for (int i = 0; i < 100 && !sampler::thread_id(); ++i) Sleep(10);

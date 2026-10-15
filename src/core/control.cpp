@@ -57,6 +57,9 @@ std::optional<Control> parse_control(std::string_view text) {
         } else if (key == "time_ms") {
             c.time_ms = number(value);
             if (!c.time_ms || *c.time_ms < 10 || *c.time_ms > 60000) return std::nullopt;
+        } else if (key == "spin_us") {
+            c.spin_us = number(value);
+            if (!c.spin_us || *c.spin_us < 10 || *c.spin_us > 5000) return std::nullopt;
         } else if (key == "marker") {
             if (value.size() > 64) return std::nullopt;
             for (const char ch : value)

@@ -346,3 +346,28 @@ order_jobs (8), the list run twice (the first window of each step left out):
 - **Per-unit timers**: `sub_142C76350`/`sub_142C764F0` call QPC in every
   unit move (4% of the samples under `cUnit::genericMove`, roughly 10 us a
   frame).
+
+### Heavier scenes (al-11, v0.6.0; 2026-10-15)
+
+Every switch of v0.6 on (120) against every switch off (0), 30 s steps,
+four pairs each (first window of each step left out):
+
+| Scene | off: fps, mean frame, CPU/frame | on: fps, mean frame, CPU/frame |
+|---|---|---|
+| title screen (the slow variant) | 114.0-116.4, 8.71 ms, 18.6 ms | 295.1-297.9, 3.38 ms, 6.1 ms |
+| Ancient Forest, standing at a camp | 154.1-161.5, 6.32 ms, 30.2 ms | 212.3-221.7, 4.61 ms, 23.5 ms |
+
+- **Title screen: 2.6x.** plain_prim_stores alone does it (0 against 16, two
+  pairs: 115.0/115.1 against 295.3/294.8 fps, CPU 18.6 to 6.2 ms a frame);
+  with it on, the title reaches the 300 fps cap. Switched off, the game
+  thread spends 78% of its samples in executeJob's spin while the job
+  threads run the record loop: the slow title screen is that loop.
+- **Ancient Forest: +37%** (6.32 to 4.61 ms a frame), every on step above
+  every off step; the scene stays under the cap.
+- Job timing in the forest with everything on: the unit move round runs
+  10.4 times a frame (115 us each; its floor is the longest job, uPlayer's
+  move at 222 us once a frame), the camera round 4 times (181 us each,
+  bound 91 us); only 14.2 of 31 participants take a job in either. The
+  "gain" (round minus its bound) is 362 us a frame in the camera round and
+  254 us in the unit round. Most job threads wake after the round's jobs are
+  taken: the target of v0.7's spin_workers.

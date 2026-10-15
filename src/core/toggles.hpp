@@ -20,8 +20,10 @@ enum Toggle : unsigned {
                               // game's two callers of GetServerRealTime; server_time.hpp)
     inline_rounds = 64U,      // job rounds whose jobs take less than control.ini inline_us in total
                               // run on the game thread alone, learned per call site (job_timing.hpp)
+    spin_workers = 128U,      // job threads spin for control.ini spin_us after a round and take the
+                              // next round's places without being woken (worker_spin.hpp)
 };
-inline constexpr unsigned toggle_mask = 127U;  // every defined bit
+inline constexpr unsigned toggle_mask = 255U;  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }

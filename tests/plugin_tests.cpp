@@ -7,7 +7,9 @@
 // - prim_stores' replacement loop writes what the game's loop writes (both run
 //   here as machine code on the same inputs);
 // - server_time answers from a kept read as the game's two functions would;
-// - inline rounds run small rounds with participants 1 once learned.
+// - inline rounds run small rounds with participants 1 once learned;
+// - spinning job threads (worker_spin) keep executeJob's round accounting on
+//   a stand-in job system, and its jump stub and patch bytes are sound.
 #include "../src/core/toggles.hpp"
 #include "../src/plugin/frame_clock.hpp"
 #include "../src/plugin/image_scan.hpp"
@@ -21,6 +23,7 @@
 #include "../src/plugin/server_time.hpp"
 #include "../src/plugin/system_info.hpp"
 #include "../src/plugin/thread_census.hpp"
+#include "../src/plugin/worker_spin.hpp"
 #include <windows.h>
 #include <atomic>
 #include <cstdio>
@@ -740,6 +743,131 @@ void inline_test() {
     *jt::next_slot() = &stand_in_execute_job;
 }
 
+// worker_spin on a stand-in job system with the game's protocol: the main
+// thread zeroes started/done, releases min(jobs, participants) - 1 permits,
+// takes jobs from a shared counter itself, then spins until done equals the
+// number released; job threads wait (worker_spin::wait), count started, take
+// jobs, count done.
+struct StandInJobs {
+    std::uint8_t smain[0x100]{};
+    HANDLE semaphore{};
+    std::atomic<std::int32_t> next{}, started{}, done{};
+    std::atomic<std::int64_t> ran{};
+    std::int32_t count{};
+    std::atomic<bool> quit{};
+};
+DWORD WINAPI stand_in_job_thread(void* p) {
+    auto& j = *static_cast<StandInJobs*>(p);
+    while (!j.quit.load()) {
+        while (cpuopt::worker_spin::wait(j.semaphore) != 0) {}
+        if (j.quit.load()) break;
+        j.started.fetch_add(1);
+        for (std::int32_t i; (i = j.next.fetch_add(1)) < j.count;) j.ran.fetch_add(1);
+        j.done.fetch_add(1);
+    }
+    return 0;
+}
+// One round; false if the threads did not all report back within 2 s.
+bool stand_in_round(StandInJobs& j, std::int32_t jobs) {
+    auto& participants = *reinterpret_cast<std::uint32_t*>(j.smain + cpuopt::worker_spin::participants_offset);
+    j.count = jobs;
+    j.next = 0;
+    j.started = 0;
+    j.done = 0;
+    cpuopt::worker_spin::before_round(reinterpret_cast<std::uintptr_t>(j.smain), 1, static_cast<std::uint32_t>(jobs));
+    const auto released = static_cast<std::int32_t>(std::min<std::uint32_t>(static_cast<std::uint32_t>(jobs), participants)) - 1;
+    if (released > 0) ReleaseSemaphore(j.semaphore, released, nullptr);
+    for (std::int32_t i; (i = j.next.fetch_add(1)) < jobs;) j.ran.fetch_add(1);
+    const auto due = cpuopt::qpc_now() + 2 * cpuopt::qpc_frequency();
+    while (j.done.load() != std::max(released, 0))
+        if (cpuopt::qpc_now() > due) return false;
+    return true;
+}
+__declspec(noinline) std::uintptr_t stub_target(std::uintptr_t a) { return a * 3 + 1; }
+unsigned char planted_wait[64];
+std::uintptr_t fake_wait_import, other_import;
+
+void worker_spin_test() {
+    namespace ws = cpuopt::worker_spin;
+    // Patch bytes: a 6-byte NOP, then call rel32 ending where the old call ended.
+    std::array<std::uint8_t, ws::patch_length> bytes{};
+    const std::uintptr_t target = 0x14225F337;
+    CHECK(ws::build_replacement(target, 0x140001000, bytes));
+    std::int32_t rel{};
+    std::memcpy(&rel, bytes.data() + 7, 4);
+    CHECK(bytes[0] == 0x66 && bytes[5] == 0x00 && bytes[6] == 0xE8 && target + ws::patch_length + rel == 0x140001000);
+    CHECK(!ws::build_replacement(target, 0x7FF000000000ULL, bytes));  // out of reach
+    // A stub within 2 GB of this exe that jumps to a function.
+    const auto exe = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    const auto stub = ws::make_stub(exe, reinterpret_cast<const void*>(&stub_target));
+    const auto distance = stub > exe ? stub - exe : exe - stub;
+    CHECK(stub && distance < 0x80000000ULL);
+    CHECK(stub && reinterpret_cast<std::uintptr_t (*)(std::uintptr_t)>(stub)(5) == 16);
+    MEMORY_BASIC_INFORMATION mbi{};
+    VirtualQuery(reinterpret_cast<const void*>(stub), &mbi, sizeof(mbi));
+    CHECK(mbi.Protect == PAGE_EXECUTE_READ);  // never writable and executable at once
+    // discover: the planted wait must call through a slot holding WaitForSingleObject.
+    const auto sig = signature_bytes(ws::signature);
+    for (std::size_t i = 0; i < sig.size(); ++i) planted_wait[i] = static_cast<unsigned char>(sig[i] < 0 ? 0 : sig[i]);
+    const auto plant_slot = [&](const std::uintptr_t* slot) {
+        const auto at = reinterpret_cast<std::uintptr_t>(planted_wait) + ws::import_operand;
+        const auto d = static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(slot) - static_cast<std::intptr_t>(at + 6));
+        std::memcpy(planted_wait + ws::import_operand + 2, &d, 4);
+    };
+    fake_wait_import = reinterpret_cast<std::uintptr_t>(&WaitForSingleObject);
+    other_import = reinterpret_cast<std::uintptr_t>(&SetEvent);
+    const std::uintptr_t site[1] = {reinterpret_cast<std::uintptr_t>(planted_wait)};
+    plant_slot(&fake_wait_import);
+    const auto d = ws::discover(exe, site, 1);
+    CHECK(d.found && d.site_rva == rva_of(planted_wait));
+    plant_slot(&other_import);
+    CHECK(std::string(ws::discover(exe, site, 1).reason) == "call is not WaitForSingleObject");
+    CHECK(std::string(ws::discover(exe, site, 0).reason) == "signature not found");
+
+    // The stand-in job system: 8 job threads, participants 9.
+    StandInJobs j;
+    *reinterpret_cast<std::uint32_t*>(j.smain + ws::participants_offset) = 9;
+    j.semaphore = CreateSemaphoreW(nullptr, 0, 64, nullptr);
+    HANDLE threads[8];
+    for (auto& t : threads) t = CreateThread(nullptr, 0, stand_in_job_thread, &j, 0, nullptr);
+    std::string out;
+    ws::append(out);  // reset counters
+    // Off: every wait blocks; every round completes.
+    ws::set_active(false, 300);
+    bool all = true;
+    for (int r = 0; r < 200; ++r) all = stand_in_round(j, 1 + r % 40) && all;
+    CHECK(all);
+    std::string off = "{";
+    ws::append(off);
+    // On: rounds back to back; threads spin between them and claim places.
+    ws::set_active(true, 2000);
+    all = true;
+    std::int64_t jobs_expected = 0;
+    j.ran = 0;
+    for (int r = 0; r < 3000; ++r) {
+        const auto n = 1 + r % 40;
+        all = stand_in_round(j, n) && all;
+        jobs_expected += n;
+        if (r % 500 == 499) Sleep(5);  // a gap longer than the spin window: threads block, then wake
+    }
+    CHECK(all && j.ran.load() == jobs_expected);
+    std::string on = "{";
+    ws::append(on);
+    std::printf("worker_spin: off %s}\n             on  %s}\n", off.c_str(), on.c_str());
+    const auto claimed = number_after(on, "claimed");
+    CHECK(claimed > 1000);  // most permits taken by spinning threads
+    // Off again while threads spin: they block and rounds still complete.
+    ws::set_active(false, 300);
+    all = true;
+    for (int r = 0; r < 100; ++r) all = stand_in_round(j, 1 + r % 40) && all;
+    CHECK(all);
+    j.quit = true;
+    ReleaseSemaphore(j.semaphore, 8, nullptr);
+    WaitForMultipleObjects(8, threads, TRUE, 2000);
+    for (auto t : threads) CloseHandle(t);
+    CloseHandle(j.semaphore);
+}
+
 void spin_probe_test() {
     namespace sp = cpuopt::spin_probe;
     auto object = std::make_unique<std::uint8_t[]>(sp::done_offset + 8);
@@ -946,6 +1074,7 @@ int main() {
     inline_test();
     prim_stores_test();
     server_time_test();
+    worker_spin_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);

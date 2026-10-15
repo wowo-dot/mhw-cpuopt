@@ -16,6 +16,7 @@
 #include "runtime.hpp"
 #include "sampler.hpp"
 #include "server_time.hpp"
+#include "worker_spin.hpp"
 #include <atomic>
 #include <cstddef>
 #include <cstring>
@@ -39,6 +40,8 @@ const al_patches_t* patches{};
 std::uint32_t prim_handle{};                 // al.patch handle, 0 until first switched on
 std::uint32_t query_hook{}, date_hook{};     // al.hooks handles, 0 until first switched on
 std::uintptr_t prim_target{}, query_target{}, date_target{};  // found at PRE_MAIN
+std::uintptr_t spin_target{};                // the job threads' wait call (match + 7), found at PRE_MAIN
+std::uint32_t spin_handle{};                 // al.patch handle, 0 until first switched on
 SRWLOCK switch_lock = SRWLOCK_INIT;
 std::uintptr_t validated_renderer{};  // game thread only
 
@@ -122,6 +125,51 @@ bool prim_patch(bool on, const char** reason) noexcept {
     return ok;
 }
 
+// The job threads' wait (worker_spin.hpp): applied the first time the
+// switch is on, through a jump stub within 2 GB of the exe, then switched
+// with set_enabled.
+bool spin_patch(bool on, const char** reason) noexcept {
+    AcquireSRWLockExclusive(&switch_lock);
+    bool ok = true;
+    if (!patches) {
+        ok = false;
+        *reason = "no al.patch";
+    } else if (!spin_target) {
+        ok = false;
+        *reason = "job threads' wait not found";
+    } else if (!spin_handle) {
+        if (on) {
+            static std::uintptr_t stub = cpuopt::worker_spin::make_stub(spin_target, reinterpret_cast<const void*>(&cpuopt::worker_spin::wait));
+            std::array<std::uint8_t, cpuopt::worker_spin::patch_length> expected{}, replacement{};
+            std::memcpy(expected.data(), reinterpret_cast<const void*>(spin_target), expected.size());
+            if (!stub || !cpuopt::worker_spin::build_replacement(spin_target, stub, replacement)) {
+                ok = false;
+                *reason = "no room for a jump stub within 2 GB";
+            } else {
+                static const std::string pattern(cpuopt::worker_spin::signature);
+                al_patch_t p{};
+                p.size = sizeof(p);
+                p.kind = AL_PATCH_CODE;
+                p.name = "job threads' wait: spin before sleeping (cpuopt spin_workers)";
+                p.pattern = pattern.c_str();
+                p.offset = static_cast<std::int32_t>(cpuopt::worker_spin::patch_offset);
+                p.length = cpuopt::worker_spin::patch_length;
+                p.address = reinterpret_cast<void*>(spin_target);
+                p.expected = expected.data();
+                p.replacement = replacement.data();
+                spin_handle = patches->apply(self, &p);
+                ok = spin_handle != 0;
+                *reason = ok ? "change applied" : "al.patch refused the change (see the plugin log)";
+            }
+        }
+    } else {
+        ok = patches->set_enabled(self, spin_handle, on ? 1 : 0) == AL_OK;
+        *reason = ok ? (on ? "change enabled" : "change disabled") : "set_enabled failed";
+    }
+    ReleaseSRWLockExclusive(&switch_lock);
+    return ok;
+}
+
 // The server_time detours (server_time.hpp): both or neither.
 bool server_hooks(bool on, const char** reason) noexcept {
     AcquireSRWLockExclusive(&switch_lock);
@@ -196,6 +244,7 @@ void AL_CALL on_phase(al_plugin_t*, al_phase_t phase, const void* data) {
         cpuopt::job_timing::set_order(0, 0);
         cpuopt::job_timing::set_inline(false, 1);
         cpuopt::server_time::set_active(false, 0);
+        cpuopt::worker_spin::set_active(false, 0);  // job threads block again for the game's teardown
         cpuopt::runtime::stop("exiting");
         say(AL_LOG_INFO, "stopped at EXITING");
     } else if (phase == AL_PHASE_SHUTDOWN) {
@@ -300,6 +349,9 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             query_target = query_site[0];
             date_target = date_site[0];
         }
+        std::uintptr_t wait_site[2]{};
+        host.spin = cpuopt::worker_spin::discover(base, wait_site, find(cpuopt::worker_spin::signature, wait_site, 2));
+        if (host.spin.found) spin_target = wait_site[0] + cpuopt::worker_spin::patch_offset;
 
         std::string reason;
         frame = service<al_frame_t>(AL_FRAME_INTERFACE, AL_FRAME_VERSION);
@@ -309,6 +361,7 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         patches = service<al_patches_t>(AL_PATCH_INTERFACE, AL_PATCH_VERSION);
         host.prim_patch = prim_patch;
         host.server_hooks = server_hooks;
+        host.spin_patch = spin_patch;
         if (!cpuopt::runtime::start(reinterpret_cast<HMODULE>(&__ImageBase), host, reason)) {
             // Not measuring: no subscriptions, so AL hooks nothing for us.
             frame = nullptr;

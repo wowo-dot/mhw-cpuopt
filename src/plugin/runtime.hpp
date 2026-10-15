@@ -3,6 +3,7 @@
 #include "job_cap.hpp"
 #include "prim_stores.hpp"
 #include "server_time.hpp"
+#include "worker_spin.hpp"
 #include <windows.h>
 #include <cstdint>
 #include <string>
@@ -25,10 +26,12 @@ struct Host {
     std::string order_site;  // the camera round's call site: "ok" or why not
     prim_stores::Discovery prim;    // sPrimitive's record loop, searched at PRE_MAIN
     server_time::Discovery server;  // the game's two server time calls, searched at PRE_MAIN
+    worker_spin::Discovery spin;    // the job threads' wait, searched at PRE_MAIN
     // Put the prim_stores change and the server_time detours in or out;
     // false with the reason when they cannot. Any thread.
     bool (*prim_patch)(bool on, const char** reason) noexcept {};
     bool (*server_hooks)(bool on, const char** reason) noexcept {};
+    bool (*spin_patch)(bool on, const char** reason) noexcept {};
 };
 
 // al_plugin_init: reads the run folder from <folder>\cpuopt.dll.output-dir,

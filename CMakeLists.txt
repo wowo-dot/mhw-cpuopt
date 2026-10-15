@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mhw_cpuopt VERSION 0.6.0 LANGUAGES CXX)
+project(mhw_cpuopt VERSION 0.7.0 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "64-bit Windows only")
@@ -64,6 +64,8 @@ set(CPUOPT_PLUGIN_SOURCES
     src/plugin/system_info.hpp
     src/plugin/thread_census.cpp
     src/plugin/thread_census.hpp
+    src/plugin/worker_spin.cpp
+    src/plugin/worker_spin.hpp
 )
 
 # An Astera Loader plugin: <game>\AsteraLoader\plugins\cpuopt\cpuopt.dll (an MO2
