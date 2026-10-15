@@ -32,6 +32,8 @@
    - `run.py sweep <name> --marker hub-cap --steps 0:45,15:45,0:45,11:45`:
      the job_thread_cap A/B, one step per job-thread count (0 = the game's own
      count, switch off), sampler off unless `--profile`;
+   - `run.py steps <name> --marker hub-time --steps 0:20,4:90,0:20`: any
+     switch states in order (toggles:seconds);
    - or by hand: `run.py control <name> --toggles 2 --job-threads 15`.
    Each change closes the current statistics window first, so no window mixes
    two states.
@@ -71,6 +73,10 @@
   (`src/plugin/job_cap.hpp`); `job` in each window: state (no target,
   waiting, native, capped, layout mismatch, drift, restored), the game's own
   count, requested and applied threads per job round.
+- `job_timing_switch`, `job_timing` (toggle 4): the executeJob detour's
+  registration, and per window the rounds per round type and per job type
+  (`tools/job_report.py`); `job_trace`: whole rounds, one in 499, for
+  `tools/job_sim.py`.
 - `profile` (only while toggle 1 is on): whole stacks per sampled thread with
   counts; the game and present threads are always sampled.
 - `stopping` / `stopped` at EXITING (the last window, sampler joined),

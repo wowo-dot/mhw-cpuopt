@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <memory>
 #include <vector>
 
 namespace cpuopt::job_timing {
@@ -40,6 +41,24 @@ SRWLOCK lock = SRWLOCK_INIT;
 std::array<CallerStats, caller_capacity> callers{};
 std::array<JobStats, job_stats_capacity> job_stats{};
 std::uint64_t rounds_total{}, skipped{}, overflow{};
+
+// Traced rounds: written by the game thread, drained by the window thread.
+struct TraceJob {
+    std::uintptr_t vtable{}, function{};
+    std::uint64_t start{}, end{};
+    std::uint32_t thread{};
+};
+struct Trace {
+    std::uintptr_t caller{};
+    std::uint32_t mode{}, participants{}, jobs{}, game_thread{};
+    std::uint64_t start{}, end{};
+    std::array<TraceJob, trace_jobs> list;
+};
+std::atomic<std::uint32_t> trace_every{499};
+std::uint64_t timed_rounds{};  // game thread only
+std::unique_ptr<std::array<Trace, trace_slots>> traces;
+std::atomic<std::uint32_t> trace_head{}, trace_tail{};  // head: next to fill (game thread); tail: next to drain
+std::atomic<std::uint64_t> traces_dropped{};
 std::int64_t opened = qpc_now();
 
 bool writable(std::uintptr_t address, std::size_t bytes) noexcept {
@@ -85,6 +104,29 @@ void unwrap(std::uintptr_t list, std::uint32_t n) noexcept {
         entry[0] = records[i].context;
         entry[1] = records[i].function;
     }
+}
+std::uintptr_t vtable_of(std::uintptr_t context) noexcept;
+void keep_trace(std::uintptr_t caller, int mode, std::uint32_t participants, std::uint32_t n, std::uint64_t t0, std::uint64_t t1) noexcept {
+    const auto every = trace_every.load(std::memory_order_relaxed);
+    if (!every || ++timed_rounds % every || n > trace_jobs || !traces) return;
+    const auto head = trace_head.load(std::memory_order_relaxed);
+    if (head - trace_tail.load(std::memory_order_acquire) >= trace_slots) {
+        traces_dropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    auto& t = (*traces)[head % trace_slots];
+    t.caller = caller;
+    t.mode = static_cast<std::uint32_t>(mode);
+    t.participants = participants;
+    t.jobs = n;
+    t.game_thread = GetCurrentThreadId();
+    t.start = t0;
+    t.end = t1;
+    for (std::uint32_t i = 0; i < n; ++i) {
+        const auto& r = records[i];
+        t.list[i] = {mode <= 1 ? vtable_of(r.context) : 0, r.function, r.start, r.end, r.thread};
+    }
+    trace_head.store(head + 1, std::memory_order_release);
 }
 void merge(std::uintptr_t caller, const Round& r, std::uint32_t n) noexcept {
     AcquireSRWLockExclusive(&lock);
@@ -136,7 +178,16 @@ void merge(std::uintptr_t caller, const Round& r, std::uint32_t n) noexcept {
 }  // namespace
 
 ExecuteJob* next_slot() noexcept { return &next_fn; }
-void set_measuring(bool on) noexcept { measuring.store(on); }
+void set_trace_every(std::uint32_t every) noexcept { trace_every.store(every); }
+void set_measuring(bool on) noexcept {
+    if (on && !traces) {
+        try {
+            traces = std::make_unique<std::array<Trace, trace_slots>>();
+        } catch (...) {
+        }
+    }
+    measuring.store(on);
+}
 
 Round analyse(const Record* recs, std::uint32_t count, std::uint64_t round_start, std::uint64_t round_end, std::uint32_t participants) noexcept {
     Round r;
@@ -167,7 +218,7 @@ Round analyse(const Record* recs, std::uint32_t count, std::uint64_t round_start
 
 void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std::uint32_t count, std::uintptr_t extra) {
     const auto original = next_fn;
-    if (!measuring.load(std::memory_order_relaxed) || mode < 0 || mode > 5) {
+    if (!measuring.load(std::memory_order_acquire) || mode < 0 || mode > 5) {  // acquire: the trace ring exists
         original(smain, mode, jobs, count, extra);
         return;
     }
@@ -192,6 +243,7 @@ void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std:
     const auto t1 = __rdtsc();
     unwrap(list, n);
     merge(caller, analyse(records.data(), n, t0, t1, participants), n);
+    keep_trace(caller, mode, participants, n, t0, t1);
 }
 
 std::string take_event(double t_ms, std::uintptr_t image_base) {
@@ -260,6 +312,74 @@ std::string take_event(double t_ms, std::uintptr_t image_base) {
         out += ']';
     }
     out += "]}";
+    return out;
+}
+std::string take_traces(std::uintptr_t image_base) {
+    std::string out;
+    if (!traces) return out;
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(image_base);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(image_base + static_cast<std::uintptr_t>(dos->e_lfanew));
+    const auto image_end = image_base + nt->OptionalHeader.SizeOfImage;
+    const auto rva = [&](std::uintptr_t a) -> std::uint64_t { return a >= image_base && a < image_end ? a - image_base : 0; };
+    auto tail = trace_tail.load(std::memory_order_relaxed);
+    const auto head = trace_head.load(std::memory_order_acquire);
+    for (; tail != head; ++tail) {
+        const auto& t = (*traces)[tail % trace_slots];
+        std::array<std::uint32_t, 64> threads{};  // thread ids in order of first job
+        unsigned thread_count{};
+        const auto thread_number = [&](std::uint32_t id) -> unsigned {
+            for (unsigned k = 0; k < thread_count; ++k)
+                if (threads[k] == id) return k;
+            if (thread_count == threads.size()) return 63;
+            threads[thread_count] = id;
+            return thread_count++;
+        };
+        std::string line = "{";
+        json::key(line, "event");
+        json::string(line, "job_trace");
+        json::key(line, "caller_rva");
+        json::number(line, rva(t.caller));
+        json::key(line, "mode");
+        json::number(line, std::uint64_t(t.mode));
+        json::key(line, "participants");
+        json::number(line, std::uint64_t(t.participants));
+        json::key(line, "duration");
+        json::number(line, t.end - t.start);
+        json::key(line, "job_columns");
+        line += "[\"vtable_rva\",\"function_rva\",\"start\",\"duration\",\"thread\"]";
+        json::key(line, "jobs");
+        line += '[';
+        // Threads numbered in order of their first job start.
+        std::vector<std::uint32_t> order(t.jobs);
+        for (std::uint32_t i = 0; i < t.jobs; ++i) order[i] = i;
+        std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) { return t.list[a].start < t.list[b].start; });
+        for (const auto i : order) thread_number(t.list[i].thread);
+        for (std::uint32_t i = 0; i < t.jobs; ++i) {
+            const auto& j = t.list[i];
+            const bool ran = j.end && j.end >= j.start;
+            line += i ? ",[" : "[";
+            json::number(line, rva(j.vtable));
+            line += ',';
+            json::number(line, rva(j.function));
+            line += ',';
+            json::number(line, ran && j.start > t.start ? j.start - t.start : 0);
+            line += ',';
+            json::number(line, ran ? j.end - j.start : 0);
+            line += ',';
+            json::number(line, std::uint64_t(thread_number(j.thread)));
+            line += ']';
+        }
+        line += ']';
+        json::key(line, "game_thread");
+        json::number(line, std::uint64_t(thread_number(t.game_thread)));
+        json::key(line, "threads");
+        json::number(line, std::uint64_t(thread_count));
+        json::key(line, "dropped");
+        json::number(line, traces_dropped.exchange(0, std::memory_order_relaxed));
+        line += "}\n";
+        out += line;
+    }
+    trace_tail.store(tail, std::memory_order_release);
     return out;
 }
 }  // namespace cpuopt::job_timing

@@ -246,6 +246,7 @@ void job_timing_test() {
     jt::set_measuring(false);
     timing_round(smain_address, reinterpret_cast<std::uintptr_t>(list), 4);  // passes straight through
     CHECK(jt::take_event(0, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr))).empty());
+    jt::set_trace_every(1);  // every timed round traced
     jt::set_measuring(true);
     std::memset(timing_seen_context, 0, sizeof(timing_seen_context));
     timing_round(smain_address, reinterpret_cast<std::uintptr_t>(list), 4);
@@ -292,6 +293,20 @@ void job_timing_test() {
     CHECK(e.find("\"rounds\":2,\"skipped\":2,") != std::string::npos);
     CHECK(caller_rva > caller_fn && caller_rva < caller_fn + 64);  // the return address inside timing_round
     CHECK(e.find(job) != std::string::npos);  // (timing_job, timing_vtable): 4 jobs in each of 2 rounds
+    // Both timed rounds traced: 4 jobs in list order, all on this thread
+    // (thread 0, the game thread here), each about (i+1) * 0.1 ms.
+    const auto traces = jt::take_traces(exe);
+    std::size_t lines = 0;
+    for (auto line = traces.find("{\"event\":\"job_trace\""); line != std::string::npos; line = traces.find("{\"event\":\"job_trace\"", line + 1)) ++lines;
+    std::printf("job_trace: %zu rounds, first: %s\n", lines, traces.substr(0, traces.find('\n')).c_str());
+    CHECK(lines == 2);
+    char first_job[64];
+    std::snprintf(first_job, sizeof(first_job), "\"jobs\":[[%llu,%u,", static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(timing_vtable) - exe),
+                  rva_of(reinterpret_cast<const void*>(&timing_job)));
+    CHECK(traces.find(first_job) != std::string::npos);
+    CHECK(traces.find("\"game_thread\":0,\"threads\":1,\"dropped\":0}") != std::string::npos);
+    CHECK(jt::take_traces(exe).empty());  // drained
+    jt::set_trace_every(499);
 }
 
 void spin_probe_test() {

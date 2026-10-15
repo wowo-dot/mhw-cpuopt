@@ -140,6 +140,13 @@ void write_window(State& s) {
     if (!profile.empty()) event_log.write(profile);
     const auto timing = job_timing::take_event(t, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)));
     if (!timing.empty()) event_log.write(timing);
+    // Traced rounds, one line each (take_traces ends every line with a newline).
+    const auto traced = job_timing::take_traces(reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)));
+    for (std::size_t at = 0; at < traced.size();) {
+        const auto end = traced.find('\n', at);
+        event_log.write(std::string_view(traced).substr(at, end - at));
+        at = end + 1;
+    }
     // Sampled every tick: the game thread, the present thread, then the busiest others.
     std::vector<DWORD> tracked;
     for (const DWORD tid : {DWORD(frames.game_thread), DWORD(frames.present_thread)})

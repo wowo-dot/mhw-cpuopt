@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mhw_cpuopt VERSION 0.4.0 LANGUAGES CXX)
+project(mhw_cpuopt VERSION 0.4.1 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "64-bit Windows only")
@@ -102,3 +102,9 @@ target_link_libraries(al_host_smoke PRIVATE cpuopt_core)
 set_target_properties(al_host_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_dependencies(al_host_smoke mhw_cpuopt)
 add_test(NAME al_host_smoke COMMAND al_host_smoke $<TARGET_FILE:mhw_cpuopt> "${CMAKE_BINARY_DIR}/smoke")
+
+# The Python tools' pure logic (job round simulator), when Python 3 is there.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+    add_test(NAME tools_tests COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_SOURCE_DIR}/tests/tools_tests.py")
+endif()

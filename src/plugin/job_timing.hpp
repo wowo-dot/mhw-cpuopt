@@ -46,4 +46,16 @@ Round analyse(const Record* records, std::uint32_t count, std::uint64_t round_st
 // The "job_timing" event for the window so far, or empty. `image_base` turns
 // addresses into RVAs.
 std::string take_event(double t_ms, std::uintptr_t image_base);
+
+// Whole rounds for offline replay (tools/job_sim.py): every `every`-th timed
+// round (default 499, so all round types are traced in proportion to how often
+// they run) is copied, up to trace_jobs jobs, into a ring of trace_slots
+// rounds; the window thread drains it. A full ring drops rounds and counts them.
+inline constexpr unsigned trace_jobs = 2048, trace_slots = 64;
+void set_trace_every(std::uint32_t every) noexcept;
+// One "job_trace" event per traced round since the last call: per job, in
+// list order, [vtable RVA, function RVA, start, duration, thread], times in
+// TSC cycles from the round's start, threads numbered in order of first job
+// (the game thread's number in "game_thread").
+std::string take_traces(std::uintptr_t image_base);
 }  // namespace cpuopt::job_timing
