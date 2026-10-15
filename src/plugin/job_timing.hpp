@@ -83,4 +83,28 @@ void set_camera_return(std::uintptr_t address) noexcept;
 bool set_order(int mode, unsigned threshold_us) noexcept;
 // "order": the switch's state and counts into an open JSON object.
 void append_order(std::string& out);
+
+// Switch inline_rounds: rounds whose jobs take little time in total run on
+// the game thread alone.
+//
+// executeJob wakes min(jobs, participants) - 1 job threads through a
+// semaphore and spins until every one of them has reported back, however
+// little work the round holds. In al-07, four rounds a frame held 11-20 us of
+// work but took 21-31 us (sub_1422E248F: 314 jobs, 19.5 us of work; also
+// sub_1426D9328, sub_1411DA84C, sub_1423D29E1). With participants at 1,
+// executeJob's own single-thread path runs the list on the calling thread
+// (the path the game takes on a one-core machine); the detour sets +0xCC to 1
+// for the call and puts the value back when it returns. Only after the job
+// threads exist (+0x90), so their creation never sees 1.
+//
+// Learned per call site (the return address): the first `inline_learn`
+// rounds and then one in `learn_every` are timed, and the site keeps a
+// running mean of its rounds' work (weight 1/8). A site runs alone while its
+// mean is below the threshold, and goes back to the job threads above 1.5x
+// the threshold. Sites far above it are timed one round in 256. The camera
+// round, while job order is on, stays with the order switch.
+inline constexpr unsigned site_capacity = 64, inline_learn = 8, threads_created_offset = 0x90;
+void set_inline(bool on, unsigned threshold_us) noexcept;
+// "inline": state, counts and the sites, into an open JSON object.
+void append_inline(std::string& out, std::uintptr_t image_base);
 }  // namespace cpuopt::job_timing

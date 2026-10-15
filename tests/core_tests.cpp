@@ -26,7 +26,7 @@ void signatures() {
     CHECK(!Pattern::parse("488B"));        // bytes must be separated
     CHECK(!Pattern::parse(""));
     std::string long_text;
-    for (int i = 0; i < 65; ++i) long_text += "90 ";
+    for (std::size_t i = 0; i <= Pattern::capacity; ++i) long_text += "90 ";
     CHECK(!Pattern::parse(long_text));     // longer than capacity
 
     const auto p = *Pattern::parse("?? 8B 05 ?? AA");
@@ -92,6 +92,13 @@ void control() {
     CHECK(parse_control("order_us=20")->order_us == 20u);
     CHECK(!parse_control("job_order=3"));
     CHECK(!parse_control("order_us=0"));
+    CHECK(parse_control("inline_us=25")->inline_us == 25u);
+    CHECK(!parse_control("inline_us=0"));
+    CHECK(!parse_control("inline_us=1001"));
+    CHECK(parse_control("time_ms=1000")->time_ms == 1000u);
+    CHECK(!parse_control("time_ms=9"));
+    CHECK(!parse_control("time_ms=60001"));
+    CHECK(parse_control("toggles=127")->toggles == 127u);
     CHECK(!parse_control("unknown=1"));
     CHECK(!parse_control("toggles"));
     CHECK(parse_control("\xEF\xBB\xBFtoggles=2")->toggles == 2u);  // UTF-8 BOM

@@ -66,6 +66,10 @@ struct State {
     unsigned job_threads{16};  // participants while toggle job_thread_cap is on
     bool hook{};               // the executeJob detour is in the chain
     unsigned job_order{2}, order_us{20};  // toggle order_jobs: mode and threshold
+    unsigned inline_us{25};               // toggle inline_rounds: threshold
+    unsigned time_ms{1000};               // toggle reuse_server_time: how long a read is reused
+    bool prim{}, server{};                // the prim_stores change / the server_time detours are in
+    bool prim_buffer{};                   // the prim ring's memory has been reported
     unsigned window_ms{5000};
     std::uint64_t seq{}, updates{}, presents{};
     double window_start{};
@@ -134,10 +138,22 @@ void write_window(State& s) {
     frame_events::append(out, frames, ms);
     job_cap::append(out);
     job_timing::append_order(out);
+    job_timing::append_inline(out, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)));
+    server_time::append(out);
+    json::key(out, "prim_stores");
+    out += s.prim ? "true" : "false";
     if (s.poller) append_poller(out, frame_clock::take(), ms);
     const auto busiest = s.census.append_window(out, s.own);
     out += '}';
     event_log.write(out);
+    // The prim ring's memory, read-only, once it is mapped.
+    if (!s.prim_buffer && host.prim.found) {
+        const auto b = prim_stores::probe(reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) + host.prim.global_rva);
+        if (b.pointer) {
+            event_log.write(prim_stores::buffer_event(b, t));
+            s.prim_buffer = true;
+        }
+    }
     const auto profile = sampler::take_event(t, toggles.load(), s.marker);
     if (!profile.empty()) event_log.write(profile);
     const auto timing = job_timing::take_event(t, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)));
@@ -157,6 +173,20 @@ void write_window(State& s) {
         if (tracked.size() < tracked_max && std::find(tracked.begin(), tracked.end(), tid) == tracked.end()) tracked.push_back(tid);
     sampler::set_tracked(tracked);
     windows_written.fetch_add(1);
+}
+
+void switched(const char* event, bool on, const char* why) {
+    std::string note = "{";
+    json::key(note, "event");
+    json::string(note, event);
+    json::key(note, "on");
+    note += on ? "true" : "false";
+    json::key(note, "reason");
+    json::string(note, why);
+    json::key(note, "t_ms");
+    json::fixed(note, now_ms(), 3);
+    note += '}';
+    event_log.write(note);
 }
 
 // Applies control.ini if it changed. The window so far is closed first, so
@@ -187,24 +217,36 @@ void poll_control(State& s, bool initial) {
     job_cap::request(on(job_thread_cap) ? s.job_threads : 0);  // applied on the game thread at the next frame
     if (parsed->job_order) s.job_order = *parsed->job_order;
     if (parsed->order_us) s.order_us = *parsed->order_us;
-    // One detour serves job timing and job order.
-    const bool need = on(time_jobs) || on(order_jobs);
+    if (parsed->inline_us) s.inline_us = *parsed->inline_us;
+    if (parsed->time_ms) s.time_ms = *parsed->time_ms;
+    // One detour serves job timing, job order and inline rounds.
+    const bool need = on(time_jobs) || on(order_jobs) || on(inline_rounds);
     if (need != s.hook && host.job_hook) {
         const char* why = "";
         const bool ok = host.job_hook(need, &why);
         s.hook = need && ok;
-        std::string note = "{";
-        json::key(note, "event");
-        json::string(note, "job_hook");
-        json::key(note, "on");
-        note += s.hook ? "true" : "false";
-        json::key(note, "reason");
-        json::string(note, why);
-        note += '}';
-        event_log.write(note);
+        switched("job_hook", s.hook, why);
     }
     job_timing::set_measuring(on(time_jobs) && s.hook);
     job_timing::set_order(on(order_jobs) && s.hook ? static_cast<int>(s.job_order) : 0, s.order_us);
+    job_timing::set_inline(on(inline_rounds) && s.hook, s.inline_us);
+    // sPrimitive's record loop: a code change through al.patch.
+    if (on(plain_prim_stores) != s.prim && host.prim_patch) {
+        const char* why = "";
+        const bool ok = host.prim_patch(on(plain_prim_stores), &why);
+        s.prim = on(plain_prim_stores) ? ok : !ok;
+        switched("prim_patch", s.prim, why);
+    }
+    // Server time: the detours go in before the cache is used, and the cache
+    // stops before they go out.
+    if (!on(reuse_server_time)) server_time::set_active(false, s.time_ms);
+    if (on(reuse_server_time) != s.server && host.server_hooks) {
+        const char* why = "";
+        const bool ok = host.server_hooks(on(reuse_server_time), &why);
+        s.server = on(reuse_server_time) ? ok : !ok;
+        switched("server_hooks", s.server, why);
+    }
+    if (on(reuse_server_time) && s.server) server_time::set_active(true, s.time_ms);
     json::key(out, "t_ms");
     json::fixed(out, now_ms(), 3);
     json::key(out, "toggles");
@@ -221,6 +263,10 @@ void poll_control(State& s, bool initial) {
     json::number(out, std::uint64_t(s.job_order));
     json::key(out, "order_us");
     json::number(out, std::uint64_t(s.order_us));
+    json::key(out, "inline_us");
+    json::number(out, std::uint64_t(s.inline_us));
+    json::key(out, "time_ms");
+    json::number(out, std::uint64_t(s.time_ms));
     out += '}';
     event_log.write(out);
 }
@@ -251,6 +297,8 @@ DWORD WINAPI worker(void* parameter) noexcept {
             site += '}';
             event_log.write(site);
         }
+        event_log.write(prim_stores::discovery_event(host.prim, now_ms(), host.scanner));
+        event_log.write(server_time::discovery_event(host.server, now_ms(), host.scanner));
 
         sampler::start();
         for (int i = 0; i < 100 && !sampler::thread_id(); ++i) Sleep(10);

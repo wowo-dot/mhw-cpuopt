@@ -4,15 +4,17 @@
       New folder local/runs/<name>; installs the DLL into the MO2 slot if it
       differs (previous slot DLL backed up byte for byte), points the slot's
       .output-dir sidecar at the folder and writes a receipt.
-  control <run> [--toggles N] [--marker M] [--window-ms N]
+  control <run> [--toggles N] [--marker M] [--window-ms N] [--job-threads N]
+          [--job-order 1|2] [--order-us N] [--inline-us N] [--time-ms N]
       Changes control.ini while the game runs; the plugin closes the current
       window and logs the change within about 300 ms.
   sweep <run> --marker M --steps 0:45,15:45,0:45,11:45 [--profile]
       job_thread_cap A/B: each step is job threads (0 = the game's own count,
       switch off) and seconds; the sampler stays off unless --profile.
-  steps <run> --marker M --steps 0:30,4:60,8/1:30,8/2:30
+  steps <run> --marker M --steps 0:30,4:60,8/1:30,8/2:30 [--repeat N]
       Any switch states in order: each step is toggles[/job_order] and
-      seconds; then "M-done" with every switch off.
+      seconds, the list run N times (interleaved A/B); then "M-done" with
+      every switch off.
   sequence <run> --marker M [--baseline 60] [--profile 60]
       One scene: marker M with every switch off, then with the sampler on,
       then "M-done".
@@ -132,6 +134,9 @@ def control(a):
         values['window_ms'] = str(a.window_ms)
     if a.job_threads is not None:
         values['job_threads'] = str(a.job_threads)
+    for key in ('job_order', 'order_us', 'inline_us', 'time_ms'):
+        if getattr(a, key) is not None:
+            values[key] = str(getattr(a, key))
     write_control(run, values)
     return dict(run=str(run), control=values)
 
@@ -183,7 +188,7 @@ def steps(a):
     """Switch states in order, one step each."""
     import time
     run = run_folder(a.run)
-    for item in a.steps.split(','):
+    for item in a.steps.split(',') * a.repeat:
         state, seconds = item.split(':')
         toggles, _, order = state.partition('/')  # "8/1": toggles 8 with job_order 1
         values = read_control(run)
@@ -259,6 +264,10 @@ def main():
     s.add_argument('--marker')
     s.add_argument('--window-ms', type=int)
     s.add_argument('--job-threads', type=int)
+    s.add_argument('--job-order', type=int, choices=(1, 2))
+    s.add_argument('--order-us', type=int)
+    s.add_argument('--inline-us', type=int)
+    s.add_argument('--time-ms', type=int)
     s = sub.add_parser('sweep')
     s.add_argument('run')
     s.add_argument('--marker', required=True)
@@ -268,6 +277,7 @@ def main():
     s.add_argument('run')
     s.add_argument('--marker', required=True)
     s.add_argument('--steps', required=True)
+    s.add_argument('--repeat', type=int, default=1)
     s = sub.add_parser('sequence')
     s.add_argument('run')
     s.add_argument('--marker', required=True)

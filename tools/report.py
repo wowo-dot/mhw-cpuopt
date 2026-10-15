@@ -69,9 +69,21 @@ def main():
         toggles &= 0xFF
         if order:
             o = ws[-1]['order']
-            state += f', job order {("reversed", "learned")[order - 1]}: {sum(w["order"]["rounds"] for w in ws)} rounds reordered, '                      f'{sum(w["order"]["moved"] for w in ws)} jobs moved, {o["classes"]} classes known'
+            state += (f', job order {("reversed", "learned")[order - 1]}: {sum(w["order"]["rounds"] for w in ws)} rounds reordered, '
+                      f'{sum(w["order"]["moved"] for w in ws)} jobs moved, {o["classes"]} classes known')
             if not sum(w['order']['rounds'] for w in ws):
-                state += ' (NOTHING REORDERED)' 
+                state += ' (NOTHING REORDERED)'
+        if toggles & 16:
+            state += ', prim stores ' + ('on' if all(w.get('prim_stores') for w in ws) else 'NOT ON')
+        if toggles & 32:
+            st = [w.get('server_time', {}) for w in ws]
+            state += (f', server time {"active" if all(x.get("active") for x in st) else "NOT ACTIVE"} '
+                      f'({sum(x.get("reads", 0) for x in st)} reads, {sum(x.get("reused", 0) for x in st)} reused)')
+        if toggles & 64:
+            il = [w.get('inline', {}) for w in ws]
+            sites = il[-1].get('sites', [])
+            state += (f', inline: {sum(x.get("rounds", 0) for x in il) / max(frames, 1):.2f} rounds alone per frame, '
+                      f'{sum(1 for x in sites if x[3])} of {len(sites)} sites alone')
         print(f'\n== marker {marker or "-"}  toggles {toggles}  job threads {jobs} ({state}): {len(ws)} windows, '
               f'{seconds:.0f} s, {frames} game frames')
         print(f'  game frames {frames / seconds:.1f} fps (windows {min(w["update"]["fps"] for w in ws):.1f}..'
@@ -86,7 +98,8 @@ def main():
         print(f'  process CPU {sum(w["process_cpu_ms"] for w in ws) / frames:.2f} ms/frame; threads {med(lambda w: w["thread_count"])}')
         per_thread, label = collections.defaultdict(float), {}
         for w in ws:
-            roles = {w['update']['thread']: 'GAME', w['present']['thread']: 'PRESENT'}
+            roles = {w['present']['thread']: 'PRESENT'}
+            roles[w['update']['thread']] = 'GAME+PRESENT' if w['update']['thread'] == w['present']['thread'] else 'GAME'
             for t in w['threads']:
                 per_thread[t[0]] += t[1]
                 label[t[0]] = ' '.join(x for x in (roles.get(t[0], ''), t[5] or t[4], '[plugin]' if 'own' in t[6] else '') if x)

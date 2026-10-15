@@ -214,3 +214,73 @@ of each step left out):
   in 16).
 - About 102,000 camera rounds reordered and restored; the user saw no visual
   change. H5 confirmed for the hub.
+
+## v0.6 targets, from the al-05 profile and al-07's job timing (2026-10-15)
+
+Measured (al-05: hub start, 60 s of sampling, 37,159 game-thread samples;
+al-07: 23,617 frames of job timing). The fixes are switches in v0.6, not yet
+measured in game.
+
+### Steam's server time: 4.3% of the game thread
+
+- Two game functions call `ISteamUtils::GetServerRealTime` (vtable slot 3 of
+  the interface `SteamInternal_ContextInit` returns): `sub_142215230` (a
+  session object's slot 0xC0; 2.7% of game-thread samples are under it) and
+  `sub_141B008E0` (a date struct through `_gmtime64`; 1.6%). Both run several
+  times a frame from the per-frame checks `sub_141976900/A60/D20/DE0`
+  (under `sub_140257A00`).
+- Inside `steamclient64.dll` every call takes a lock
+  (`CThreadFullMutex::TryLock`); the samples sit there. All Steam frames
+  together were 5.7% of the game thread; the rest is `SteamAPI_RunCallbacks`
+  (0.4%) and P2P polling `sub_142207A70` (0.9%, left alone: online path).
+- Switch 32 keeps one read for time_ms and adds the whole seconds since.
+  The server time is a whole-second clock; a reused value lags by under a
+  second. `sub_142215230`'s session state (slot 0x60, `sub_142215220`: a
+  flag at +0x974C, 2 when set) is still asked on every call.
+
+### sPrimitive's record loop: 6.0% of the game thread, the hottest game code outside the spin
+
+- `sub_142570A40` had 5,793 samples in al-05 (2,173 on the game thread,
+  6.0%); the next game function outside executeJob's spin had 359. It runs
+  inside the camera round's effect draw jobs
+  (`sub_141FAF590` → `sub_1422F7C20` → `sub_1425D0140` → `sub_14262DA80` →
+  `sub_142630000`), the jobs that end camera rounds.
+- Confirmed (machine code): its loop (0x2570C20) writes one 16-byte record
+  per primitive into a ring buffer taken from sPrimitive (+0x138 the mapped
+  pointer, +0x144 the atomic fill offset). The first two dwords are bit
+  fields written with eight read-modify-write steps on memory; their final
+  values do not depend on the old contents.
+- Hypothesis: the ring is GPU upload memory (sPrimitive's constructor
+  `sub_1424EE8E0` makes its buffers through `sub_14239E230` with usage 2), so
+  write-combined, and every read there is uncached. v0.6 logs the ring's page
+  protection once (`prim_buffer`, read-only).
+- Switch 16 (al.patch, 56 bytes from 0x2570C1A): the loop's preheader
+  completes both dwords once and the loop stores them; the same bytes are
+  written. `plugin_tests` runs the game's loop and the replacement as
+  machine code on 48 random inputs (1 to 4,096 records): same records, same
+  live registers.
+- Open: the game re-checks parts of its own code; whether this function is
+  among them is not known. Watch for crashes or odd behaviour minutes after
+  the switch goes on.
+
+### Rounds with little work (al-07)
+
+- executeJob wakes min(jobs, participants) - 1 threads and spins until all
+  have reported back. Four rounds a frame held 11-20 us of work and took
+  21-31 us: `sub_1422E248F` (314 jobs, 19.5 us of work, 31.4 us),
+  `sub_1426D9328` (62 jobs, 13.0 us, 27.6 us), `sub_1411DA84C` (13 jobs,
+  11.0 us, 21.1 us), `sub_1423D29E1` (5 jobs, 17.1 us, 22.5 us).
+- Switch 64 runs a call site's rounds with participants 1 (executeJob's own
+  single-thread path) while the site's mean work is under inline_us (25),
+  learned from timed rounds. Expected gain about 50 us a frame (1.3%) if
+  inline work matches the measured work; jobs that ran on many threads may
+  run faster or slower on one.
+- The unit move round (`sub_14221B2CA`, 6.3 a frame) does not gain from
+  ordering: the replay's oracle saves 5.8 us a round. Its long jobs
+  (`uPlayer` 161 us, `uNpcVillage` 95 us) are the floor.
+
+### Hottest instructions (v0.6)
+
+The sampler now also counts the exact innermost instruction in the game exe
+(`profile_report.py --leaves N`), so the next profile can show which loop of
+a function (`sub_142570A40`, the effect jobs) the time goes to.

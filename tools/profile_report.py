@@ -1,7 +1,7 @@
 """Hotspot report from the stack sampler's "profile" events.
 
   python -B tools/profile_report.py <run> [--pid N] [--marker M] [--toggles T]
-         [--threads 4] [--top 30] [--folded out.txt]
+         [--threads 4] [--top 30] [--folded out.txt] [--leaves 40]
 
 Per sampled thread (most samples first): where its time goes by module, the
 functions it was executing (self), the functions on its stack (inclusive),
@@ -14,6 +14,10 @@ table, printed IDA-style (sub_1423922C0 = image base 0x140000000 + RVA), named
 from local/ida/names.tsv ("rva<TAB>name") when it exists; the plugin from the
 run's linker map; other DLLs by nearest export. Frames without an unwind entry
 are instruction addresses ("@").
+
+--leaves N lists the game's N hottest instructions (samples whose innermost
+frame is that exact instruction, from v0.6 on), as function+offset and VA,
+with the game thread's share: which loop of a function the time goes to.
 """
 import argparse
 import bisect
@@ -99,6 +103,16 @@ class Symbolizer:
                 if name:
                     self.game_names[int(rva, 16)] = name
 
+    def nearest(self, rva):
+        """The named game function at or below `rva`, as name+0xoffset."""
+        if not hasattr(self, 'starts'):
+            self.starts = sorted(self.game_names)
+        i = bisect.bisect_right(self.starts, rva) - 1
+        if i < 0:
+            return f'sub_{GAME_BASE + rva:X}'
+        start = self.starts[i]
+        return f'{self.game_names[start]}+{rva - start:#x}'
+
     def resolver(self, module):
         key = module.lower()
         if key not in self.cache:
@@ -134,6 +148,7 @@ def main():
     p.add_argument('--threads', type=int, default=4)
     p.add_argument('--top', type=int, default=30)
     p.add_argument('--folded', type=Path, help='write folded stacks (flame graph input) for the shown threads')
+    p.add_argument('--leaves', type=int, default=0, help="list the game's N hottest instructions")
     a = p.parse_args()
     run = run_folder(a.run)
     log = run / f'cpuopt-{a.pid}.jsonl' if a.pid else newest_log(run)
@@ -148,7 +163,7 @@ def main():
                 thread_info[t[0]] = (t[4], t[5])
             for role, label in (('update', 'GAME THREAD'), ('present', 'PRESENT THREAD')):
                 if e.get(role, {}).get('thread'):
-                    roles[e[role]['thread']] = label
+                    roles.setdefault(e[role]['thread'], label)  # the game thread may present too
     profiles = [e for e in events if e.get('event') == 'profile' and (a.marker is None or e['marker'] == a.marker)
                 and (a.toggles is None or e['toggles'] == a.toggles)]
     if not profiles:
@@ -196,6 +211,20 @@ def main():
             print(f'-- {title}')
             for label, n in items:
                 print(f'{100 * n / total:6.1f}%  {n:7d}  {label}')
+    if a.leaves:
+        game_total = sum(samples[t] for t, r in roles.items() if r == 'GAME THREAD')
+        every = sum(samples.values())
+        leaf_all, leaf_game = collections.Counter(), collections.Counter()
+        for e in profiles:
+            for rva, game, total in e.get('leaves', []):
+                leaf_all[rva] += total
+                leaf_game[rva] += game
+        print(f'\n=== hottest game instructions: {sum(leaf_all.values())} of {every} samples in the game exe '
+              f'({sum(leaf_game.values())} of {game_total} on the game thread)')
+        print('   all %   game %   samples  instruction')
+        for rva, n in leaf_all.most_common(a.leaves):
+            print(f'{100 * n / max(every, 1):7.2f}  {100 * leaf_game[rva] / max(game_total, 1):7.2f}  {n:8d}  '
+                  f'{sym.nearest(rva)}  ({GAME_BASE + rva:#x})')
     if a.folded:
         merged = collections.Counter()
         for line, n in folded:

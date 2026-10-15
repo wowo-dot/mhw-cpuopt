@@ -12,8 +12,10 @@
 #include "job_cap.hpp"
 #include "job_timing.hpp"
 #include "log.hpp"
+#include "prim_stores.hpp"
 #include "runtime.hpp"
 #include "sampler.hpp"
+#include "server_time.hpp"
 #include <atomic>
 #include <cstddef>
 #include <cstring>
@@ -33,6 +35,11 @@ const al_frame_t* frame{};
 const al_hooks_t* hooks{};
 std::atomic<std::uint32_t> timing_hook{};  // al.hooks handle, 0 until first switched on
 SRWLOCK timing_lock = SRWLOCK_INIT;
+const al_patches_t* patches{};
+std::uint32_t prim_handle{};                 // al.patch handle, 0 until first switched on
+std::uint32_t query_hook{}, date_hook{};     // al.hooks handles, 0 until first switched on
+std::uintptr_t prim_target{}, query_target{}, date_target{};  // found at PRE_MAIN
+SRWLOCK switch_lock = SRWLOCK_INIT;
 std::uintptr_t validated_renderer{};  // game thread only
 
 void say(al_log_level_t level, const std::string& text) noexcept {
@@ -78,6 +85,85 @@ bool job_hook(bool on, const char** reason) noexcept {
     return ok;
 }
 
+// sPrimitive's record loop (prim_stores.hpp): applied the first time the
+// switch is on (AL pauses the game's threads for a code change and checks
+// none is inside the bytes), then switched with set_enabled.
+bool prim_patch(bool on, const char** reason) noexcept {
+    AcquireSRWLockExclusive(&switch_lock);
+    bool ok = true;
+    if (!patches) {
+        ok = false;
+        *reason = "no al.patch";
+    } else if (!prim_target) {
+        ok = false;
+        *reason = "sPrimitive's loop not found";
+    } else if (!prim_handle) {
+        if (on) {
+            static const std::string pattern(cpuopt::prim_stores::signature);
+            al_patch_t p{};
+            p.size = sizeof(p);
+            p.kind = AL_PATCH_CODE;
+            p.name = "sPrimitive record loop: stores without reads (cpuopt prim_stores)";
+            p.pattern = pattern.c_str();
+            p.offset = static_cast<std::int32_t>(cpuopt::prim_stores::patch_offset);
+            p.length = cpuopt::prim_stores::patch_length;
+            p.address = reinterpret_cast<void*>(prim_target);
+            p.expected = cpuopt::prim_stores::expected.data();
+            p.replacement = cpuopt::prim_stores::replacement.data();
+            prim_handle = patches->apply(self, &p);
+            ok = prim_handle != 0;
+            *reason = ok ? "change applied" : "al.patch refused the change (see the plugin log)";
+        }
+    } else {
+        ok = patches->set_enabled(self, prim_handle, on ? 1 : 0) == AL_OK;
+        *reason = ok ? (on ? "change enabled" : "change disabled") : "set_enabled failed";
+    }
+    ReleaseSRWLockExclusive(&switch_lock);
+    return ok;
+}
+
+// The server_time detours (server_time.hpp): both or neither.
+bool server_hooks(bool on, const char** reason) noexcept {
+    AcquireSRWLockExclusive(&switch_lock);
+    bool ok = true;
+    if (!hooks) {
+        ok = false;
+        *reason = "no al.hooks";
+    } else if (!query_target || !date_target) {
+        ok = false;
+        *reason = "server time calls not found";
+    } else if (!query_hook && !date_hook) {
+        if (on) {
+            static const std::string query_pattern(cpuopt::server_time::query_signature), date_pattern(cpuopt::server_time::date_signature);
+            al_hook_t h{};
+            h.size = sizeof(h);
+            h.name = "server time query (cpuopt server_time)";
+            h.pattern = query_pattern.c_str();
+            h.address = reinterpret_cast<void*>(query_target);
+            h.detour = reinterpret_cast<void*>(&cpuopt::server_time::query_detour);
+            h.next = reinterpret_cast<void**>(cpuopt::server_time::query_next());
+            query_hook = hooks->hook(self, &h);
+            h.name = "server time date (cpuopt server_time)";
+            h.pattern = date_pattern.c_str();
+            h.address = reinterpret_cast<void*>(date_target);
+            h.detour = reinterpret_cast<void*>(&cpuopt::server_time::date_detour);
+            h.next = reinterpret_cast<void**>(cpuopt::server_time::date_next());
+            date_hook = query_hook ? hooks->hook(self, &h) : 0;
+            ok = query_hook && date_hook;
+            if (!ok && query_hook) hooks->set_enabled(self, query_hook, 0);  // both or neither
+            *reason = ok ? "hooks registered" : "al.hooks refused a hook (see the plugin log)";
+        }
+    } else if (!query_hook || !date_hook) {
+        ok = false;
+        *reason = "a hook was refused earlier";
+    } else {
+        ok = hooks->set_enabled(self, query_hook, on ? 1 : 0) == AL_OK && hooks->set_enabled(self, date_hook, on ? 1 : 0) == AL_OK;
+        *reason = ok ? (on ? "hooks enabled" : "hooks disabled") : "set_enabled failed";
+    }
+    ReleaseSRWLockExclusive(&switch_lock);
+    return ok;
+}
+
 void AL_CALL on_frame(al_plugin_t*, al_frame_event_t event, const al_frame_info_t* info, void*) {
     if (!info) return;
     if (event == AL_FRAME_BEGIN) {
@@ -108,6 +194,8 @@ void AL_CALL on_phase(al_plugin_t*, al_phase_t phase, const void* data) {
         cpuopt::job_cap::restore();  // the game's own job thread count for its teardown
         cpuopt::job_timing::set_measuring(false);  // rounds from now on run untouched
         cpuopt::job_timing::set_order(0, 0);
+        cpuopt::job_timing::set_inline(false, 1);
+        cpuopt::server_time::set_active(false, 0);
         cpuopt::runtime::stop("exiting");
         say(AL_LOG_INFO, "stopped at EXITING");
     } else if (phase == AL_PHASE_SHUTDOWN) {
@@ -199,12 +287,28 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         // The sampler reads the job slots when it catches the game thread in
         // the spin (the spin signature's 20 bytes hold the whole loop).
         if (host.job.found) cpuopt::sampler::set_spin_probe(spin_site[0], spin_site[0] + 20, base + host.job.global_rva);
+        // sPrimitive's record loop and the server time calls: searched now,
+        // changed only when their switches are on.
+        std::uintptr_t prim_site[2]{}, query_site[2]{}, date_site[2]{};
+        host.prim = cpuopt::prim_stores::discover(base, prim_site, find(cpuopt::prim_stores::signature, prim_site, 2));
+        if (host.prim.found) prim_target = prim_site[0] + cpuopt::prim_stores::patch_offset;
+        const auto query_count = find(cpuopt::server_time::query_signature, query_site, 2);
+        const auto date_count = find(cpuopt::server_time::date_signature, date_site, 2);
+        host.server = cpuopt::server_time::discover(base, query_site, query_count, date_site, date_count);
+        cpuopt::server_time::set_target(base, host.server);
+        if (host.server.found) {
+            query_target = query_site[0];
+            date_target = date_site[0];
+        }
 
         std::string reason;
         frame = service<al_frame_t>(AL_FRAME_INTERFACE, AL_FRAME_VERSION);
         host.frame_state = frame_state;
         hooks = service<al_hooks_t>(AL_HOOKS_INTERFACE, AL_HOOKS_VERSION);
         host.job_hook = job_hook;
+        patches = service<al_patches_t>(AL_PATCH_INTERFACE, AL_PATCH_VERSION);
+        host.prim_patch = prim_patch;
+        host.server_hooks = server_hooks;
         if (!cpuopt::runtime::start(reinterpret_cast<HMODULE>(&__ImageBase), host, reason)) {
             // Not measuring: no subscriptions, so AL hooks nothing for us.
             frame = nullptr;

@@ -5,8 +5,10 @@
 // of the frame-counter signature points at a fake sRender), al.frame and
 // al.d3d12, runs a game thread (4 ms frames, about 1 ms of update, the render
 // counter advanced each frame) and a present thread (4 ms Presents taking
-// about 0.3 ms), switches control.ini live, then sends EXITING and SHUTDOWN
-// and checks the run log.
+// about 0.3 ms), switches control.ini live (every switch on in the last
+// phase: the ones this exe has no code for say so, inline rounds run the
+// host's small round alone), then sends EXITING and SHUTDOWN and checks the
+// run log.
 #include "al/al_plugin.h"
 #include "../src/core/signature.hpp"
 #include <windows.h>
@@ -147,7 +149,9 @@ using ExecuteJobFn = void(__fastcall*)(std::uintptr_t, int, std::uintptr_t, std:
 __declspec(noinline) std::uintptr_t host_job(std::uintptr_t context, std::uintptr_t, std::uintptr_t, std::uintptr_t) {
     return context;
 }
-void __fastcall host_execute_job(std::uintptr_t, int, std::uintptr_t jobs, std::uint32_t count, std::uintptr_t) {
+std::atomic<unsigned> alone_rounds{};  // rounds the detour ran with participants 1
+void __fastcall host_execute_job(std::uintptr_t smain, int, std::uintptr_t jobs, std::uint32_t count, std::uintptr_t) {
+    if (*reinterpret_cast<const std::uint32_t*>(smain + 0xCC) == 1) ++alone_rounds;
     for (std::uint32_t i = 0; i < count; ++i) {
         const auto* entry = reinterpret_cast<const std::uintptr_t*>(jobs + 32ULL * i);
         reinterpret_cast<std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t)>(entry[1])(entry[0], 0, 0, 0);
@@ -351,7 +355,8 @@ int wmain(int argc, wchar_t** argv) {
     al_init_t start{sizeof(al_init_t), 0, self, folder.c_str(), folder.c_str(), nullptr};
     CHECK(init(&api, &start) == AL_OK);
     CHECK(last_status == AL_STATUS_ACTIVE);
-    CHECK(scans == 7);  // the frame counter, the four job_cap signatures, executeJob and the camera call site
+    CHECK(scans == 10);  // the frame counter, the four job_cap signatures, executeJob, the camera call site,
+                         // sPrimitive's loop and the two server time calls
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && present_callback);
     CHECK(present_mask == (AL_D3D12_EVENT_BIT(AL_D3D12_PRE_PRESENT) | AL_D3D12_EVENT_BIT(AL_D3D12_POST_PRESENT)));
 
@@ -368,6 +373,11 @@ int wmain(int argc, wchar_t** argv) {
     write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-b\ntoggles=15\njob_threads=12\n");
     Sleep(2600);
     const auto capped = smain_field(0xD0), capped_participants = smain_field(0xCC);
+    // Every switch: no al.patch here and no sPrimitive or server time code in
+    // this exe, so those two say why; inline rounds learn the host's round.
+    write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-c\ntoggles=127\ninline_us=500\ntime_ms=500\n");
+    Sleep(1600);
+    const unsigned alone = alone_rounds.load();
     write_all(run + L"\\control.ini", "toggles=banana\n");  // rejected, nothing changes
     Sleep(1200);
 
@@ -379,7 +389,7 @@ int wmain(int argc, wchar_t** argv) {
     WaitForMultipleObjects(2, threads, TRUE, 2000);
     jobs_stop = true;  // after the game thread: it may be waiting for a job
     WaitForSingleObject(jobs, 2000);
-    const auto after_exit = smain_field(0xD0);
+    const auto after_exit = smain_field(0xD0), participants_after_exit = smain_field(0xCC);
     const al_phase_shutdown_t shutdown{sizeof(al_phase_shutdown_t), 0};
     info->on_phase(self, AL_PHASE_SHUTDOWN, &shutdown);
 
@@ -417,7 +427,20 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(text.find("\"event\":\"job_order_site\",\"reason\":\"executeJob not found once\"") != std::string::npos);
         CHECK(text.find("\"order\":{\"mode\":0,\"available\":false") != std::string::npos);
     }
-    std::printf("  job_cap: native %u, capped %u/%u, after EXITING %u\n", native_before, capped, capped_participants, after_exit);
+    std::printf("  job_cap: native %u, capped %u/%u, after EXITING %u/%u\n", native_before, capped, capped_participants, after_exit,
+                participants_after_exit);
+    // (+0xCC may hold a round's value here: EXITING came from another thread mid-round, and this
+    // host has no per-frame copy of +0xD0 into +0xCC as the game does.)
+    // The last phase: every switch requested.
+    std::printf("  all switches: %u rounds alone\n", alone);
+    CHECK(text.find("\"event\":\"prim_stores\",") != std::string::npos && text.find("\"reason\":\"signature not found\",\"scanner\":\"al.scanner\",\"matches\":0") != std::string::npos);
+    CHECK(text.find("\"event\":\"server_time\",") != std::string::npos && text.find("\"counts\":[0,0]") != std::string::npos);
+    CHECK(text.find("\"event\":\"prim_patch\",\"on\":false,\"reason\":\"no al.patch\"") != std::string::npos);
+    CHECK(text.find("\"event\":\"server_hooks\",\"on\":false,\"reason\":\"server time calls not found\"") != std::string::npos);
+    CHECK(text.find("\"inline_us\":500,\"time_ms\":500") != std::string::npos);
+    CHECK(text.find("\"inline\":{\"on\":true,\"threshold_us\":500,") != std::string::npos);
+    CHECK(text.find("\"server_time\":{\"active\":false,") != std::string::npos);
+    CHECK(alone > 100);  // learned within 8 rounds, then alone at 250 rounds a second
     CHECK(text.find("\"event\":\"game_ready\"") != std::string::npos && text.find("\"frame\":75") != std::string::npos);
     CHECK(text.find("\"marker\":\"smoke-b\",\"window_ms\":1000") != std::string::npos);
     CHECK(text.find("\"rejected\":true") != std::string::npos);

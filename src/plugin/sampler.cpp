@@ -17,6 +17,7 @@ namespace {
 constexpr unsigned module_capacity = 512, name_capacity = 512, thread_capacity = 1024;
 constexpr unsigned depth_capacity = 48, stack_capacity = 1U << 14, tracked_capacity = 6, rotation = 2;
 constexpr unsigned thread_stat_capacity = 256, unknown_module = 0xFFFF;
+constexpr unsigned leaf_capacity = 1U << 13, leaves_listed = 600;
 constexpr std::uint32_t raw_address = 0x80000000U;  // frame RVA without an unwind entry: instruction address
 
 struct Module {
@@ -48,6 +49,10 @@ struct SpinRound {
     std::array<std::uint32_t, spin_probe::max_threads + 1> not_started{}, running{};
 };
 constexpr unsigned spin_round_capacity = 64;
+// Samples whose innermost frame is in the game exe, by exact instruction.
+struct Leaf {
+    std::uint32_t rva{}, game{}, all{};  // all: every sampled thread; game: the game thread
+};
 struct Table {
     std::array<Stack, stack_capacity> stacks;
     std::array<ThreadStat, thread_stat_capacity> threads;
@@ -56,10 +61,15 @@ struct Table {
     std::int64_t opened{};  // qpc when the table started collecting
     std::uint64_t spin_samples{}, spin_unreadable{}, spin_overflow{};
     std::array<SpinRound, spin_round_capacity> spin_rounds{};
+    std::array<Leaf, leaf_capacity> leaves{};
+    unsigned leaves_used{};
+    std::uint64_t leaf_overflow{};
 };
 
 // The spin probe's code range and sMain's global (job_cap.hpp); set once.
 std::atomic<std::uintptr_t> spin_begin{}, spin_end{}, smain_global{};
+// The game exe, for leaves.
+std::uintptr_t game_base{}, game_end{};
 
 // Sampler thread only, apart from names (lock) and the tables (lock).
 std::array<Module, module_capacity> modules;
@@ -236,11 +246,30 @@ ThreadStat* stat_of(Table& t, DWORD tid) noexcept {
     s = {tid, 0, 0};
     return &s;
 }
-void record(DWORD tid, const std::uint64_t* frames, unsigned depth, std::uint16_t flags) noexcept {
+void count_leaf(Table& t, std::uint32_t rva, bool game) noexcept {
+    auto slot = static_cast<unsigned>((rva * 0x9E3779B1U) >> 19) & (leaf_capacity - 1);
+    for (unsigned probe = 0; probe < 32; ++probe, slot = (slot + 1) & (leaf_capacity - 1)) {
+        auto& l = t.leaves[slot];
+        if (!l.all) {
+            if (t.leaves_used >= leaf_capacity * 3 / 4) break;
+            l.rva = rva;
+            ++t.leaves_used;
+        } else if (l.rva != rva) {
+            continue;
+        }
+        ++l.all;
+        l.game += game ? 1 : 0;
+        return;
+    }
+    ++t.leaf_overflow;
+}
+// `leaf`: the innermost instruction's RVA + 1 when it is in the game exe, else 0.
+void record(DWORD tid, const std::uint64_t* frames, unsigned depth, std::uint16_t flags, std::uint32_t leaf, bool game) noexcept {
     std::uint64_t hash = (0xcbf29ce484222325ULL ^ tid) * 0x100000001b3ULL ^ flags;
     for (unsigned i = 0; i < depth; ++i) hash = (hash ^ frames[i]) * 0x100000001b3ULL;
     AcquireSRWLockExclusive(&lock);
     auto& t = *tables[active];
+    if (leaf) count_leaf(t, leaf - 1, game);
     ++t.samples;
     if (auto* s = stat_of(t, tid)) ++s->samples;
     auto slot = static_cast<unsigned>(hash >> 32) & (stack_capacity - 1);
@@ -332,7 +361,9 @@ bool sample(const Thread& t, bool during_spin) noexcept {
     }
     std::array<std::uint64_t, depth_capacity> frames;
     for (unsigned i = 0; i < n; ++i) frames[i] = frame_of(pcs[i], i == 0);
-    record(t.id, frames.data(), n, static_cast<std::uint16_t>((cut ? 1 : 0) | (during_spin ? 2 : 0)));
+    const bool in_game = pcs[0] >= game_base && pcs[0] < game_end;
+    record(t.id, frames.data(), n, static_cast<std::uint16_t>((cut ? 1 : 0) | (during_spin ? 2 : 0)),
+           in_game ? static_cast<std::uint32_t>(pcs[0] - game_base) + 1 : 0, t.id == tracked[0].load(std::memory_order_relaxed));
     const bool spinning = rip >= spin_begin.load(std::memory_order_relaxed) && rip < spin_end.load(std::memory_order_relaxed);
     if (spinning) probe(n > 1 ? frames[1] : 0, rbx, rdi);
     return spinning;
@@ -408,6 +439,9 @@ void start() noexcept {
         return;
     }
     tables[0]->opened = qpc_now();
+    game_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(game_base);
+    game_end = game_base + reinterpret_cast<const IMAGE_NT_HEADERS64*>(game_base + static_cast<std::uintptr_t>(dos->e_lfanew))->OptionalHeader.SizeOfImage;
     run_thread = CreateThread(nullptr, 0, run, nullptr, 0, nullptr);
 }
 
@@ -563,6 +597,27 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
         out += '[';
         out += frames;
         out += ']';
+        // The game exe's hottest instructions, most samples first.
+        std::vector<Leaf> leaves;
+        for (const auto& l : t.leaves)
+            if (l.all) leaves.push_back(l);
+        std::sort(leaves.begin(), leaves.end(), [](const Leaf& a, const Leaf& b) { return a.all > b.all; });
+        json::key(out, "leaf_overflow");
+        json::number(out, t.leaf_overflow);
+        json::key(out, "leaf_columns");
+        out += "[\"rva\",\"game\",\"all\"]";
+        json::key(out, "leaves");
+        out += '[';
+        for (std::size_t i = 0; i < leaves.size() && i < leaves_listed; ++i) {
+            out += i ? ",[" : "[";
+            json::number(out, std::uint64_t(leaves[i].rva));
+            out += ',';
+            json::number(out, std::uint64_t(leaves[i].game));
+            out += ',';
+            json::number(out, std::uint64_t(leaves[i].all));
+            out += ']';
+        }
+        out += ']';
         json::key(out, "stack_columns");
         out += "[\"tid\",\"count\",\"flags\",\"frames\"]";
         json::key(out, "stacks");
@@ -576,6 +631,9 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
     t.samples = t.overflow = t.ticks = 0;
     t.spin_samples = t.spin_unreadable = t.spin_overflow = 0;
     for (auto& r : t.spin_rounds) r = {};
+    for (auto& l : t.leaves) l = {};
+    t.leaves_used = 0;
+    t.leaf_overflow = 0;
     return out;
 }
 }  // namespace cpuopt::sampler

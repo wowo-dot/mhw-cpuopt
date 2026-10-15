@@ -3,7 +3,11 @@
 //   executable, follows its operands to a fake renderer and times a counter
 //   advanced every 4 ms;
 // - the census names a busy thread as the busiest;
-// - the sampler records whole stacks that contain the busy thread's functions.
+// - the sampler records whole stacks that contain the busy thread's functions;
+// - prim_stores' replacement loop writes what the game's loop writes (both run
+//   here as machine code on the same inputs);
+// - server_time answers from a kept read as the game's two functions would;
+// - inline rounds run small rounds with participants 1 once learned.
 #include "../src/core/toggles.hpp"
 #include "../src/plugin/frame_clock.hpp"
 #include "../src/plugin/image_scan.hpp"
@@ -12,7 +16,9 @@
 #include "../src/plugin/spin_probe.hpp"
 #include "../src/plugin/job_timing.hpp"
 #include "../src/plugin/log.hpp"
+#include "../src/plugin/prim_stores.hpp"
 #include "../src/plugin/sampler.hpp"
+#include "../src/plugin/server_time.hpp"
 #include "../src/plugin/system_info.hpp"
 #include "../src/plugin/thread_census.hpp"
 #include <windows.h>
@@ -20,7 +26,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <memory>
+#include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -391,6 +400,346 @@ void job_order_test() {
     jt::set_trace_every(499);
 }
 
+// The signature's bytes as numbers; -1 for a wildcard.
+std::vector<int> signature_bytes(std::string_view text) {
+    std::vector<int> out;
+    std::istringstream in{std::string(text)};
+    for (std::string token; in >> token;) out.push_back(token == "??" ? -1 : std::stoi(token, nullptr, 16));
+    return out;
+}
+
+// prim_stores: the game's preheader and loop (from the signature) and the
+// replacement, each wrapped in a function that loads the registers from a
+// struct, runs the loop and stores the registers that live on.
+struct PrimRegs {
+    std::uint64_t rbp, rbx, r12, r13, r14, r8, rdx;  // inputs
+    std::uint64_t out_rdx, out_rcx, out_rax, out_r14, out_r11, out_r8;
+};
+using PrimFn = void (*)(PrimRegs*);
+PrimFn make_prim(const std::vector<std::uint8_t>& snippet) {
+    std::vector<std::uint8_t> code = {
+        0x53, 0x55, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,  // push rbx, rbp, r12, r13, r14, r15
+        0x49, 0x89, 0xCF,                                            // mov r15,rcx
+        0x49, 0x8B, 0x2F,                                            // mov rbp,[r15]
+        0x49, 0x8B, 0x5F, 0x08,                                      // mov rbx,[r15+8]
+        0x4D, 0x8B, 0x67, 0x10,                                      // mov r12,[r15+10h]
+        0x4D, 0x8B, 0x6F, 0x18,                                      // mov r13,[r15+18h]
+        0x4D, 0x8B, 0x77, 0x20,                                      // mov r14,[r15+20h]
+        0x4D, 0x8B, 0x47, 0x28,                                      // mov r8,[r15+28h]
+        0x49, 0x8B, 0x57, 0x30,                                      // mov rdx,[r15+30h]
+        0x33, 0xC9};                                                 // xor ecx,ecx (0x2570BE7)
+    code.insert(code.end(), snippet.begin(), snippet.end());
+    const std::uint8_t tail[] = {
+        0x49, 0x89, 0x57, 0x38,  // mov [r15+38h],rdx
+        0x49, 0x89, 0x4F, 0x40,  // mov [r15+40h],rcx
+        0x49, 0x89, 0x47, 0x48,  // mov [r15+48h],rax
+        0x4D, 0x89, 0x77, 0x50,  // mov [r15+50h],r14
+        0x4D, 0x89, 0x5F, 0x58,  // mov [r15+58h],r11
+        0x4D, 0x89, 0x47, 0x60,  // mov [r15+60h],r8
+        0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5D, 0x5B, 0xC3};
+    code.insert(code.end(), std::begin(tail), std::end(tail));
+    auto* memory = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    std::memcpy(memory, code.data(), code.size());
+    DWORD old{};
+    VirtualProtect(memory, 4096, PAGE_EXECUTE_READ, &old);
+    FlushInstructionCache(GetCurrentProcess(), memory, 4096);
+    return reinterpret_cast<PrimFn>(memory);
+}
+std::uintptr_t fake_primitive_global;
+
+void prim_stores_test() {
+    namespace ps = cpuopt::prim_stores;
+    // The signature holds the bytes the change replaces, and no wildcard from
+    // the preheader on.
+    const auto sig = signature_bytes(ps::signature);
+    CHECK(sig.size() == ps::patch_offset + ps::patch_length);
+    bool same = true, fixed = true;
+    for (unsigned i = 0; i < ps::patch_length; ++i) same = same && sig[ps::patch_offset + i] == ps::expected[i];
+    for (unsigned i = ps::preheader; i < sig.size(); ++i) fixed = fixed && sig[i] >= 0;
+    CHECK(same && fixed);
+    std::vector<std::uint8_t> original, replaced;
+    for (unsigned i = ps::preheader; i < sig.size(); ++i) original.push_back(static_cast<std::uint8_t>(sig[i]));
+    replaced.assign(original.begin(), original.begin() + (ps::patch_offset - ps::preheader));
+    replaced.insert(replaced.end(), ps::replacement.begin(), ps::replacement.end());
+    CHECK(replaced.size() == original.size());
+    const auto game = make_prim(original), ours = make_prim(replaced);
+
+    std::mt19937_64 rng(20261015);
+    bool equal = true, independent = true;
+    unsigned cases = 0;
+    for (const unsigned count : {1u, 2u, 3u, 17u, 300u, 4096u}) {
+        for (int round = 0; round < 8; ++round, ++cases) {
+            const std::size_t bytes = 16ULL * count + 64;
+            std::vector<std::uint8_t> a(bytes), b(bytes);
+            for (auto& x : a) x = static_cast<std::uint8_t>(rng());
+            for (auto& x : b) x = static_cast<std::uint8_t>(rng());
+            const auto a_tail = std::vector<std::uint8_t>(a.end() - 64, a.end()), b_tail = std::vector<std::uint8_t>(b.end() - 64, b.end());
+            PrimRegs in{};
+            in.rbx = rng();
+            in.r12 = rng() & 0x0FFFFFFF;  // a vertex offset
+            in.r13 = rng() & 0x0FFFFFFF;
+            in.r14 = rng();
+            in.r8 = count;
+            in.rdx = rng() % 3;
+            PrimRegs x = in, y = in;
+            x.rbp = reinterpret_cast<std::uint64_t>(a.data());
+            y.rbp = reinterpret_cast<std::uint64_t>(b.data());
+            game(&x);
+            ours(&y);
+            equal = equal && std::memcmp(a.data(), b.data(), 16ULL * count) == 0 && x.out_rdx == y.out_rdx && x.out_rcx == y.out_rcx &&
+                    x.out_r14 == y.out_r14 && x.out_r11 == y.out_r11 && x.out_r8 == y.out_r8 &&
+                    x.out_rax - x.rbp == y.out_rax - y.rbp;
+            independent = independent && std::equal(a_tail.begin(), a_tail.end(), a.end() - 64) && std::equal(b_tail.begin(), b_tail.end(), b.end() - 64);
+            // The first record as the header says.
+            std::uint32_t d0{}, d1{};
+            std::memcpy(&d0, a.data(), 4);
+            std::memcpy(&d1, a.data() + 4, 4);
+            equal = equal && d0 == (static_cast<std::uint32_t>(in.rdx) | static_cast<std::uint32_t>(in.r12) << 4) &&
+                    d1 == ((static_cast<std::uint32_t>(in.r14) & 0xF) | static_cast<std::uint32_t>(in.r13) << 4);
+        }
+    }
+    std::printf("prim_stores: %u cases, same records and registers: %s\n", cases, equal ? "yes" : "NO");
+    CHECK(equal && independent);
+
+    // discover and probe on a planted copy: the global points at a fake
+    // sPrimitive whose ring is write-combined memory.
+    static unsigned char planted_prim[256];
+    for (std::size_t i = 0; i < sig.size(); ++i) planted_prim[i] = static_cast<unsigned char>(sig[i] < 0 ? 0 : sig[i]);
+    const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    const auto site = reinterpret_cast<std::uintptr_t>(planted_prim);
+    const auto displacement = static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(&fake_primitive_global) -
+                                                        static_cast<std::intptr_t>(site + ps::global_operand + 7));
+    std::memcpy(planted_prim + ps::global_operand + 3, &displacement, 4);
+    const std::uintptr_t one[1] = {site}, two[2] = {site, site};
+    CHECK(std::string(ps::discover(base, one, 0).reason) == "signature not found");
+    CHECK(std::string(ps::discover(base, two, 2).reason) == "signature not unique");
+    const auto d = ps::discover(base, one, 1);
+    CHECK(d.found && d.site_rva == rva_of(planted_prim) && d.global_rva == rva_of(&fake_primitive_global));
+    planted_prim[ps::patch_offset + 3] ^= 1;
+    CHECK(std::string(ps::discover(base, one, 1).reason) == "changed bytes differ");
+    planted_prim[ps::patch_offset + 3] ^= 1;
+    CHECK(!ps::probe(base + d.global_rva).object);  // no sPrimitive yet
+    auto object = std::make_unique<std::uint8_t[]>(0x200);
+    std::memset(object.get(), 0, 0x200);
+    fake_primitive_global = reinterpret_cast<std::uintptr_t>(object.get());
+    CHECK(ps::probe(base + d.global_rva).object && !ps::probe(base + d.global_rva).pointer);  // not mapped
+    auto* ring = VirtualAlloc(nullptr, 65536, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE | PAGE_WRITECOMBINE);
+    CHECK(ring != nullptr);
+    *reinterpret_cast<void**>(object.get() + ps::ring_offset) = ring;
+    const auto b = ps::probe(base + d.global_rva);
+    CHECK(b.pointer && b.write_combined());
+    std::printf("prim_stores: %s\n", ps::buffer_event(b, 0).c_str());
+    CHECK(ps::buffer_event(b, 0).find("\"write_combined\":true") != std::string::npos);
+    VirtualFree(ring, 0, MEM_RELEASE);
+    fake_primitive_global = 0;
+}
+
+// server_time: stand-ins for the game's two functions, a session object and
+// the date flag's pointer chain.
+std::uint32_t steam_now = 1760000000;  // 2025-10-09 08:53:20 UTC
+std::uint32_t session_state = 2;
+unsigned native_queries, native_dates;
+__declspec(noinline) std::uint32_t __fastcall stand_in_state(void*) { return session_state; }
+void* session_vtable[16];
+struct StandInSession {
+    void** vtable;
+} stand_in_session{session_vtable};
+std::uintptr_t fake_flag_global;
+char __fastcall stand_in_query(void* session, std::uint64_t* out) {
+    ++native_queries;
+    if (!out) return 0;
+    if (stand_in_state(session) != 2) {
+        *out = 12345;  // local time
+        return 0;
+    }
+    *out = steam_now;
+    return 1;
+}
+std::uintptr_t __fastcall stand_in_date(std::uintptr_t, std::uintptr_t out) {
+    ++native_dates;
+    std::memset(reinterpret_cast<void*>(out), 0, 0x21);
+    auto p = *reinterpret_cast<const std::uintptr_t*>(fake_flag_global + 0x260);  // the global holds the object
+    std::uint8_t flag = 0;
+    if (p && (p = *reinterpret_cast<const std::uintptr_t*>(p + 0x10)) != 0) flag = *reinterpret_cast<const std::uint8_t*>(p + 0xBFF0) & 1;
+    *reinterpret_cast<std::uint8_t*>(out + 0x20) = flag;
+    *reinterpret_cast<std::uint64_t*>(out + 0x18) = steam_now;
+    std::tm t{};
+    const __time64_t time = steam_now;
+    _gmtime64_s(&t, &time);
+    const std::uint32_t fields[6] = {std::uint32_t(t.tm_year + 1900), std::uint32_t(t.tm_mon + 1), std::uint32_t(t.tm_mday),
+                                     std::uint32_t(t.tm_hour), std::uint32_t(t.tm_min), std::uint32_t(t.tm_sec)};
+    std::memcpy(reinterpret_cast<void*>(out), fields, sizeof(fields));
+    return out;
+}
+// Planted copies of both signatures for discover: wildcards become operands
+// that point at these.
+std::uintptr_t fake_steam_context, fake_steam_import, other_steam_context;
+unsigned char planted_query[256], planted_date[256];
+void plant_operand(unsigned char* code, unsigned at, unsigned length, unsigned displacement_at, const void* target) {
+    const auto d = static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(target) -
+                                             static_cast<std::intptr_t>(reinterpret_cast<std::uintptr_t>(code) + at + length));
+    std::memcpy(code + at + displacement_at, &d, 4);
+}
+
+void server_time_test() {
+    namespace st = cpuopt::server_time;
+    const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    const auto q = signature_bytes(st::query_signature), t = signature_bytes(st::date_signature);
+    for (std::size_t i = 0; i < q.size(); ++i) planted_query[i] = static_cast<unsigned char>(q[i] < 0 ? 0 : q[i]);
+    for (std::size_t i = 0; i < t.size(); ++i) planted_date[i] = static_cast<unsigned char>(t[i] < 0 ? 0 : t[i]);
+    for (unsigned i = 0; i < 2; ++i) {
+        plant_operand(planted_query, st::query_context[i], 7, 3, &fake_steam_context);
+        plant_operand(planted_query, st::query_import[i], 6, 2, &fake_steam_import);
+    }
+    plant_operand(planted_date, st::date_context, 7, 3, &fake_steam_context);
+    plant_operand(planted_date, st::date_import, 6, 2, &fake_steam_import);
+    plant_operand(planted_date, st::date_global, 7, 3, &fake_flag_global);
+    const std::uintptr_t qs[1] = {reinterpret_cast<std::uintptr_t>(planted_query)}, ds[1] = {reinterpret_cast<std::uintptr_t>(planted_date)};
+    const std::uintptr_t qs2[2] = {qs[0], qs[0]};
+    CHECK(std::string(st::discover(base, qs, 0, ds, 1).reason) == "signature not found");
+    CHECK(std::string(st::discover(base, qs2, 2, ds, 1).reason) == "signature not unique");
+    auto d = st::discover(base, qs, 1, ds, 1);
+    CHECK(d.found && d.query_rva == rva_of(planted_query) && d.date_rva == rva_of(planted_date) && d.global_rva == rva_of(&fake_flag_global));
+    plant_operand(planted_query, st::query_context[1], 7, 3, &other_steam_context);
+    CHECK(std::string(st::discover(base, qs, 1, ds, 1).reason) == "different Steam calls");
+    st::set_target(base, d);
+
+    // The flag's chain: global -> +0x260 -> +0x10 -> byte +0xBFF0 = 3 (bit 0 set).
+    auto a = std::make_unique<std::uint8_t[]>(0x268), b = std::make_unique<std::uint8_t[]>(0x18), c = std::make_unique<std::uint8_t[]>(0xBFF8);
+    std::memset(a.get(), 0, 0x268);
+    std::memset(b.get(), 0, 0x18);
+    std::memset(c.get(), 0, 0xBFF8);
+    c[0xBFF0] = 3;
+    *reinterpret_cast<std::uintptr_t*>(b.get() + 0x10) = reinterpret_cast<std::uintptr_t>(c.get());
+    *reinterpret_cast<std::uintptr_t*>(a.get() + 0x260) = reinterpret_cast<std::uintptr_t>(b.get());
+    fake_flag_global = reinterpret_cast<std::uintptr_t>(a.get());
+
+    session_vtable[st::state_slot / sizeof(void*)] = reinterpret_cast<void*>(&stand_in_state);
+    *st::query_next() = &stand_in_query;
+    *st::date_next() = &stand_in_date;
+    std::uint64_t value{};
+    // Off: every call is the game's.
+    st::set_active(false, 1000);
+    CHECK(st::query_detour(&stand_in_session, &value) == 1 && value == steam_now && native_queries == 1);
+    CHECK(st::query_detour(&stand_in_session, &value) == 1 && native_queries == 2);
+    // On: one read, then reuse.
+    st::set_active(true, 5000);
+    CHECK(st::query_detour(&stand_in_session, &value) == 1 && native_queries == 3);
+    steam_now += 7;  // Steam moves on; the kept read is still within time_ms
+    value = 0;
+    CHECK(st::query_detour(&stand_in_session, &value) == 1 && value == steam_now - 7 && native_queries == 3);
+    CHECK(st::query_detour(&stand_in_session, nullptr) == 0 && native_queries == 4);  // no out: the game's code
+    session_state = 1;  // another session state: the game's code (local time)
+    CHECK(st::query_detour(&stand_in_session, &value) == 0 && value == 12345 && native_queries == 5);
+    session_state = 2;
+    // date from the kept read, byte for byte what the game's code writes for that time.
+    std::uint8_t ours[40], game_date[40];
+    std::memset(ours, 0xEE, sizeof(ours));
+    CHECK(st::date_detour(0, reinterpret_cast<std::uintptr_t>(ours)) == reinterpret_cast<std::uintptr_t>(ours) && native_dates == 0);
+    steam_now -= 7;
+    std::memset(game_date, 0xEE, sizeof(game_date));
+    stand_in_date(0, reinterpret_cast<std::uintptr_t>(game_date));
+    CHECK(std::memcmp(ours, game_date, 0x21) == 0);
+    const std::uint32_t expected_fields[6] = {2025, 10, 9, 8, 53, 20};
+    CHECK(std::memcmp(ours, expected_fields, sizeof(expected_fields)) == 0 && ours[0x20] == 1);
+    // A kept read older than time_ms: the game's code again, and kept anew.
+    st::set_active(true, 20);
+    Sleep(40);
+    steam_now += 100;
+    native_dates = 0;
+    st::date_detour(0, reinterpret_cast<std::uintptr_t>(ours));
+    CHECK(native_dates == 1 && *reinterpret_cast<std::uint64_t*>(ours + 0x18) == steam_now);
+    // Whole seconds since the read are added.
+    st::set_active(true, 60000);
+    st::query_detour(&stand_in_session, &value);  // a fresh read? no: kept within 60 s
+    Sleep(1100);
+    CHECK(st::query_detour(&stand_in_session, &value) == 1 && value == steam_now + 1);
+    std::string out = "{";
+    st::append(out);
+    std::printf("server_time: %s}\n", out.c_str());
+    CHECK(out.find("\"active\":true,\"time_ms\":60000,") != std::string::npos);
+    st::set_active(false, 0);
+    native_queries = 0;
+    st::query_detour(&stand_in_session, &value);
+    CHECK(native_queries == 1);
+    fake_flag_global = 0;
+}
+
+// Inline rounds: a small site runs alone once learned (participants 1 during
+// the call, the old value back after), not before its job threads exist,
+// and a site with more work keeps its job threads.
+std::uint32_t participants_seen[4096];
+unsigned rounds_seen;
+void __fastcall recording_execute_job(std::uintptr_t smain, int mode, std::uintptr_t jobs, std::uint32_t count, std::uintptr_t extra) {
+    if (rounds_seen < 4096) participants_seen[rounds_seen++] = *reinterpret_cast<const std::uint32_t*>(smain + cpuopt::job_timing::participants_offset);
+    stand_in_execute_job(smain, mode, jobs, count, extra);
+}
+__declspec(noinline) std::uintptr_t slow_job(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t) {
+    const auto due = cpuopt::qpc_now() + cpuopt::qpc_frequency() / 10000;  // 0.1 ms
+    while (cpuopt::qpc_now() < due) {}
+    return 0;
+}
+volatile unsigned small_rounds, big_rounds;  // keep the linker from folding the two sites
+__declspec(noinline) void small_site(std::uintptr_t smain, std::uintptr_t list, std::uint32_t n) {
+    small_rounds = small_rounds + 1;
+    cpuopt::job_timing::detour(smain, 1, list, n, 0);
+}
+__declspec(noinline) void big_site(std::uintptr_t smain, std::uintptr_t list, std::uint32_t n) {
+    big_rounds = big_rounds + 2;
+    cpuopt::job_timing::detour(smain, 1, list, n, 0);
+}
+
+void inline_test() {
+    namespace jt = cpuopt::job_timing;
+    const auto exe = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    *jt::next_slot() = &recording_execute_job;
+    auto smain = std::make_unique<std::uint8_t[]>(0x200);
+    std::memset(smain.get(), 0, 0x200);
+    auto& participants = *reinterpret_cast<std::uint32_t*>(smain.get() + jt::participants_offset);
+    participants = 31;
+    const auto s = reinterpret_cast<std::uintptr_t>(smain.get());
+    std::uintptr_t object[2] = {reinterpret_cast<std::uintptr_t>(timing_vtable), 0};
+    std::uintptr_t small[3][4], big[5][4];
+    for (auto& e : small) {
+        e[0] = reinterpret_cast<std::uintptr_t>(object);
+        e[1] = reinterpret_cast<std::uintptr_t>(&timing_noop);
+        e[2] = e[3] = 0;
+    }
+    for (auto& e : big) {
+        e[0] = reinterpret_cast<std::uintptr_t>(object);
+        e[1] = reinterpret_cast<std::uintptr_t>(&slow_job);
+        e[2] = e[3] = 0;
+    }
+    std::uintptr_t small_before[3][4];
+    std::memcpy(small_before, small, sizeof(small));
+    jt::set_measuring(false);
+    jt::set_order(0, 20);
+    jt::set_inline(true, 100);  // 100 us: the small site's 3 empty jobs are under it, the big site's 0.5 ms is not
+    const auto run = [&](auto site, auto& list, unsigned times) {
+        rounds_seen = 0;
+        for (unsigned i = 0; i < times; ++i) site(s, reinterpret_cast<std::uintptr_t>(list), static_cast<std::uint32_t>(std::size(list)));
+        unsigned alone = 0;
+        for (unsigned i = 0; i < rounds_seen; ++i) alone += participants_seen[i] == 1 ? 1 : 0;
+        return alone;
+    };
+    // Job threads not created yet: never alone, whatever was learned.
+    CHECK(run(small_site, small, 40) == 0);
+    smain[jt::threads_created_offset] = 1;
+    CHECK(run(small_site, small, 40) == 40);  // learned in the first rounds: all alone now
+    CHECK(participants == 31);                // put back after each round
+    CHECK(std::memcmp(small_before, small, sizeof(small)) == 0);
+    CHECK(run(big_site, big, 24) == 0);
+    std::string out = "{";
+    jt::append_inline(out, exe);
+    out += '}';
+    std::printf("inline: %s\n", out.c_str());
+    CHECK(out.find("\"on\":true,\"threshold_us\":100,\"rounds\":40,") != std::string::npos);
+    CHECK(out.find(",1]") != std::string::npos && out.find(",0]") != std::string::npos);  // one site alone, one not
+    jt::set_inline(false, 100);
+    CHECK(run(small_site, small, 10) == 0);  // off: the game's own count
+    *jt::next_slot() = &stand_in_execute_job;
+}
+
 void spin_probe_test() {
     namespace sp = cpuopt::spin_probe;
     auto object = std::make_unique<std::uint8_t[]>(sp::done_offset + 8);
@@ -554,6 +903,18 @@ void census_and_sampler_test() {
     std::snprintf(outer, sizeof(outer), "[%d,%u]", id, rva_of(reinterpret_cast<const void*>(&busy_outer)));
     CHECK(e.find(leaf) != std::string::npos);
     CHECK(e.find(outer) != std::string::npos);
+    {
+        const auto at = e.find("\"leaves\":[[");
+        CHECK(at != std::string::npos);
+        const char* p = e.c_str() + at + 11;
+        char* end{};
+        const auto rva = std::strtoull(p, &end, 10);
+        const auto game = std::strtoull(end + 1, &end, 10);
+        const auto all = std::strtoull(end + 1, &end, 10);
+        const auto leaf_fn = rva_of(reinterpret_cast<const void*>(&busy_leaf));
+        std::printf("sampler: hottest leaf rva %llu (busy_leaf %u), game %llu all %llu\n", rva, leaf_fn, game, all);
+        CHECK(rva >= leaf_fn && rva < leaf_fn + 256 && game == all && all > 10);
+    }
     char thread[32];
     std::snprintf(thread, sizeof(thread), "[%lu,", static_cast<unsigned long>(busy_id));
     CHECK(e.find(thread, e.find("\"threads\":[")) != std::string::npos);
@@ -582,6 +943,9 @@ int main() {
     spin_probe_test();
     job_timing_test();
     job_order_test();
+    inline_test();
+    prim_stores_test();
+    server_time_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);

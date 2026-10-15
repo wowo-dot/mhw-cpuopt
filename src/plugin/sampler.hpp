@@ -13,6 +13,8 @@ namespace cpuopt::sampler {
 // while a thread is suspended. Whole stacks are kept (function starts, innermost
 // first) with a count, per thread, so the report can rebuild self and
 // inclusive time per function and call paths. Waiting threads are sampled too.
+// The innermost frame's exact instruction is also counted when it is in the
+// game exe ("leaves"), so a report can tell which loop of a function is hot.
 void start() noexcept;
 // Ends the sampler thread (EXITING); true if it ended within the timeout.
 bool stop(unsigned timeout_ms) noexcept;

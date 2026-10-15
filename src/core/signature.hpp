@@ -10,7 +10,7 @@ namespace cpuopt {
 // byte. Fixed storage and no allocation, so a scan can run under SEH.
 class Pattern {
 public:
-    static constexpr std::size_t capacity = 64;
+    static constexpr std::size_t capacity = 256;  // as Astera Loader's scanner
     static std::optional<Pattern> parse(std::string_view text) noexcept;
     std::size_t size() const noexcept { return size_; }
     bool matches(const std::uint8_t* at) const noexcept;

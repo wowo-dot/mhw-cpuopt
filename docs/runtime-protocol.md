@@ -33,8 +33,11 @@
      the job_thread_cap A/B, one step per job-thread count (0 = the game's own
      count, switch off), sampler off unless `--profile`;
    - `run.py steps <name> --marker hub-time --steps 0:20,4:90,0:20`: any
-     switch states in order (toggles:seconds);
-   - or by hand: `run.py control <name> --toggles 2 --job-threads 15`.
+     switch states in order (toggles:seconds); `--repeat N` runs the list N
+     times, for interleaved A/B (`--steps 8:30,24:30 --repeat 4`);
+   - or by hand: `run.py control <name> --toggles 2 --job-threads 15`;
+     `--job-order`, `--order-us`, `--inline-us` and `--time-ms` set the
+     switches' parameters (they stay in control.ini for later steps).
    Each change closes the current statistics window first, so no window mixes
    two states.
 4. `python -B tools/run.py status <name>` shows the last windows live.
@@ -81,8 +84,19 @@
   8 share it); `job_order_site`: whether the camera round's call site was
   found; `order` in each window (toggle 8): mode, rounds reordered, jobs
   moved, learning rounds, classes known.
+- `prim_stores`, `server_time`: their signature searches at PRE_MAIN (match
+  counts, site and global RVAs). `prim_buffer`, once: the memory type of
+  sPrimitive's record ring (read-only VirtualQuery; `write_combined`).
+- `prim_patch`, `server_hooks`: the al.patch change and the two detours
+  applied or switched, with the reason when they cannot be. In each window:
+  `prim_stores` (true while the change is in), `server_time` (active,
+  time_ms, reads answered by the game's code, reads reused, calls in another
+  session state) and `inline` (on, threshold, rounds run alone, timed
+  rounds, and per call site: RVA, mean work in 0.1 us, timed rounds, alone).
 - `profile` (only while toggle 1 is on): whole stacks per sampled thread with
-  counts; the game and present threads are always sampled.
+  counts; the game and present threads are always sampled. From v0.6 also
+  `leaves`: the game exe's hottest exact instructions ([rva, game thread,
+  all]), for `profile_report.py --leaves N`.
 - `stopping` / `stopped` at EXITING (the last window, sampler joined),
   `shutdown` at SHUTDOWN, `exit` from DllMain.
 
@@ -97,3 +111,19 @@
   smaller core budget (Process Lasso) to show.
 - Record the scene, graphics settings and which mods are loaded in the run
   note; the log records what it can detect itself.
+
+## The switches (v0.6)
+
+| Toggle | Name | What it changes | Parameters |
+|---|---|---|---|
+| 1 | sample_profile | research: the stack sampler | |
+| 2 | job_thread_cap | threads per job round | job_threads |
+| 4 | time_jobs | research: times every job (executeJob detour) | |
+| 8 | order_jobs | the camera round's job order | job_order (2), order_us (20) |
+| 16 | plain_prim_stores | sPrimitive's record loop stores without reading (al.patch, 56 bytes) | |
+| 32 | reuse_server_time | Steam's server time read once per time_ms (two detours) | time_ms (1000) |
+| 64 | inline_rounds | rounds with little work run on the game thread alone | inline_us (25) |
+
+Toggles add up: 8 + 16 + 32 + 64 = 120 is every optimization switch. A
+switch whose code is not found, or that Astera Loader refuses, stays off and
+says why in the log; the rest still apply.

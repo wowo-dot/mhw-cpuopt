@@ -51,6 +51,12 @@ std::optional<Control> parse_control(std::string_view text) {
         } else if (key == "order_us") {
             c.order_us = number(value);
             if (!c.order_us || *c.order_us < 1 || *c.order_us > 10000) return std::nullopt;
+        } else if (key == "inline_us") {
+            c.inline_us = number(value);
+            if (!c.inline_us || *c.inline_us < 1 || *c.inline_us > 1000) return std::nullopt;
+        } else if (key == "time_ms") {
+            c.time_ms = number(value);
+            if (!c.time_ms || *c.time_ms < 10 || *c.time_ms > 60000) return std::nullopt;
         } else if (key == "marker") {
             if (value.size() > 64) return std::nullopt;
             for (const char ch : value)

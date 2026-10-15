@@ -86,6 +86,70 @@ std::atomic<std::uint64_t> order_rounds{}, order_moved{}, order_timed{};
 const std::uint64_t calibration_tsc = __rdtsc();
 const std::int64_t calibration_qpc = qpc_now();
 std::int64_t opened = qpc_now();
+double tsc_per_us() noexcept {
+    const auto seconds = double(qpc_now() - calibration_qpc) / double(qpc_frequency());
+    return seconds > 0.01 ? double(__rdtsc() - calibration_tsc) / seconds / 1e6 : 4000.0;
+}
+
+// Inline rounds (switch inline_rounds). Sites are written by the game thread
+// and read by the window thread: relaxed atomics, no lock per round.
+struct Site {
+    std::atomic<std::uintptr_t> caller{};
+    std::atomic<std::uint64_t> mean{};  // cycles of work per round, running mean
+    std::atomic<std::uint32_t> samples{};
+    std::atomic<bool> alone{};
+    std::uint64_t rounds{};  // game thread only
+};
+std::array<Site, site_capacity> sites{};
+std::atomic<bool> inline_on{};
+std::atomic<std::uint64_t> inline_threshold{};  // cycles
+std::atomic<unsigned> inline_threshold_us{};
+std::atomic<std::uint64_t> alone_rounds{}, inline_timed{}, inline_full{};
+Site* site_of(std::uintptr_t caller) noexcept {
+    for (auto& s : sites) {
+        const auto c = s.caller.load(std::memory_order_relaxed);
+        if (c == caller) return &s;
+        if (!c) {
+            s.caller.store(caller, std::memory_order_relaxed);
+            return &s;
+        }
+    }
+    inline_full.fetch_add(1, std::memory_order_relaxed);
+    return nullptr;
+}
+bool threads_created(std::uintptr_t smain) noexcept {
+    __try {
+        return *reinterpret_cast<volatile const std::uint8_t*>(smain + threads_created_offset) != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// executeJob, alone on this thread when `alone`: participants 1 for the call.
+void execute(ExecuteJob original, std::uintptr_t smain, int mode, std::uintptr_t jobs, std::uint32_t count, std::uintptr_t extra,
+             bool alone) {
+    if (!alone) {
+        original(smain, mode, jobs, count, extra);
+        return;
+    }
+    auto* participants = reinterpret_cast<volatile std::uint32_t*>(smain + participants_offset);
+    const auto saved = *participants;
+    *participants = 1;
+    original(smain, mode, jobs, count, extra);
+    *participants = saved;
+    alone_rounds.fetch_add(1, std::memory_order_relaxed);
+}
+// One timed round's work into its site's mean, and the site's decision.
+void learn_site(Site& site, std::uint64_t work) noexcept {
+    const auto samples = site.samples.load(std::memory_order_relaxed);
+    const auto mean = site.mean.load(std::memory_order_relaxed);
+    const auto next = samples ? mean - mean / 8 + work / 8 : work;
+    site.mean.store(next, std::memory_order_relaxed);
+    site.samples.store(samples + 1, std::memory_order_relaxed);
+    if (samples + 1 < inline_learn) return;
+    const auto threshold = inline_threshold.load(std::memory_order_relaxed);
+    const bool alone = site.alone.load(std::memory_order_relaxed);
+    site.alone.store(alone ? next < threshold + threshold / 2 : next < threshold, std::memory_order_relaxed);
+}
 
 bool writable(std::uintptr_t address, std::size_t bytes) noexcept {
     const auto end = address + bytes;
@@ -309,10 +373,23 @@ void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std:
     const auto original = next_fn;
     const bool timing = measuring.load(std::memory_order_acquire);  // acquire: the trace ring exists
     const int order = order_mode.load(std::memory_order_relaxed);
+    const bool inl = inline_on.load(std::memory_order_relaxed);
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     const bool camera = order && caller == camera_return_address.load(std::memory_order_relaxed);
-    if ((!timing && !camera) || mode < 0 || mode > 5) {
+    if ((!timing && !camera && !inl) || mode < 0 || mode > 5) {
         original(smain, mode, jobs, count, extra);
+        return;
+    }
+    // Inline rounds: this site's decision, and whether this round is timed for it.
+    Site* site = inl && !camera ? site_of(caller) : nullptr;
+    bool alone = false, site_round = false;
+    if (site) {
+        const auto distant = site->mean.load(std::memory_order_relaxed) >= 4 * inline_threshold.load(std::memory_order_relaxed);
+        site_round = site->samples.load(std::memory_order_relaxed) < inline_learn || ++site->rounds % (distant ? 256 : learn_every) == 0;
+        alone = site->alone.load(std::memory_order_relaxed) && threads_created(smain);
+    }
+    if (!timing && !camera && !site_round) {
+        execute(original, smain, mode, jobs, count, extra, alone);
         return;
     }
     std::uintptr_t list = jobs;
@@ -326,7 +403,7 @@ void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std:
         AcquireSRWLockExclusive(&lock);
         ++skipped;
         ReleaseSRWLockExclusive(&lock);
-        original(smain, mode, jobs, count, extra);
+        execute(original, smain, mode, jobs, count, extra, alone);
         return;
     }
     // Reorder first: timing then wraps the entries in their round order.
@@ -337,10 +414,10 @@ void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std:
         order_moved.fetch_add(moved, std::memory_order_relaxed);
     }
     const bool learn_round = camera && order == 2 && (timing || ++camera_rounds % learn_every == 0);
-    const bool wrapped = timing || learn_round;
+    const bool wrapped = timing || learn_round || site_round;
     if (wrapped) wrap(list, n);
     const auto t0 = __rdtsc();
-    original(smain, mode, jobs, count, extra);
+    execute(original, smain, mode, jobs, count, extra, alone);
     const auto t1 = __rdtsc();
     if (wrapped) unwrap(list, n);
     if (learn_round) {
@@ -348,9 +425,16 @@ void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std:
         order_timed.fetch_add(1, std::memory_order_relaxed);
     }
     if (moved) restore_order(list, n);
-    if (timing) {
-        merge(caller, analyse(records.data(), n, t0, t1, participants), n);
-        keep_trace(caller, mode, participants, n, t0, t1);
+    if (site_round || timing) {
+        const auto r = analyse(records.data(), n, t0, t1, alone ? 1 : participants);
+        if (site_round) {
+            learn_site(*site, r.work);
+            inline_timed.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (timing) {
+            merge(caller, r, n);
+            keep_trace(caller, mode, alone ? 1 : participants, n, t0, t1);
+        }
     }
 }
 
@@ -361,9 +445,7 @@ bool set_order(int mode, unsigned threshold_us) noexcept {
         order_mode.store(0);
         return false;
     }
-    const auto seconds = double(qpc_now() - calibration_qpc) / double(qpc_frequency());
-    const auto tsc_hz = seconds > 0.01 ? double(__rdtsc() - calibration_tsc) / seconds : 4.0e9;
-    order_threshold.store(static_cast<std::uint64_t>(threshold_us * tsc_hz / 1e6));
+    order_threshold.store(static_cast<std::uint64_t>(threshold_us * tsc_per_us()));
     order_threshold_us.store(threshold_us);
     order_mode.store(mode);
     return true;
@@ -387,6 +469,48 @@ void append_order(std::string& out) {
     json::key(out, "classes");
     json::number(out, std::uint64_t(classes_known.load(std::memory_order_relaxed)));
     out += '}';
+}
+
+void set_inline(bool on, unsigned threshold_us) noexcept {
+    inline_threshold.store(static_cast<std::uint64_t>(threshold_us * tsc_per_us()));
+    inline_threshold_us.store(threshold_us);
+    inline_on.store(on);
+}
+
+void append_inline(std::string& out, std::uintptr_t image_base) {
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(image_base);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(image_base + static_cast<std::uintptr_t>(dos->e_lfanew));
+    const auto image_end = image_base + nt->OptionalHeader.SizeOfImage;
+    const auto per_us = tsc_per_us();
+    json::key(out, "inline");
+    out += '{';
+    json::key(out, "on");
+    out += inline_on.load(std::memory_order_relaxed) ? "true" : "false";
+    json::key(out, "threshold_us");
+    json::number(out, std::uint64_t(inline_threshold_us.load(std::memory_order_relaxed)));
+    json::key(out, "rounds");
+    json::number(out, alone_rounds.exchange(0, std::memory_order_relaxed));
+    json::key(out, "timed");
+    json::number(out, inline_timed.exchange(0, std::memory_order_relaxed));
+    json::key(out, "full");
+    json::number(out, inline_full.exchange(0, std::memory_order_relaxed));
+    // Sites: [caller RVA, mean work in 0.1 us, timed rounds, alone].
+    json::key(out, "sites");
+    out += '[';
+    bool first = true;
+    for (const auto& site : sites) {
+        const auto caller = site.caller.load(std::memory_order_relaxed);
+        if (!caller) break;
+        out += first ? "[" : ",[";
+        first = false;
+        json::number(out, std::uint64_t(caller >= image_base && caller < image_end ? caller - image_base : 0));
+        out += ',';
+        json::number(out, std::uint64_t(double(site.mean.load(std::memory_order_relaxed)) * 10.0 / per_us + 0.5));
+        out += ',';
+        json::number(out, std::uint64_t(site.samples.load(std::memory_order_relaxed)));
+        out += site.alone.load(std::memory_order_relaxed) ? ",1]" : ",0]";
+    }
+    out += "]}";
 }
 
 std::string take_event(double t_ms, std::uintptr_t image_base) {
