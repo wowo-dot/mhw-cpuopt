@@ -59,7 +59,7 @@ depended on modified bytes.
 | Run | Scheduling | fps | p50 / p95 / p99 ms | Game thread busy | Self time in the executeJob spin |
 |---|---|---|---|---|---|
 | al-01 | Process Lasso → cache CCD (affinity 0xffff); a third-party DLL hooking timing functions was injected | 253.3 | 3.75 / 5.60 / 6.40 | 94.1% | 41.2% of 37,285 samples |
-| al-02 | stock: BIOS CPPC Auto, Game Bar + AMD driver (frequency CCD parked, 0% busy); no trainer | 258.5 | 3.85 / 4.40 / 4.70 | 93.5% | 39.3% of 37,436 samples |
+| al-02 | stock: BIOS CPPC Auto, Game Bar + AMD driver (frequency CCD parked, 0% busy); nothing injected | 258.5 | 3.85 / 4.40 / 4.70 | 93.5% | 39.3% of 37,436 samples |
 
 - The game thread (start `0x22E4AE0`) runs Main:Update and calls Present
   itself: al.frame's game thread and al.d3d12's present thread are the same
