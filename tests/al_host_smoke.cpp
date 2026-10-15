@@ -75,7 +75,7 @@ std::string last_reason;
 al_frame_fn frame_callbacks[2]{};
 al_d3d12_event_fn present_callback{};
 std::uint32_t present_mask{};
-std::atomic<DWORD> game_tid{};
+std::atomic<DWORD> game_tid{}, job_tid{};
 std::atomic<bool> frames_stop{}, jobs_stop{};
 char plugin_token;  // stands in for al_plugin_t
 al_plugin_t* const self = reinterpret_cast<al_plugin_t*>(&plugin_token);
@@ -177,6 +177,7 @@ DWORD WINAPI game_thread(void*) {
         spin_until(info.qpc + f / 1000);  // about 1 ms of "update"
         // A job round: job thread 1 holds a job for about 0.5 ms while the
         // game thread waits in the game's spin loop.
+        smain_field(0x9F1F8) = 0;  // started and done, zeroed before the release as executeJob does
         smain_field(0x9F1FC) = 0;
         job_slot(1) = reinterpret_cast<std::uintptr_t>(fake_job);
         reinterpret_cast<SpinFn>(static_cast<void*>(planted_spin))(smain_object, 1);
@@ -188,12 +189,14 @@ DWORD WINAPI game_thread(void*) {
 }
 
 DWORD WINAPI job_thread(void*) {
+    job_tid = GetCurrentThreadId();
     const auto f = frequency();
     while (!jobs_stop.load()) {
         if (!reinterpret_cast<std::atomic<std::uintptr_t>&>(job_slot(1)).load()) {
             YieldProcessor();
             continue;
         }
+        reinterpret_cast<std::atomic<std::uint32_t>&>(smain_field(0x9F1F8)).fetch_add(1);  // started
         spin_until(qpc() + f / 2000);  // 0.5 ms of "job"
         reinterpret_cast<std::atomic<std::uintptr_t>&>(job_slot(1)).store(0);
         reinterpret_cast<std::atomic<std::uint32_t>&>(smain_field(0x9F1FC)).fetch_add(1);
@@ -386,27 +389,42 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(checked >= 3);
     // The sampler followed the game thread.
     CHECK(!profiles.empty() && profiles.back().find("\"tracked\":[" + game_id) != std::string::npos);
-    // The spin probe caught the game thread in the planted spin and saw job
-    // thread 1 busy with fake_job_function.
+    // The spin probe caught the game thread in the game's spin loop and read
+    // the round: one thread released, started, still running its job. The job
+    // thread's samples from those ticks carry the during-spin flag.
     {
-        long long spin_samples = 0, one_busy = 0;
-        bool job_seen = false;
-        const auto exe = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        const auto job_rva = std::to_string(reinterpret_cast<std::uintptr_t>(&fake_job_function) - exe);
+        long long spin_samples = 0, round_samples = 0, released = 0, started_all = 0, one_running = 0, flagged = 0;
+        const std::string job_prefix = "[" + std::to_string(job_tid.load()) + ",";
         for (const auto& line : profiles) {
             const auto at = line.find("\"spin_probe\":{\"samples\":");
             if (at == std::string::npos) continue;
             spin_samples += std::atoll(line.c_str() + at + 24);
-            const auto busy = line.find("\"busy\":[", at);
-            const auto comma = line.find(',', busy + 8);
-            one_busy += std::atoll(line.c_str() + comma + 1);  // samples with exactly one busy slot
-            job_seen = job_seen || line.find(",1," + job_rva + ",") != std::string::npos;
+            // spin_rounds: [caller, samples, released_sum, [not_started x33], [running x33]] per round
+            const auto from = line.find("\"spin_rounds\":["), to = line.find(",\"frames\":", from);
+            std::vector<long long> n;
+            for (auto i = from + 15; i < to; ++i)
+                if (line[i] >= '0' && line[i] <= '9') {
+                    n.push_back(std::atoll(line.c_str() + i));
+                    while (i < to && line[i] >= '0' && line[i] <= '9') ++i;
+                }
+            for (std::size_t r = 0; r + 69 <= n.size(); r += 69) {
+                round_samples += n[r + 1];
+                released += n[r + 2];
+                started_all += n[r + 3];       // not started: 0
+                one_running += n[r + 36 + 1];  // running: 1
+            }
+            for (auto i = line.find(job_prefix, line.find("\"stacks\":[")); i != std::string::npos; i = line.find(job_prefix, i + 1)) {
+                const auto flags = line.find(',', line.find(',', i) + 1) + 1;  // [tid,count,flags,[...]]
+                if (line[flags] == '2' || line[flags] == '3') ++flagged;
+            }
         }
-        std::printf("  spin probe: %lld samples, %lld with one busy slot, job function seen: %s\n", spin_samples, one_busy,
-                    job_seen ? "yes" : "no");
-        CHECK(spin_samples > 50);
-        CHECK(one_busy > spin_samples / 2);
-        CHECK(job_seen);
+        std::printf("  spin probe: %lld samples, %lld in rounds, released %lld, all started %lld, one running %lld, "
+                    "job thread stacks during the spin %lld\n",
+                    spin_samples, round_samples, released, started_all, one_running, flagged);
+        CHECK(spin_samples > 50 && round_samples == spin_samples);
+        CHECK(released == round_samples);  // one thread per round
+        CHECK(one_running > round_samples / 2);
+        CHECK(flagged > 0);
     }
     // EXITING stopped everything in time; SHUTDOWN still logged.
     CHECK(exiting_ms < 2500);

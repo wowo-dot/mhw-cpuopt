@@ -125,3 +125,15 @@ Game thread, hub start, 37,436 samples over 60 s (stock scheduling):
 - Next (v0.3.1): the sampler reads sMain's job slots whenever it catches the
   game thread in the spin (`src/plugin/spin_probe.hpp`), to see whether one
   long job (load imbalance) or many jobs hold each round.
+- al-04 (v0.3.1): the slot reading reported 30-31 "busy" slots in 94% of
+  spin samples, impossible with job threads idle 92% of the time. Each slot
+  keeps its last job after the thread finishes (the runner's loop can end on
+  its condition without clearing it), so slot contents do not show running
+  jobs. v0.3.2 reads the round's own counters instead: released (the spinning
+  thread's edi), started `[+9F1F8h]` and done `[+9F1FCh]`, and marks the job
+  threads' samples taken in the same sampler tick as a spin.
+- al-04 repeated al-02's split closely: executeJob 64.2% of the game thread
+  (spin 37.2%, own jobs 21.6%); `sub_14221A050` 39.3%, `sub_14221ACE0` 20.2%.
+  `sub_14221ACE0` is the unit move pass (`sUnit`): one job per unit of a move
+  line, each `cUnit::genericMove(unit)`, timed per line by the game's own
+  MtPerformanceCounter.

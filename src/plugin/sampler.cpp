@@ -3,7 +3,6 @@
 #include "../core/toggles.hpp"
 #include "log.hpp"
 #include "spin_probe.hpp"
-#include <psapi.h>
 #include <tlhelp32.h>
 #include <algorithm>
 #include <array>
@@ -33,21 +32,22 @@ struct Thread {
 struct Stack {
     std::uint64_t hash{};
     std::uint32_t tid{}, count{};
-    std::uint16_t depth{}, truncated{};
+    std::uint16_t depth{}, flags{};  // flags: 1 cut short, 2 taken while the game thread spun
     std::array<std::uint64_t, depth_capacity> frames;  // module id << 32 | rva
 };
 struct ThreadStat {
     DWORD tid{};
     std::uint32_t samples{}, failed{};
 };
-// Spin probe readings: which job functions were still running, per job round
-// (the frame that called executeJob), while the game thread spun.
-struct SpinJob {
+// Spin probe readings per job round (the frame that called executeJob): how
+// many released job threads had not started and how many were still running.
+struct SpinRound {
     std::uint64_t caller{};  // frame id of executeJob's caller
-    std::uint64_t function{};  // job function (absolute address)
-    std::uint32_t count{};
+    std::uint32_t samples{};
+    std::uint64_t released{};  // summed over samples
+    std::array<std::uint32_t, spin_probe::max_threads + 1> not_started{}, running{};
 };
-constexpr unsigned spin_job_capacity = 512;
+constexpr unsigned spin_round_capacity = 64;
 struct Table {
     std::array<Stack, stack_capacity> stacks;
     std::array<ThreadStat, thread_stat_capacity> threads;
@@ -55,8 +55,7 @@ struct Table {
     std::uint64_t samples{}, overflow{}, ticks{};
     std::int64_t opened{};  // qpc when the table started collecting
     std::uint64_t spin_samples{}, spin_unreadable{}, spin_overflow{};
-    std::array<std::uint32_t, spin_probe::max_slots + 1> spin_busy{};  // samples by number of busy slots
-    std::array<SpinJob, spin_job_capacity> spin_jobs{};
+    std::array<SpinRound, spin_round_capacity> spin_rounds{};
 };
 
 // The spin probe's code range and sMain's global (job_cap.hpp); set once.
@@ -237,8 +236,8 @@ ThreadStat* stat_of(Table& t, DWORD tid) noexcept {
     s = {tid, 0, 0};
     return &s;
 }
-void record(DWORD tid, const std::uint64_t* frames, unsigned depth, bool cut) noexcept {
-    std::uint64_t hash = 0xcbf29ce484222325ULL ^ tid;
+void record(DWORD tid, const std::uint64_t* frames, unsigned depth, std::uint16_t flags) noexcept {
+    std::uint64_t hash = (0xcbf29ce484222325ULL ^ tid) * 0x100000001b3ULL ^ flags;
     for (unsigned i = 0; i < depth; ++i) hash = (hash ^ frames[i]) * 0x100000001b3ULL;
     AcquireSRWLockExclusive(&lock);
     auto& t = *tables[active];
@@ -254,11 +253,12 @@ void record(DWORD tid, const std::uint64_t* frames, unsigned depth, bool cut) no
             s.tid = tid;
             s.count = 1;
             s.depth = static_cast<std::uint16_t>(depth);
-            s.truncated = cut ? 1 : 0;
+            s.flags = flags;
             std::copy(frames, frames + depth, s.frames.begin());
             ++t.used;
             stored = true;
-        } else if (s.hash == hash && s.tid == tid && s.depth == depth && std::equal(frames, frames + depth, s.frames.begin())) {
+        } else if (s.hash == hash && s.tid == tid && s.depth == depth && s.flags == flags &&
+                   std::equal(frames, frames + depth, s.frames.begin())) {
             ++s.count;
             stored = true;
         }
@@ -271,7 +271,9 @@ void failed(DWORD tid) noexcept {
     if (auto* s = stat_of(*tables[active], tid)) ++s->failed;
     ReleaseSRWLockExclusive(&lock);
 }
-void probe(std::uint64_t caller) noexcept {
+// The game thread is in executeJob's spin: rbx is sMain, edi the number of
+// job threads released for this round (spin_probe.hpp).
+void probe(std::uint64_t caller, std::uintptr_t rbx, std::uint32_t released) noexcept {
     std::uintptr_t smain{};
     __try {
         smain = *reinterpret_cast<volatile const std::uintptr_t*>(smain_global.load(std::memory_order_relaxed));
@@ -279,51 +281,61 @@ void probe(std::uint64_t caller) noexcept {
         smain = 0;
     }
     spin_probe::Reading r;
-    const bool ok = spin_probe::read(smain, r);
+    const bool ok = smain && smain == rbx && spin_probe::read(smain, released, r);
     AcquireSRWLockExclusive(&lock);
     auto& t = *tables[active];
     ++t.spin_samples;
     if (!ok) {
         ++t.spin_unreadable;
     } else {
-        ++t.spin_busy[r.busy];
-        for (unsigned i = 0; i < r.busy; ++i) {
-            bool stored = false;
-            for (auto& j : t.spin_jobs) {
-                if (j.count && (j.caller != caller || j.function != r.functions[i])) continue;
-                j.caller = caller;
-                j.function = r.functions[i];
-                ++j.count;
-                stored = true;
-                break;
-            }
-            if (!stored) ++t.spin_overflow;
+        SpinRound* round = nullptr;
+        for (auto& candidate : t.spin_rounds) {
+            if (candidate.samples && candidate.caller != caller) continue;
+            round = &candidate;
+            break;
+        }
+        if (!round) {
+            ++t.spin_overflow;
+        } else {
+            round->caller = caller;
+            ++round->samples;
+            round->released += r.released;
+            ++round->not_started[r.not_started() < spin_probe::max_threads ? r.not_started() : spin_probe::max_threads];
+            ++round->running[r.running() < spin_probe::max_threads ? r.running() : spin_probe::max_threads];
         }
     }
     ReleaseSRWLockExclusive(&lock);
 }
-void sample(const Thread& t) noexcept {
+// Samples one thread; true if it was the game thread spinning in executeJob.
+bool sample(const Thread& t, bool during_spin) noexcept {
     std::array<std::uintptr_t, depth_capacity> pcs;
     CONTEXT c{};
     c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
     if (SuspendThread(t.handle) == static_cast<DWORD>(-1)) {
         failed(t.id);
-        return;
+        return false;
     }
     bool cut = false;
     unsigned n{};
-    if (GetThreadContext(t.handle, &c)) n = walk(c, t.teb, pcs, cut);
+    std::uintptr_t rip{}, rbx{};
+    std::uint32_t rdi{};
+    if (GetThreadContext(t.handle, &c)) {
+        rip = static_cast<std::uintptr_t>(c.Rip);  // before the unwind changes them
+        rbx = static_cast<std::uintptr_t>(c.Rbx);
+        rdi = static_cast<std::uint32_t>(c.Rdi);
+        n = walk(c, t.teb, pcs, cut);
+    }
     ResumeThread(t.handle);
     if (!n) {
         failed(t.id);
-        return;
+        return false;
     }
     std::array<std::uint64_t, depth_capacity> frames;
     for (unsigned i = 0; i < n; ++i) frames[i] = frame_of(pcs[i], i == 0);
-    record(t.id, frames.data(), n, cut);
-    // Caught spinning in executeJob: which jobs are the others still running?
-    if (pcs[0] >= spin_begin.load(std::memory_order_relaxed) && pcs[0] < spin_end.load(std::memory_order_relaxed))
-        probe(n > 1 ? frames[1] : 0);
+    record(t.id, frames.data(), n, static_cast<std::uint16_t>((cut ? 1 : 0) | (during_spin ? 2 : 0)));
+    const bool spinning = rip >= spin_begin.load(std::memory_order_relaxed) && rip < spin_end.load(std::memory_order_relaxed);
+    if (spinning) probe(n > 1 ? frames[1] : 0, rbx, rdi);
+    return spinning;
 }
 bool is_tracked(DWORD id) noexcept {
     for (const auto& t : tracked)
@@ -350,12 +362,22 @@ DWORD WINAPI run(void*) noexcept {
             refreshed = now;
             was_on = true;
         }
+        // The game thread first (tracked slot 0): if it is spinning in
+        // executeJob, this tick's other samples are marked as taken during
+        // its spin, so the report can tell what the job threads were doing.
+        const DWORD first = tracked[0].load(std::memory_order_relaxed);
+        bool spinning = false;
         for (unsigned i = 0; i < thread_count; ++i)
-            if (is_tracked(threads[i].id)) sample(threads[i]);
+            if (threads[i].id == first) {
+                spinning = sample(threads[i], false);
+                break;
+            }
+        for (unsigned i = 0; i < thread_count; ++i)
+            if (threads[i].id != first && is_tracked(threads[i].id)) sample(threads[i], spinning);
         for (unsigned k = 0, tries = 0; k < rotation && thread_count && tries < thread_count; ++tries) {
             const auto& t = threads[next_thread++ % thread_count];
             if (is_tracked(t.id)) continue;
-            sample(t);
+            sample(t, spinning);
             ++k;
         }
         AcquireSRWLockExclusive(&lock);
@@ -437,10 +459,8 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
         json::number(out, t.samples);
         json::key(out, "overflow");
         json::number(out, t.overflow);
-        // The spin probe: busy-slot counts, and running job functions per
-        // executeJob caller ([caller frame index, job function RVA or absolute
-        // address when outside the exe, samples]).
-        const auto exe = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+        // The spin probe's totals; its readings per job round follow the
+        // stacks ("spin_rounds").
         json::key(out, "spin_probe");
         out += '{';
         json::key(out, "samples");
@@ -449,13 +469,6 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
         json::number(out, t.spin_unreadable);
         json::key(out, "overflow");
         json::number(out, t.spin_overflow);
-        json::key(out, "busy");
-        out += '[';
-        for (unsigned i = 0; i < t.spin_busy.size(); ++i) {
-            if (i) out += ',';
-            json::number(out, std::uint64_t(t.spin_busy[i]));
-        }
-        out += ']';
         out += '}';
         json::key(out, "tracked");
         out += '[';
@@ -496,7 +509,7 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
             stacks += ',';
             json::number(stacks, std::uint64_t(s.count));
             stacks += ',';
-            json::number(stacks, std::uint64_t(s.truncated));
+            json::number(stacks, std::uint64_t(s.flags));
             stacks += ",[";
             for (unsigned i = 0; i < s.depth; ++i) {
                 const auto [it, inserted] = index.try_emplace(s.frames[i], static_cast<std::uint32_t>(index.size()));
@@ -512,42 +525,46 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
             }
             stacks += "]]";
         }
-        // Spin probe jobs: their callers join the frame list.
-        std::string spin_jobs;
-        MODULEINFO image{};
-        GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr), &image, sizeof(image));
-        const auto exe_end = exe + image.SizeOfImage;
-        for (const auto& j : t.spin_jobs) {
-            if (!j.count) continue;
-            const auto [it, inserted] = index.try_emplace(j.caller, static_cast<std::uint32_t>(index.size()));
+        // Spin probe rounds: their callers join the frame list.
+        std::string rounds;
+        for (const auto& r : t.spin_rounds) {
+            if (!r.samples) continue;
+            const auto [it, inserted] = index.try_emplace(r.caller, static_cast<std::uint32_t>(index.size()));
             if (inserted) {
                 frames += index.size() == 1 ? "[" : ",[";
-                json::number(frames, j.caller >> 32);
+                json::number(frames, r.caller >> 32);
                 frames += ',';
-                json::number(frames, j.caller & 0xFFFFFFFFULL);
+                json::number(frames, r.caller & 0xFFFFFFFFULL);
                 frames += ']';
             }
-            const bool in_exe = j.function >= exe && j.function < exe_end;
-            spin_jobs += spin_jobs.empty() ? "[" : ",[";
-            json::number(spin_jobs, std::uint64_t(it->second));
-            spin_jobs += in_exe ? ",1," : ",0,";
-            json::number(spin_jobs, std::uint64_t(in_exe ? j.function - exe : j.function));
-            spin_jobs += ',';
-            json::number(spin_jobs, std::uint64_t(j.count));
-            spin_jobs += ']';
+            rounds += rounds.empty() ? "[" : ",[";
+            json::number(rounds, std::uint64_t(it->second));
+            rounds += ',';
+            json::number(rounds, std::uint64_t(r.samples));
+            rounds += ',';
+            json::number(rounds, r.released);
+            for (const auto* hist : {&r.not_started, &r.running}) {
+                rounds += ",[";
+                for (unsigned i = 0; i < hist->size(); ++i) {
+                    if (i) rounds += ',';
+                    json::number(rounds, std::uint64_t((*hist)[i]));
+                }
+                rounds += ']';
+            }
+            rounds += ']';
         }
-        json::key(out, "spin_job_columns");
-        out += "[\"caller_frame\",\"in_exe\",\"function\",\"samples\"]";
-        json::key(out, "spin_jobs");
+        json::key(out, "spin_round_columns");
+        out += "[\"caller_frame\",\"samples\",\"released_sum\",\"not_started_hist\",\"running_hist\"]";
+        json::key(out, "spin_rounds");
         out += '[';
-        out += spin_jobs;
+        out += rounds;
         out += ']';
         json::key(out, "frames");
         out += '[';
         out += frames;
         out += ']';
         json::key(out, "stack_columns");
-        out += "[\"tid\",\"count\",\"truncated\",\"frames\"]";
+        out += "[\"tid\",\"count\",\"flags\",\"frames\"]";
         json::key(out, "stacks");
         out += '[';
         out += stacks;
@@ -558,8 +575,7 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
     t.used = t.thread_count = 0;
     t.samples = t.overflow = t.ticks = 0;
     t.spin_samples = t.spin_unreadable = t.spin_overflow = 0;
-    t.spin_busy = {};
-    for (auto& j : t.spin_jobs) j = {};
+    for (auto& r : t.spin_rounds) r = {};
     return out;
 }
 }  // namespace cpuopt::sampler

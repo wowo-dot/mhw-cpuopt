@@ -10,7 +10,10 @@ From the stack sampler's "profile" events:
   caller: the game function that started the job round;
 - the jobs the game thread ran itself, by job function;
 - job threads (start 0x225F2B0): waiting for work against running jobs, by
-  job function (the frame the worker loop 0x225F2F0 called).
+  job function (the frame the worker loop 0x225F2F0 called), overall and in
+  the sampler ticks where the game thread was spinning (v0.3.2+);
+- the spin probe (v0.3.2+): per job round, how many released job threads had
+  not started yet and how many were still running when the game thread spun.
 Counts are wall-clock samples; shares are of each thread's own samples.
 """
 import argparse
@@ -63,8 +66,9 @@ def main():
     worker_jobs = collections.Counter()
     worker_threads = set()
     spin_samples = spin_unreadable = 0
-    spin_busy = collections.Counter()
-    spin_jobs = collections.Counter()  # (caller label, job label) -> samples it was still running
+    rounds = {}  # caller label -> [samples, released sum, not_started hist, running hist]
+    spin_worker_total, spin_worker_wait = 0, 0
+    spin_worker_jobs = collections.Counter()
     for e in profiles:
         names = e['modules']
         frames = [(names[m] if m != UNKNOWN and m < len(names) else None, r) for m, r in e['frames']]
@@ -72,12 +76,14 @@ def main():
         if probe:
             spin_samples += probe['samples']
             spin_unreadable += probe['unreadable']
-            for busy, n in enumerate(probe['busy']):
-                spin_busy[busy] += n
-            for caller, in_exe, function, n in e.get('spin_jobs', []):
-                job = label((GAME, function)) if in_exe else f'{function:#x} (outside the exe)'
-                spin_jobs[(label(frames[caller]) if caller < len(frames) else '?', job)] += n
-        for tid, count, _, stack in e['stacks']:
+            for caller, n, released, not_started, running in e.get('spin_rounds', []):
+                key = label(frames[caller]) if caller < len(frames) else '?'
+                r = rounds.setdefault(key, [0, 0, [0] * len(not_started), [0] * len(running)])
+                r[0] += n
+                r[1] += released
+                r[2] = [a + b for a, b in zip(r[2], not_started)]
+                r[3] = [a + b for a, b in zip(r[3], running)]
+        for tid, count, flags, stack in e['stacks']:
             st = [frames[i] for i in stack]
             if tid in game_threads:
                 game_total += count
@@ -101,10 +107,15 @@ def main():
                 k = next((k for k, f in enumerate(st) if is_game(f, WORKER_LOOP)), None)
                 if k is None:
                     continue
+                during_spin = bool(flags & 2)
+                spin_worker_total += count if during_spin else 0
                 if k == 0 or not st[k - 1][0] or st[k - 1][0] != GAME:
                     worker_wait += count  # in the loop itself or the semaphore wait below it
+                    spin_worker_wait += count if during_spin else 0
                     continue
                 worker_jobs[label(st[k - 1])] += count
+                if during_spin:
+                    spin_worker_jobs[label(st[k - 1])] += count
 
     in_jobs = sum(caller_total.values())
     print(f'{log.name}: {len(profiles)} profile windows, markers {sorted({e["marker"] for e in profiles})}')
@@ -122,12 +133,20 @@ def main():
     for job, n in own_jobs.most_common(a.top):
         print(f'   {100 * n / max(game_total, 1):5.1f}%  {job}')
     print(f'\n== spin probe: {spin_samples} samples of the game thread spinning ({spin_unreadable} unreadable)')
-    if spin_samples:
-        print('   busy job slots while it spun: ' + ', '.join(
-            f'{k}: {100 * n / spin_samples:.1f}%' for k, n in sorted(spin_busy.items()) if n))
-        print('-- still running while it spun, by job round (caller) and job function, % of spin samples')
-        for (caller, job), n in spin_jobs.most_common(a.top):
-            print(f'   {100 * n / spin_samples:5.1f}%  {job}   [round from {caller}]')
+    if rounds:
+        print('   per job round: released threads (mean); not started yet: mean, share of samples with any;')
+        print('   still running a job: mean, share with exactly one, share with two or more')
+        for caller, (n, released, not_started, running) in sorted(rounds.items(), key=lambda kv: -kv[1][0])[:a.top]:
+            mean = lambda h: sum(i * c for i, c in enumerate(h)) / max(n, 1)
+            print(f'   {100 * n / max(spin_samples, 1):5.1f}% of spins  released {released / max(n, 1):5.1f}  '
+                  f'not started {mean(not_started):5.2f} ({100 * (n - not_started[0]) / max(n, 1):4.1f}%)  '
+                  f'running {mean(running):5.2f} (one {100 * running[1] / max(n, 1):4.1f}%, two+ '
+                  f'{100 * (n - running[0] - running[1]) / max(n, 1):4.1f}%)  {caller}')
+    if spin_worker_total:
+        print(f'-- job threads in the ticks the game thread spun: {spin_worker_total} samples, waiting '
+              f'{100 * spin_worker_wait / spin_worker_total:.1f}%; running:')
+        for job, n in spin_worker_jobs.most_common(a.top):
+            print(f'   {100 * n / spin_worker_total:5.1f}%  {n:7d}  {job}')
     print(f'\n== job threads: {len(worker_threads)} sampled, {worker_total} samples; waiting for work '
           f'{100 * worker_wait / max(worker_total, 1):.1f}%')
     print('-- jobs they ran, % of their samples')
