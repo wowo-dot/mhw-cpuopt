@@ -37,6 +37,19 @@ __declspec(allocate(".cpotest")) unsigned char planted[] = {
     0x49, 0xB9, 0xAB, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,  // mov r9,0AAAAAAAAAAAAAAABh
     0x4C, 0x8B, 0x80, 0x10, 0xF2, 0x01, 0x00,                    // mov r8,[rax+1F210h]
     0xC3};
+// sMain's job code: the runner's prologue (mov r8,[rip+fake_smain] at +21)
+// and the three layout signatures, once each.
+__declspec(allocate(".cpotest")) unsigned char planted_runner[] = {
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7C, 0x24, 0x20, 0x41, 0x56,
+    0x48, 0x83, 0xEC, 0x20, 0x4C, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0xF1, 0x4C, 0x8B, 0x31, 0xC3};
+__declspec(allocate(".cpotest")) unsigned char planted_layout[] = {
+    0x8B, 0x83, 0xCC, 0x00, 0x00, 0x00, 0x8B, 0xBB, 0xB0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x8B, 0xF0, 0xF1, 0x09, 0x00,
+    0x44, 0x89, 0xA3, 0xF8, 0xF1, 0x09, 0x00, 0x44, 0x89, 0xA3, 0xFC, 0xF1, 0x09, 0x00, 0x3B, 0xF8, 0xCC,
+    0x8B, 0x83, 0xFC, 0xF1, 0x09, 0x00, 0x3B, 0xC7, 0x74, 0x0C, 0xF3, 0x90, 0x8B, 0x83, 0xFC, 0xF1, 0x09, 0x00, 0x3B, 0xC7, 0xCC,
+    0x80, 0xB9, 0x8C, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0xD9, 0x8B, 0x81, 0xD0, 0x00, 0x00, 0x00, 0x89, 0x81, 0xCC, 0x00, 0x00, 0x00, 0xC3};
+std::uintptr_t fake_smain;
+std::uint8_t smain_object[0xAF680 + 64];
+std::uint32_t& smain_field(std::uint32_t offset) { return *reinterpret_cast<std::uint32_t*>(smain_object + offset); }
 std::uintptr_t fake_srender;
 std::uint64_t srender_object[0x20000 / 8];
 std::atomic<std::uint64_t>& render_counter() { return reinterpret_cast<std::atomic<std::uint64_t>&>(srender_object[0x1F210 / 8]); }
@@ -231,6 +244,18 @@ int wmain(int argc, wchar_t** argv) {
     std::memcpy(planted + 3, &displacement, 4);
     VirtualProtect(planted, sizeof(planted), old, &old);
     fake_srender = reinterpret_cast<std::uintptr_t>(srender_object);
+    {
+        const auto at = reinterpret_cast<std::uintptr_t>(planted_runner) + 21;
+        const auto d = static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(&fake_smain) - static_cast<std::intptr_t>(at + 7));
+        VirtualProtect(planted_runner, sizeof(planted_runner), PAGE_EXECUTE_READWRITE, &old);
+        std::memcpy(planted_runner + 24, &d, 4);
+        VirtualProtect(planted_runner, sizeof(planted_runner), old, &old);
+    }
+    // A 32-thread machine as the game sets it up: 31 per round, threads created.
+    fake_smain = reinterpret_cast<std::uintptr_t>(smain_object);
+    smain_field(0xAF680) = 32;
+    smain_field(0xD0) = smain_field(0xCC) = 31;
+    smain_object[0x90] = 1;
 
     const auto module = LoadLibraryW(dll.c_str());
     CHECK(module != nullptr);
@@ -249,7 +274,7 @@ int wmain(int argc, wchar_t** argv) {
     al_init_t start{sizeof(al_init_t), 0, self, folder.c_str(), folder.c_str(), nullptr};
     CHECK(init(&api, &start) == AL_OK);
     CHECK(last_status == AL_STATUS_ACTIVE);
-    CHECK(scans == 1);
+    CHECK(scans == 5);  // the frame counter and the four job_cap signatures
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && present_callback);
     CHECK(present_mask == (AL_D3D12_EVENT_BIT(AL_D3D12_PRE_PRESENT) | AL_D3D12_EVENT_BIT(AL_D3D12_POST_PRESENT)));
 
@@ -259,8 +284,10 @@ int wmain(int argc, wchar_t** argv) {
     const al_phase_game_ready_t ready{sizeof(al_phase_game_ready_t), AL_GAME_READY_TITLE, 75};
     info->on_phase(self, AL_PHASE_GAME_READY, &ready);
     Sleep(2300);
-    write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-b\ntoggles=1\n");
+    const auto native_before = smain_field(0xD0);
+    write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-b\ntoggles=3\njob_threads=12\n");
     Sleep(2600);
+    const auto capped = smain_field(0xD0), capped_participants = smain_field(0xCC);
     write_all(run + L"\\control.ini", "toggles=banana\n");  // rejected, nothing changes
     Sleep(1200);
 
@@ -270,6 +297,7 @@ int wmain(int argc, wchar_t** argv) {
     const double exiting_ms = double(qpc() - t_exit) * 1000.0 / double(frequency());
     frames_stop = true;
     WaitForMultipleObjects(2, threads, TRUE, 2000);
+    const auto after_exit = smain_field(0xD0);
     const al_phase_shutdown_t shutdown{sizeof(al_phase_shutdown_t), 0};
     info->on_phase(self, AL_PHASE_SHUTDOWN, &shutdown);
 
@@ -284,6 +312,14 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(text.find("\"event\":\"frame_clock\",") != std::string::npos);
     CHECK(text.find("\"found\":true,\"reason\":\"ok\",\"scanner\":\"al.scanner\",\"matches\":1") != std::string::npos);
     CHECK(text.find("\"event\":\"al_frame_subscribed\"") != std::string::npos);
+    // job_cap: found, 31 before, 12 while on, the game's 31 back at EXITING.
+    CHECK(text.find("\"event\":\"job_cap\",") != std::string::npos);
+    CHECK(text.find("\"reason\":\"ok\",\"scanner\":\"al.scanner\",\"counts\":[1,1,1,1]") != std::string::npos);
+    CHECK(native_before == 31 && capped == 12 && capped_participants == 12 && after_exit == 31);
+    CHECK(text.find("\"job\":{\"state\":\"native\",\"native\":31,\"requested\":0,\"applied\":31") != std::string::npos);
+    CHECK(text.find("\"job\":{\"state\":\"capped\",\"native\":31,\"requested\":12,\"applied\":12") != std::string::npos);
+    CHECK(text.find("\"job_threads\":12") != std::string::npos);
+    std::printf("  job_cap: native %u, capped %u/%u, after EXITING %u\n", native_before, capped, capped_participants, after_exit);
     CHECK(text.find("\"event\":\"game_ready\"") != std::string::npos && text.find("\"frame\":75") != std::string::npos);
     CHECK(text.find("\"marker\":\"smoke-b\",\"window_ms\":1000") != std::string::npos);
     CHECK(text.find("\"rejected\":true") != std::string::npos);

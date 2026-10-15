@@ -8,8 +8,10 @@ namespace cpuopt {
 // in the same scene.
 enum Toggle : unsigned {
     sample_profile = 1U,  // research: stack sampler (sampler.hpp); suspends sampled threads briefly
+    job_thread_cap = 2U,  // sMain's job rounds use control.ini's job_threads threads, not the game's
+                          // count from all logical processors (job_cap.hpp)
 };
-inline constexpr unsigned toggle_mask = 1U;  // every defined bit
+inline constexpr unsigned toggle_mask = 3U;  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }

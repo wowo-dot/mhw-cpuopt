@@ -84,6 +84,10 @@ void control() {
     CHECK(!parse_control("marker=quote\""));
     CHECK(!parse_control("window_ms=999"));
     CHECK(!parse_control("window_ms=60001"));
+    CHECK(parse_control("job_threads=16")->job_threads == 16u);
+    CHECK(parse_control("job_threads=1")->job_threads == 1u);
+    CHECK(!parse_control("job_threads=0"));
+    CHECK(!parse_control("job_threads=65"));
     CHECK(!parse_control("unknown=1"));
     CHECK(!parse_control("toggles"));
     CHECK(parse_control("\xEF\xBB\xBFtoggles=2")->toggles == 2u);  // UTF-8 BOM

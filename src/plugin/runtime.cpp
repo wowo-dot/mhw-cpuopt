@@ -62,6 +62,7 @@ struct State {
     std::wstring control_path;
     std::uint64_t control_stamp{};
     std::string marker;
+    unsigned job_threads{16};  // participants while toggle job_thread_cap is on
     unsigned window_ms{5000};
     std::uint64_t seq{}, updates{}, presents{};
     double window_start{};
@@ -128,6 +129,7 @@ void write_window(State& s) {
     json::key(out, "frame_state");
     json::number(out, std::int64_t(host.frame_state ? host.frame_state() : -1));
     frame_events::append(out, frames, ms);
+    job_cap::append(out);
     if (s.poller) append_poller(out, frame_clock::take(), ms);
     const auto busiest = s.census.append_window(out, s.own);
     out += '}';
@@ -168,6 +170,8 @@ void poll_control(State& s, bool initial) {
     if (parsed->toggles) toggles.store(*parsed->toggles & toggle_mask);
     if (parsed->marker) s.marker = *parsed->marker;
     if (parsed->window_ms) s.window_ms = *parsed->window_ms;
+    if (parsed->job_threads) s.job_threads = *parsed->job_threads;
+    job_cap::request(on(job_thread_cap) ? s.job_threads : 0);  // applied on the game thread at the next frame
     json::key(out, "t_ms");
     json::fixed(out, now_ms(), 3);
     json::key(out, "toggles");
@@ -178,6 +182,8 @@ void poll_control(State& s, bool initial) {
     json::string(out, s.marker);
     json::key(out, "window_ms");
     json::number(out, std::uint64_t(s.window_ms));
+    json::key(out, "job_threads");
+    json::number(out, std::uint64_t(s.job_threads));
     out += '}';
     event_log.write(out);
 }
@@ -198,6 +204,7 @@ DWORD WINAPI worker(void* parameter) noexcept {
         system_info::ModuleCensus modules;
         if (auto e = modules.changed_event(now_ms()); !e.empty()) event_log.write(e);
         event_log.write(frame_clock::discovery_event(host.discovery, now_ms(), host.scanner));
+        event_log.write(job_cap::discovery_event(host.job, now_ms(), host.scanner));
 
         sampler::start();
         for (int i = 0; i < 100 && !sampler::thread_id(); ++i) Sleep(10);

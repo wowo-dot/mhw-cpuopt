@@ -8,6 +8,8 @@
 #include "al/al_plugin.h"
 #include "frame_clock.hpp"
 #include "frame_events.hpp"
+#include "image_scan.hpp"
+#include "job_cap.hpp"
 #include "log.hpp"
 #include "runtime.hpp"
 #include <cstddef>
@@ -42,6 +44,7 @@ void AL_CALL on_frame(al_plugin_t*, al_frame_event_t event, const al_frame_info_
     if (!info) return;
     if (event == AL_FRAME_BEGIN) {
         cpuopt::frame_events::on_begin(info->qpc, GetCurrentThreadId());
+        cpuopt::job_cap::on_begin();  // before the update: no job round runs now
         std::uint64_t counter{};
         if (cpuopt::frame_clock::read(validated_renderer, counter)) cpuopt::frame_events::on_render_counter(counter);
     } else if (event == AL_FRAME_END) {
@@ -64,10 +67,12 @@ void AL_CALL on_phase(al_plugin_t*, al_phase_t phase, const void* data) {
         const auto* ready = static_cast<const al_phase_game_ready_t*>(data);
         cpuopt::runtime::note("game_ready", "frame", ready && ready->size >= sizeof(*ready) ? static_cast<long long>(ready->frame) : -1);
     } else if (phase == AL_PHASE_EXITING) {
+        cpuopt::job_cap::restore();  // the game's own job thread count for its teardown
         cpuopt::runtime::stop("exiting");
         say(AL_LOG_INFO, "stopped at EXITING");
     } else if (phase == AL_PHASE_SHUTDOWN) {
         const auto* shutdown = static_cast<const al_phase_shutdown_t*>(data);
+        cpuopt::job_cap::restore();
         cpuopt::runtime::stop("shutdown");  // when EXITING did not come
         cpuopt::runtime::note("shutdown", "exit_code", shutdown && shutdown->size >= sizeof(*shutdown) ? shutdown->exit_code : 0);
     }
@@ -109,23 +114,33 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             if (game->game_version) host.game_version = game->game_version;
         }
 
-        // The frame counter, searched now: the code is unpacked at PRE_MAIN.
+        // Signatures, searched now: the code is unpacked at PRE_MAIN. Astera
+        // Loader's scanner caches its results per exe; our own scan otherwise.
         const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        std::uintptr_t matches[cpuopt::frame_clock::match_capacity]{};
-        unsigned count{};
-        if (const auto* scanner = service<al_scanner_t>(AL_SCANNER_INTERFACE, AL_SCANNER_VERSION)) {
+        const auto* scanner = service<al_scanner_t>(AL_SCANNER_INTERFACE, AL_SCANNER_VERSION);
+        host.scanner = scanner ? "al.scanner" : "own";
+        const auto find = [&](std::string_view text, std::uintptr_t* matches, unsigned capacity) -> unsigned {
+            if (!scanner) return cpuopt::image_scan::find(base, text, matches, capacity);
             void* found[cpuopt::frame_clock::match_capacity]{};
-            const std::string pattern(cpuopt::frame_clock::signature);
-            count = scanner->find(self, pattern.c_str(), AL_SCAN_CODE, found, cpuopt::frame_clock::match_capacity);
+            const std::string pattern(text);
+            auto count = scanner->find(self, pattern.c_str(), AL_SCAN_CODE, found, cpuopt::frame_clock::match_capacity);
             if (count == AL_SCAN_INVALID) count = 0;
-            for (unsigned i = 0; i < count && i < cpuopt::frame_clock::match_capacity; ++i) matches[i] = reinterpret_cast<std::uintptr_t>(found[i]);
-            host.scanner = "al.scanner";
-        } else {
-            count = cpuopt::frame_clock::scan(base, matches, cpuopt::frame_clock::match_capacity);
-            host.scanner = "own";
-        }
+            for (unsigned i = 0; i < count && i < capacity && i < cpuopt::frame_clock::match_capacity; ++i)
+                matches[i] = reinterpret_cast<std::uintptr_t>(found[i]);
+            return count;
+        };
+        std::uintptr_t matches[cpuopt::frame_clock::match_capacity]{};
+        const auto count = find(cpuopt::frame_clock::signature, matches, cpuopt::frame_clock::match_capacity);
         host.discovery = cpuopt::frame_clock::discover(base, matches, count);
         cpuopt::frame_clock::set_target(base, host.discovery);
+
+        std::uintptr_t instance_site[1]{}, unused[1]{};
+        const unsigned job_counts[4] = {find(cpuopt::job_cap::instance_signature, instance_site, 1),
+                                        find(cpuopt::job_cap::release_signature, unused, 1),
+                                        find(cpuopt::job_cap::spin_signature, unused, 1),
+                                        find(cpuopt::job_cap::copy_signature, unused, 1)};
+        host.job = cpuopt::job_cap::discover(base, job_counts, instance_site[0]);
+        cpuopt::job_cap::set_target(base, host.job);
 
         std::string reason;
         frame = service<al_frame_t>(AL_FRAME_INTERFACE, AL_FRAME_VERSION);
@@ -150,9 +165,9 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         }
         cpuopt::runtime::note("al_frame_subscribed", "ok", host.frame_events ? 1 : 0);
         cpuopt::runtime::note("al_d3d12_subscribed", "ok", host.present_events ? 1 : 0);
-        char line[256];
-        std::snprintf(line, sizeof(line), "frame counter: %s (%u match(es), %s); al.frame %s; al.d3d12 Present events %s",
-                      host.discovery.reason, host.discovery.matches, host.scanner.c_str(), host.frame_events ? "on" : "off",
+        char line[384];
+        std::snprintf(line, sizeof(line), "frame counter: %s (%u match(es), %s); job_cap: %s; al.frame %s; al.d3d12 Present events %s",
+                      host.discovery.reason, host.discovery.matches, host.scanner.c_str(), host.job.reason, host.frame_events ? "on" : "off",
                       host.present_events ? "on" : "off");
         say(AL_LOG_INFO, line);
         if (!host.discovery.found || !host.frame_events) {

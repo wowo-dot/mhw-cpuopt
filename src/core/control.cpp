@@ -42,6 +42,9 @@ std::optional<Control> parse_control(std::string_view text) {
         } else if (key == "window_ms") {
             c.window_ms = number(value);
             if (!c.window_ms || *c.window_ms < 1000 || *c.window_ms > 60000) return std::nullopt;
+        } else if (key == "job_threads") {
+            c.job_threads = number(value);
+            if (!c.job_threads || *c.job_threads < 1 || *c.job_threads > 64) return std::nullopt;
         } else if (key == "marker") {
             if (value.size() > 64) return std::nullopt;
             for (const char ch : value)

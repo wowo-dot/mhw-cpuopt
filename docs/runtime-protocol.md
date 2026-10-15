@@ -29,6 +29,10 @@
      every switch off, then 60 s with the stack sampler, then
      `hub-start-done`;
    - or by hand: `run.py control <name> --marker <m> --toggles 0|1`.
+   - `run.py sweep <name> --marker hub-cap --steps 0:45,15:45,0:45,11:45`:
+     the job_thread_cap A/B, one step per job-thread count (0 = the game's own
+     count, switch off), sampler off unless `--profile`;
+   - or by hand: `run.py control <name> --toggles 2 --job-threads 15`.
    Each change closes the current statistics window first, so no window mixes
    two states.
 4. `python -B tools/run.py status <name>` shows the last windows live.
@@ -63,6 +67,10 @@
   - per-thread CPU time (cycle counted), context switches, thread count, busy
     share of every logical processor (all processes);
   - `poller` only if al.frame cannot follow the game's frames.
+- `job_cap`: the four job_cap signatures' match counts and the sMain global
+  (`src/plugin/job_cap.hpp`); `job` in each window: state (no target,
+  waiting, native, capped, layout mismatch, drift, restored), the game's own
+  count, requested and applied threads per job round.
 - `profile` (only while toggle 1 is on): whole stacks per sampled thread with
   counts; the game and present threads are always sampled.
 - `stopping` / `stopped` at EXITING (the last window, sampler joined),

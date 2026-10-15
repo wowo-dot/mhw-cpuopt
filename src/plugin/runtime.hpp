@@ -1,5 +1,6 @@
 #pragma once
 #include "frame_clock.hpp"
+#include "job_cap.hpp"
 #include <windows.h>
 #include <cstdint>
 #include <string>
@@ -11,6 +12,7 @@ struct Host {
     std::uint32_t api_version{};          // Astera Loader's API version
     std::string game_version, exe_sha256; // from al.game, if it answered
     frame_clock::Discovery discovery;     // the frame counter, searched at PRE_MAIN
+    job_cap::Discovery job;               // sMain's job thread count, searched at PRE_MAIN
     std::string scanner;                  // "al.scanner" or "own"
     bool frame_events{}, present_events{};  // subscribed to al.frame / al.d3d12
     // al.frame's state (AL_FRAME_*), or -1 without al.frame; any thread.

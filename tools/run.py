@@ -7,6 +7,9 @@
   control <run> [--toggles N] [--marker M] [--window-ms N]
       Changes control.ini while the game runs; the plugin closes the current
       window and logs the change within about 300 ms.
+  sweep <run> --marker M --steps 0:45,15:45,0:45,11:45 [--profile]
+      job_thread_cap A/B: each step is job threads (0 = the game's own count,
+      switch off) and seconds; the sampler stays off unless --profile.
   sequence <run> --marker M [--baseline 60] [--profile 60]
       One scene: marker M with every switch off, then with the sampler on,
       then "M-done".
@@ -124,6 +127,8 @@ def control(a):
         values['marker'] = a.marker
     if a.window_ms is not None:
         values['window_ms'] = str(a.window_ms)
+    if a.job_threads is not None:
+        values['job_threads'] = str(a.job_threads)
     write_control(run, values)
     return dict(run=str(run), control=values)
 
@@ -140,6 +145,35 @@ def sequence(a):
         write_control(run, current)
         print(f'{time.strftime("%H:%M:%S")} {values} for {seconds} s', flush=True)
         time.sleep(seconds)
+
+
+JOB_THREAD_CAP = 2  # toggles.hpp
+
+
+def sweep(a):
+    """job_thread_cap A/B in one scene, step by step."""
+    import time
+    run = run_folder(a.run)
+    steps = []
+    for item in a.steps.split(','):
+        threads, seconds = item.split(':')
+        steps.append((int(threads), int(seconds)))
+    sampler = 1 if a.profile else 0
+    for threads, seconds in steps:
+        values = read_control(run)
+        values['marker'] = a.marker
+        if threads:
+            values['toggles'] = str(sampler | JOB_THREAD_CAP)
+            values['job_threads'] = str(threads)
+        else:
+            values['toggles'] = str(sampler)
+        write_control(run, values)
+        print(f'{time.strftime("%H:%M:%S")} job threads {threads or "native"} for {seconds} s', flush=True)
+        time.sleep(seconds)
+    values = read_control(run)
+    values.update(marker=f'{a.marker}-done', toggles='0')
+    write_control(run, values)
+    print(f'{time.strftime("%H:%M:%S")} done: switch off', flush=True)
 
 
 def newest_log(run):
@@ -178,7 +212,9 @@ def status(a):
         frames = max(u['frames'], 1)
         roles = {u['thread']: 'game', p['thread']: 'present'}
         top = ', '.join(f"{roles.get(t[0], t[0])}:{t[1] / frames:.2f}" for t in w['threads'][:4])
+        job = w.get('job', {})
         print(f"#{w['seq']:4d} t={w['t_ms'] / 1000:7.1f}s {w['marker'] or '-':14s} sw={w['toggles']} "
+              f"jobs={job.get('applied', '-')}({job.get('state', '-')}) "
               f"fps={u['fps']:6.1f} p50={u['interval']['p50']:.2f} p95={u['interval']['p95']:.2f} p99={u['interval']['p99']:.2f} "
               f"max={u['interval']['max']:.1f} | update {u['work']['mean']:.2f} ms | present {p['fps']:6.1f}/s "
               f"call {p['call']['mean']:.2f} ms | render {w['render']['frames']} | thr={w['thread_count']} | ms/frame {top}")
@@ -198,6 +234,12 @@ def main():
     s.add_argument('--toggles', type=lambda v: int(v, 0))
     s.add_argument('--marker')
     s.add_argument('--window-ms', type=int)
+    s.add_argument('--job-threads', type=int)
+    s = sub.add_parser('sweep')
+    s.add_argument('run')
+    s.add_argument('--marker', required=True)
+    s.add_argument('--steps', required=True)
+    s.add_argument('--profile', action='store_true')
     s = sub.add_parser('sequence')
     s.add_argument('run')
     s.add_argument('--marker', required=True)
@@ -215,6 +257,8 @@ def main():
         print(json.dumps(control(a)))
     elif a.action == 'sequence':
         sequence(a)
+    elif a.action == 'sweep':
+        sweep(a)
     elif a.action == 'status':
         status(a)
     else:

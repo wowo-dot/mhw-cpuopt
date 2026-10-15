@@ -52,18 +52,20 @@ def main():
     groups = collections.OrderedDict()
     last_key, settled = None, 0
     for w in (e for e in events if e.get('event') == 'window'):
-        key = (w['marker'], w['toggles'])
+        key = (w['marker'], w['toggles'], w.get('job', {}).get('applied'))
         settled = settled + 1 if key == last_key else 0
         last_key = key
         if settled < a.skip or not w['update']['frames']:
             continue
         groups.setdefault(key, []).append(w)
-    for (marker, toggles), ws in groups.items():
+    for (marker, toggles, jobs), ws in groups.items():
         frames = sum(w['update']['frames'] for w in ws)
         seconds = sum(w['ms'] for w in ws) / 1000
         med = lambda f: statistics.median(f(w) for w in ws)
         iv = lambda k: med(lambda w: w['update']['interval'][k])
-        print(f'\n== marker {marker or "-"}  toggles {toggles}: {len(ws)} windows, {seconds:.0f} s, {frames} game frames')
+        state = ws[-1].get('job', {}).get('state', '-')
+        print(f'\n== marker {marker or "-"}  toggles {toggles}  job threads {jobs} ({state}): {len(ws)} windows, '
+              f'{seconds:.0f} s, {frames} game frames')
         print(f'  game frames {frames / seconds:.1f} fps (windows {min(w["update"]["fps"] for w in ws):.1f}..'
               f'{max(w["update"]["fps"] for w in ws):.1f})  mean {weighted_mean(ws, ("update", "interval")):.3f} ms  '
               f'median of window p50 {iv("p50"):.2f} p95 {iv("p95"):.2f} p99 {iv("p99"):.2f} ms  '

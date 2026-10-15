@@ -6,7 +6,9 @@
 // - the sampler records whole stacks that contain the busy thread's functions.
 #include "../src/core/toggles.hpp"
 #include "../src/plugin/frame_clock.hpp"
+#include "../src/plugin/image_scan.hpp"
 #include "../src/plugin/frame_events.hpp"
+#include "../src/plugin/job_cap.hpp"
 #include "../src/plugin/log.hpp"
 #include "../src/plugin/sampler.hpp"
 #include "../src/plugin/system_info.hpp"
@@ -44,6 +46,11 @@ __declspec(allocate(".cpotest")) unsigned char planted_other[] = {
     0x49, 0xB9, 0xAB, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
     0x4C, 0x8B, 0x80, 0x10, 0xF2, 0x01, 0x00,
     0xC3};
+// The job runner's prologue: mov r8,[rip+fake_smain] at +21.
+__declspec(allocate(".cpotest")) unsigned char planted_runner[] = {
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7C, 0x24, 0x20, 0x41, 0x56,
+    0x48, 0x83, 0xEC, 0x20, 0x4C, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0xF1, 0x4C, 0x8B, 0x31, 0xC3};
+std::uintptr_t fake_smain;
 std::uintptr_t fake_renderer;  // writable data, like the game's singleton
 std::uintptr_t other_renderer;
 
@@ -177,6 +184,105 @@ void frame_events_test() {
     CHECK(fe::take().updates == 0);  // take() resets
 }
 
+// job_cap against a stand-in sMain: the game's own count learned once the job
+// threads exist, caps written to +0xD0 and +0xCC, the native count back when
+// off, clamping, and the cases where it must keep its hands off.
+void job_cap_test() {
+    namespace jc = cpuopt::job_cap;
+    const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    {
+        const auto site = reinterpret_cast<std::uintptr_t>(planted_runner) + jc::instance_operand;
+        const auto displacement = static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(&fake_smain) - static_cast<std::intptr_t>(site + 7));
+        DWORD old{};
+        VirtualProtect(planted_runner, sizeof(planted_runner), PAGE_EXECUTE_READWRITE, &old);
+        std::memcpy(planted_runner + jc::instance_operand + 3, &displacement, 4);
+        VirtualProtect(planted_runner, sizeof(planted_runner), old, &old);
+    }
+    std::uintptr_t found[2]{};
+    CHECK(cpuopt::image_scan::find(base, jc::instance_signature, found, 2) == 1 && found[0] == reinterpret_cast<std::uintptr_t>(planted_runner));
+    const unsigned missing[4] = {1, 0, 1, 1}, twice[4] = {1, 1, 2, 1}, all[4] = {1, 1, 1, 1};
+    const auto site = reinterpret_cast<std::uintptr_t>(planted_runner);
+    CHECK(std::string(jc::discover(base, missing, site).reason) == "signature not found");
+    CHECK(std::string(jc::discover(base, twice, site).reason) == "signature not unique");
+    CHECK(std::string(jc::discover(base, all, reinterpret_cast<std::uintptr_t>(planted)).reason) == "operand changed");
+    const auto d = jc::discover(base, all, site);
+    CHECK(d.found && d.instance_rva == rva_of(planted_runner) && d.global_rva == rva_of(&fake_smain) && !d.expected_values);
+
+    auto object = std::make_unique<std::uint8_t[]>(jc::detected_offset + 64);
+    std::memset(object.get(), 0, jc::detected_offset + 64);
+    const auto field = [&](std::uint32_t offset) -> std::uint32_t& { return *reinterpret_cast<std::uint32_t*>(object.get() + offset); };
+    const auto state = [] {
+        std::string out = "{";
+        jc::append(out);
+        const auto at = out.find("\"state\":\"") + 9;
+        return out.substr(at, out.find('"', at) - at);
+    };
+    const auto game = [&](std::uint32_t detected, std::uint32_t configured, std::uint8_t created) {
+        field(jc::detected_offset) = detected;
+        field(jc::configured_offset) = field(jc::participants_offset) = configured;
+        object[jc::threads_created_offset] = created;
+    };
+
+    jc::set_target(base, d);
+    jc::request(16);
+    jc::on_begin();
+    CHECK(state() == "waiting");  // no sMain yet
+    fake_smain = reinterpret_cast<std::uintptr_t>(object.get());
+    game(32, 31, 0);
+    jc::on_begin();
+    CHECK(state() == "waiting" && field(jc::configured_offset) == 31);  // job threads not created yet
+    object[jc::threads_created_offset] = 1;
+    jc::on_begin();
+    CHECK(state() == "capped" && field(jc::configured_offset) == 16 && field(jc::participants_offset) == 16);
+    jc::request(8);
+    jc::on_begin();
+    CHECK(field(jc::configured_offset) == 8 && field(jc::participants_offset) == 8);
+    jc::request(0);
+    jc::on_begin();
+    CHECK(state() == "native" && field(jc::configured_offset) == 31 && field(jc::participants_offset) == 31);
+    jc::request(40);  // more than the game's own count: the game's own count
+    jc::on_begin();
+    CHECK(state() == "native" && field(jc::configured_offset) == 31);
+    jc::request(12);
+    jc::on_begin();
+    CHECK(field(jc::configured_offset) == 12);
+    jc::restore();
+    CHECK(state() == "restored" && field(jc::configured_offset) == 31 && field(jc::participants_offset) == 31);
+    jc::request(5);
+    jc::on_begin();
+    CHECK(field(jc::configured_offset) == 31);  // restored is final
+
+    // Something else changed the count: hands off for good.
+    jc::set_target(base, d);
+    game(32, 31, 1);
+    jc::request(16);
+    jc::on_begin();
+    CHECK(field(jc::configured_offset) == 16);
+    field(jc::configured_offset) = 20;
+    jc::on_begin();
+    CHECK(state() == "drift");
+    jc::request(8);
+    jc::on_begin();
+    CHECK(field(jc::configured_offset) == 20);
+
+    // Fields that do not follow the start-up formula: never written.
+    jc::set_target(base, d);
+    game(32, 30, 1);
+    jc::request(16);
+    jc::on_begin();
+    CHECK(state() == "layout mismatch" && field(jc::configured_offset) == 30);
+
+    // A 3-thread CPU keeps all three (no minus one below 4).
+    jc::set_target(base, d);
+    game(3, 3, 1);
+    jc::request(2);
+    jc::on_begin();
+    CHECK(state() == "capped" && field(jc::configured_offset) == 2);
+    jc::restore();
+    CHECK(field(jc::configured_offset) == 3);
+    fake_smain = 0;
+}
+
 void census_and_sampler_test() {
     const auto busy = CreateThread(nullptr, 0, busy_thread, nullptr, 0, nullptr);
     const auto busy_id = GetThreadId(busy);
@@ -242,6 +348,7 @@ void start_event_test() {
 int main() {
     frame_clock_test();
     frame_events_test();
+    job_cap_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);
