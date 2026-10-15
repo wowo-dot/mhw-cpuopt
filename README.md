@@ -4,8 +4,9 @@ Research into why Monster Hunter: World (PC, DirectX 12) is CPU-limited, and
 what can be recovered safely. On most PCs the CPU, not the graphics card,
 sets MHW's frame rate, which is also why DLSS alone adds little there.
 
-**Status:** research builds, not a release. Nothing here changes the game
-yet except two switches that are off by default and exist only to measure.
+**Status:** research builds, not a release. Every switch is off by default.
+The first one that changes the game, the camera draw round's job order, gave
++4.8% at the hub (244.5 to 256.2 fps, measured on and off in one session).
 Measurement comes first: no game code is changed until a profile shows where
 the time goes, and every change is a runtime switch measured on and off in
 the same scene.
@@ -28,6 +29,10 @@ every number in `docs/research/engine-notes.md`):
   of the way down the job list; the most expensive jobs are effects
   (`uMhEffect`). Perfect ordering of the same jobs would save about 0.3 ms per
   frame there, about 0.6 ms per frame over all rounds.
+- Reordering that round so the expensive jobs start first (switch 8, two
+  modes: reversed, or learned per object class) saved 0.19 ms per frame at
+  the hub: +4.8%, every reordered step faster than every step in the game's
+  order, no visual change.
 
 ## How it works
 

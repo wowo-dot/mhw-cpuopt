@@ -188,3 +188,29 @@ which spin 39.0%, own jobs 20.2%):
   camera round's list, job_order 2 learns each class's job time from one
   camera round in 16 and moves classes at or over order_us (20 us) to the
   front.
+
+### The first fix: camera round order (al-08, v0.5.0)
+
+Hub start, stock scheduling, nine interleaved 30 s steps (the first window
+of each step left out):
+
+| Step | fps | mean frame |
+|---|---|---|
+| game's order | 244.7 | 4.087 ms |
+| reversed | 255.5 | 3.914 ms |
+| game's order | 245.9 | 4.067 ms |
+| learned | 254.6 | 3.928 ms |
+| game's order | 244.1 | 4.097 ms |
+| reversed | 256.8 | 3.894 ms |
+| game's order | 244.5 | 4.090 ms |
+| learned | 257.9 | 3.878 ms |
+| game's order | 243.6 | 4.105 ms |
+
+- Every reordered step beat every step in the game's order: 244.5 to 256.2
+  fps over all windows (+4.8%), mean frame 4.089 to 3.903 ms (-0.19 ms), p95
+  4.75 to 4.53-4.55 ms, p99 5.25 to 4.95-5.03 ms. Both modes the same here.
+- The replay (al-07) predicted 0.24-0.26 ms; the difference is the switch's
+  own cost (the list copied out and back; learned mode also times one round
+  in 16).
+- About 102,000 camera rounds reordered and restored; the user saw no visual
+  change. H5 confirmed for the hub.
