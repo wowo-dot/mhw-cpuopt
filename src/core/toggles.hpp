@@ -10,8 +10,10 @@ enum Toggle : unsigned {
     sample_profile = 1U,  // research: stack sampler (sampler.hpp); suspends sampled threads briefly
     job_thread_cap = 2U,  // sMain's job rounds use control.ini's job_threads threads, not the game's
                           // count from all logical processors (job_cap.hpp)
+    time_jobs = 4U,       // research: times every job of sMain's job rounds through a detour on
+                          // executeJob, installed the first time this is on (job_timing.hpp)
 };
-inline constexpr unsigned toggle_mask = 3U;  // every defined bit
+inline constexpr unsigned toggle_mask = 7U;  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }

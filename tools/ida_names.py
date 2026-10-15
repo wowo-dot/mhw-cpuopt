@@ -64,8 +64,12 @@ def export(out_path, meta_path=None):
         if name:
             out[begin] = f"{name}+0x{base + begin - f.start_ea:x}"
             pdata_entries += 1
+    # Vtables by name (Fexty's "Class::vft" labels), for naming the objects a
+    # job ran on (tools/job_report.py): vtables.tsv next to names.tsv.
+    vtables = {ea - base: name for ea, name in idautils.Names() if "vft" in name.lower()}
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.with_name("vtables.tsv").write_text("".join(f"{rva:x}\t{vtables[rva]}\n" for rva in sorted(vtables)), encoding="utf-8")
     out_path.write_text("".join(f"{rva:x}\t{out[rva]}\n" for rva in sorted(out)), encoding="utf-8")
     sha = ida_nalt.retrieve_input_file_sha256()
     meta = {
@@ -76,6 +80,7 @@ def export(out_path, meta_path=None):
         "functions": functions,
         "named_functions": named,
         "pdata_entries_inside_functions": pdata_entries,
+        "vtables": len(vtables),
         "lines": len(out),
         "exported": time.strftime("%Y-%m-%d %H:%M:%S"),
     }

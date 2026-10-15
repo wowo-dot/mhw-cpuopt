@@ -141,12 +141,47 @@ void AL_CALL d3d12_status(al_plugin_t*, al_d3d12_status_t* status) { status->sta
 const al_d3d12_t d3d12 = {sizeof(al_d3d12_t), AL_D3D12_VERSION, d3d12_subscribe, d3d12_hook, d3d12_claim, d3d12_internal, d3d12_internal,
                           d3d12_status};
 
+// A stand-in executeJob and al.hooks: the game thread runs a three-job round
+// every frame through the detour while it is registered and enabled.
+using ExecuteJobFn = void(__fastcall*)(std::uintptr_t, int, std::uintptr_t, std::uint32_t, std::uintptr_t);
+__declspec(noinline) std::uintptr_t host_job(std::uintptr_t context, std::uintptr_t, std::uintptr_t, std::uintptr_t) {
+    return context;
+}
+void __fastcall host_execute_job(std::uintptr_t, int, std::uintptr_t jobs, std::uint32_t count, std::uintptr_t) {
+    for (std::uint32_t i = 0; i < count; ++i) {
+        const auto* entry = reinterpret_cast<const std::uintptr_t*>(jobs + 32ULL * i);
+        reinterpret_cast<std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t)>(entry[1])(entry[0], 0, 0, 0);
+    }
+}
+std::atomic<ExecuteJobFn> hooked_detour{};
+std::atomic<bool> hook_enabled{};
+std::atomic<unsigned> hook_registrations{};
+std::uintptr_t host_jobs[3][4];
+uint32_t AL_CALL hooks_hook(al_plugin_t*, const al_hook_t* h) {
+    if (!h || h->size < sizeof(al_hook_t) || !h->pattern || !h->detour || !h->next) return 0;
+    *h->next = reinterpret_cast<void*>(&host_execute_job);
+    hooked_detour = reinterpret_cast<ExecuteJobFn>(h->detour);
+    hook_enabled = true;
+    ++hook_registrations;
+    return 7;
+}
+al_result_t AL_CALL hooks_set_enabled(al_plugin_t*, uint32_t handle, uint32_t on) {
+    if (handle != 7) return AL_ERROR;
+    hook_enabled = on != 0;
+    return AL_OK;
+}
+al_hook_state_t AL_CALL hooks_state(al_plugin_t*, uint32_t handle) {
+    return handle != 7 ? AL_HOOK_FAILED : hook_enabled ? AL_HOOK_ACTIVE : AL_HOOK_DISABLED;
+}
+const al_hooks_t hooks = {sizeof(al_hooks_t), AL_HOOKS_VERSION, hooks_hook, hooks_set_enabled, hooks_state};
+
 const void* AL_CALL host_interface(al_plugin_t*, const char* name, uint32_t) {
     const std::string n(name);
     if (n == AL_GAME_INTERFACE) return &game;
     if (n == AL_SCANNER_INTERFACE) return &scanner;
     if (n == AL_FRAME_INTERFACE) return &frame;
     if (n == AL_D3D12_INTERFACE) return &d3d12;
+    if (n == AL_HOOKS_INTERFACE) return &hooks;
     return nullptr;
 }
 al_result_t AL_CALL host_publish(al_plugin_t*, const char*, uint32_t, const void*) { return AL_ERROR; }
@@ -181,6 +216,8 @@ DWORD WINAPI game_thread(void*) {
         smain_field(0x9F1FC) = 0;
         job_slot(1) = reinterpret_cast<std::uintptr_t>(fake_job);
         reinterpret_cast<SpinFn>(static_cast<void*>(planted_spin))(smain_object, 1);
+        const auto execute = hook_enabled.load() && hooked_detour.load() ? hooked_detour.load() : &host_execute_job;
+        execute(reinterpret_cast<std::uintptr_t>(smain_object), 0, reinterpret_cast<std::uintptr_t>(host_jobs), 3, 0);
         render_counter().fetch_add(1);
         info.qpc = qpc();
         if (frame_callbacks[AL_FRAME_END]) frame_callbacks[AL_FRAME_END](self, AL_FRAME_END, &info, nullptr);
@@ -288,6 +325,11 @@ int wmain(int argc, wchar_t** argv) {
     }
     // A 32-thread machine as the game sets it up: 31 per round, threads created.
     fake_smain = reinterpret_cast<std::uintptr_t>(smain_object);
+    for (std::uintptr_t i = 0; i < 3; ++i) {
+        host_jobs[i][0] = 0x1000 + i;  // contexts that are not objects
+        host_jobs[i][1] = reinterpret_cast<std::uintptr_t>(&host_job);
+        host_jobs[i][2] = host_jobs[i][3] = 0;
+    }
     smain_field(0xAF680) = 32;
     smain_field(0xD0) = smain_field(0xCC) = 31;
     smain_object[0x90] = 1;
@@ -321,7 +363,9 @@ int wmain(int argc, wchar_t** argv) {
     info->on_phase(self, AL_PHASE_GAME_READY, &ready);
     Sleep(2300);
     const auto native_before = smain_field(0xD0);
-    write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-b\ntoggles=3\njob_threads=12\n");
+    std::uintptr_t jobs_before[3][4];
+    std::memcpy(jobs_before, host_jobs, sizeof(host_jobs));
+    write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-b\ntoggles=7\njob_threads=12\n");
     Sleep(2600);
     const auto capped = smain_field(0xD0), capped_participants = smain_field(0xCC);
     write_all(run + L"\\control.ini", "toggles=banana\n");  // rejected, nothing changes
@@ -357,6 +401,19 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(text.find("\"job\":{\"state\":\"native\",\"native\":31,\"requested\":0,\"applied\":31") != std::string::npos);
     CHECK(text.find("\"job\":{\"state\":\"capped\",\"native\":31,\"requested\":12,\"applied\":12") != std::string::npos);
     CHECK(text.find("\"job_threads\":12") != std::string::npos);
+    // job_timing: registered once when switched on, rounds timed, the list
+    // back as it was; the detour left the chain when the control file's last
+    // valid state had it on, so nothing changes at the rejected file.
+    {
+        const auto events = lines_with(text, "\"event\":\"job_timing\"");
+        long long rounds = 0;
+        for (const auto& line : events) rounds += std::atoll(line.c_str() + line.find("\"rounds\":") + 9);
+        std::printf("  job_timing: %u registration(s), %zu event(s), %lld rounds\n", hook_registrations.load(), events.size(), rounds);
+        CHECK(hook_registrations == 1);
+        CHECK(text.find("\"event\":\"job_timing_switch\",\"on\":true,\"reason\":\"hook registered\"") != std::string::npos);
+        CHECK(!events.empty() && rounds > 200);
+        CHECK(std::memcmp(jobs_before, host_jobs, sizeof(host_jobs)) == 0);
+    }
     std::printf("  job_cap: native %u, capped %u/%u, after EXITING %u\n", native_before, capped, capped_participants, after_exit);
     CHECK(text.find("\"event\":\"game_ready\"") != std::string::npos && text.find("\"frame\":75") != std::string::npos);
     CHECK(text.find("\"marker\":\"smoke-b\",\"window_ms\":1000") != std::string::npos);

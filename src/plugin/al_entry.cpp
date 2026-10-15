@@ -10,9 +10,11 @@
 #include "frame_events.hpp"
 #include "image_scan.hpp"
 #include "job_cap.hpp"
+#include "job_timing.hpp"
 #include "log.hpp"
 #include "runtime.hpp"
 #include "sampler.hpp"
+#include <atomic>
 #include <cstddef>
 #include <cstdio>
 #include <string>
@@ -27,6 +29,9 @@ namespace {
 const al_api_t* api{};
 al_plugin_t* self{};
 const al_frame_t* frame{};
+const al_hooks_t* hooks{};
+std::atomic<std::uint32_t> timing_hook{};  // al.hooks handle, 0 until first switched on
+SRWLOCK timing_lock = SRWLOCK_INIT;
 std::uintptr_t validated_renderer{};  // game thread only
 
 void say(al_log_level_t level, const std::string& text) noexcept {
@@ -39,6 +44,37 @@ int frame_state() noexcept {
     status.size = sizeof(status);
     frame->status(self, &status);
     return static_cast<int>(status.state);
+}
+
+// The job_timing switch. The detour on sMain::executeJob is registered the
+// first time it is switched on, so sessions that never time jobs carry no
+// hook there; afterwards set_enabled takes it in and out of the chain.
+bool job_timing(bool on, const char** reason) noexcept {
+    AcquireSRWLockExclusive(&timing_lock);
+    bool ok = true;
+    if (!hooks) {
+        ok = false;
+        *reason = "no al.hooks";
+    } else if (!timing_hook.load()) {
+        if (on) {
+            al_hook_t h{};
+            h.size = sizeof(h);
+            h.name = "sMain::executeJob (cpuopt job_timing)";
+            static const std::string pattern(cpuopt::job_timing::execute_job_signature);
+            h.pattern = pattern.c_str();
+            h.detour = reinterpret_cast<void*>(&cpuopt::job_timing::detour);
+            h.next = reinterpret_cast<void**>(cpuopt::job_timing::next_slot());
+            timing_hook.store(hooks->hook(self, &h));
+            ok = timing_hook.load() != 0;
+            *reason = ok ? "hook registered" : "al.hooks refused the hook (see the plugin log)";
+        }
+    } else {
+        ok = hooks->set_enabled(self, timing_hook.load(), on ? 1 : 0) == AL_OK;
+        *reason = ok ? (on ? "hook enabled" : "hook disabled") : "set_enabled failed";
+    }
+    cpuopt::job_timing::set_measuring(on && ok);
+    ReleaseSRWLockExclusive(&timing_lock);
+    return ok;
 }
 
 void AL_CALL on_frame(al_plugin_t*, al_frame_event_t event, const al_frame_info_t* info, void*) {
@@ -69,6 +105,7 @@ void AL_CALL on_phase(al_plugin_t*, al_phase_t phase, const void* data) {
         cpuopt::runtime::note("game_ready", "frame", ready && ready->size >= sizeof(*ready) ? static_cast<long long>(ready->frame) : -1);
     } else if (phase == AL_PHASE_EXITING) {
         cpuopt::job_cap::restore();  // the game's own job thread count for its teardown
+        cpuopt::job_timing::set_measuring(false);  // rounds from now on run untouched
         cpuopt::runtime::stop("exiting");
         say(AL_LOG_INFO, "stopped at EXITING");
     } else if (phase == AL_PHASE_SHUTDOWN) {
@@ -149,6 +186,8 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         std::string reason;
         frame = service<al_frame_t>(AL_FRAME_INTERFACE, AL_FRAME_VERSION);
         host.frame_state = frame_state;
+        hooks = service<al_hooks_t>(AL_HOOKS_INTERFACE, AL_HOOKS_VERSION);
+        host.job_timing = job_timing;
         if (!cpuopt::runtime::start(reinterpret_cast<HMODULE>(&__ImageBase), host, reason)) {
             // Not measuring: no subscriptions, so AL hooks nothing for us.
             frame = nullptr;

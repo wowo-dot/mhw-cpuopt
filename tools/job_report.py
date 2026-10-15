@@ -13,14 +13,83 @@ From the stack sampler's "profile" events:
   job function (the frame the worker loop 0x225F2F0 called), overall and in
   the sampler ticks where the game thread was spinning (v0.3.2+);
 - the spin probe (v0.3.2+): per job round, how many released job threads had
-  not started yet and how many were still running when the game thread spun.
+  not started yet and how many were still running when the game thread spun;
+- job timing (v0.4+, toggle 4): every job of every round timed. Per round
+  type: rounds per frame, jobs, the round's time against its bound (no order
+  of the same jobs on the same threads can beat max(longest job, work /
+  threads)), where the job that ended last sat in the list, and the job types
+  (job function and the object's class from local/ida/vtables.tsv) that cost
+  most and that ended rounds most often.
 Counts are wall-clock samples; shares are of each thread's own samples.
 """
 import argparse
 import collections
+from pathlib import Path
 
 from profile_report import GAME, RAW, UNKNOWN, Symbolizer
 from run import newest_log, rows, run_folder
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def load_vtables():
+    path = REPO / 'local' / 'ida' / 'vtables.tsv'
+    out = {}
+    if path.exists():
+        for line in path.read_text(encoding='utf-8').splitlines():
+            rva, _, name = line.partition('\t')
+            if name:
+                out[int(rva, 16)] = name.replace('::vft', '')
+    return out
+
+
+def timing_report(events, marker, sym, top):
+    """The job_timing events (toggle 4), attributed to the window before each."""
+    callers = collections.defaultdict(lambda: [0] * 10)
+    jobs = collections.defaultdict(lambda: [0, 0, 0, 0])  # count, total, max, last
+    frames = cycles_per_us = 0
+    window = None
+    for e in events:
+        if e.get('event') == 'window':
+            window = e
+        elif e.get('event') == 'job_timing' and window and (marker is None or window['marker'] == marker):
+            frames += window['update']['frames']
+            cycles_per_us = cycles_per_us or window.get('tsc_mhz', 0)
+            for row in e['callers']:
+                acc = callers[row[0]]
+                for i, v in enumerate(row[1:]):
+                    acc[i] += v
+            for caller, function, vtable, count, total, peak, last in e['jobs']:
+                j = jobs[(caller, function, vtable)]
+                j[0] += count
+                j[1] += total
+                j[2] = max(j[2], peak)
+                j[3] += last
+    if not callers or not frames or not cycles_per_us:
+        return
+    us = lambda cycles: cycles / cycles_per_us
+    vt = load_vtables()
+    name = lambda rva: sym.label(GAME, rva).replace('game!', '') if rva else '(outside the exe)'
+    print(f'\n== job timing: {frames} game frames; per round type, times in us')
+    print(f'   {"rounds/f":>8} {"jobs":>6} {"round":>7} {"bound":>7} {"gain":>6} {"gain/f":>7} {"longest":>8} {"work":>7} '
+          f'{"last at":>7} {"in tail":>7} {"late":>5} {"thr":>5}  round from')
+    for caller, (rounds, n, duration, work, longest, bound, last_milli, tail, late, threads) in sorted(
+            callers.items(), key=lambda kv: -(kv[1][2] - kv[1][5])):
+        gain = duration - bound
+        print(f'   {rounds / frames:8.2f} {n / rounds:6.0f} {us(duration / rounds):7.1f} {us(bound / rounds):7.1f} '
+              f'{us(gain / rounds):6.1f} {us(gain / frames):7.1f} {us(longest / rounds):8.1f} {us(work / rounds):7.1f} '
+              f'{last_milli / rounds / 10:6.1f}% {100 * tail / rounds:6.1f}% {100 * late / rounds:4.0f}% {threads / rounds:5.1f}  '
+              f'{name(caller)}')
+    print('   round: executeJob call to return; bound: max(longest job, work / threads); gain: round - bound;')
+    print('   last at: the last-ending job\'s place in the list; in tail: it was in the last 10%; late: it started after half the round')
+    label = lambda k: f'{name(k[1])} on {vt.get(k[2], hex(k[2]) if k[2] else "-")}   [{name(k[0])}]'
+    print(f'-- job types by total time (us per frame, count per frame, max us, times it ended its round)')
+    for k, (count, total, peak, last) in sorted(jobs.items(), key=lambda kv: -kv[1][1])[:top]:
+        print(f'   {us(total / frames):7.1f} {count / frames:7.1f} {us(peak):8.1f} {last:6d}  {label(k)}')
+    print(f'-- job types that ended their round most often')
+    for k, (count, total, peak, last) in sorted(jobs.items(), key=lambda kv: -kv[1][3])[:top]:
+        if last:
+            print(f'   {last:6d} times  mean {us(total / count):7.1f} us  max {us(peak):8.1f} us  {label(k)}')
 
 # IDA function ranges (clean database). The exe's unwind table splits them into
 # several entries, which the sampler records separately, so frames are matched
@@ -152,6 +221,7 @@ def main():
     print('-- jobs they ran, % of their samples')
     for job, n in worker_jobs.most_common(a.top):
         print(f'   {100 * n / max(worker_total, 1):5.1f}%  {n:7d}  {job}')
+    timing_report(events, a.marker, sym, a.top)
 
 
 if __name__ == '__main__':

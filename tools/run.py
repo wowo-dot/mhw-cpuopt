@@ -10,6 +10,9 @@
   sweep <run> --marker M --steps 0:45,15:45,0:45,11:45 [--profile]
       job_thread_cap A/B: each step is job threads (0 = the game's own count,
       switch off) and seconds; the sampler stays off unless --profile.
+  steps <run> --marker M --steps 0:30,4:60,0:30
+      Any switch states in order: each step is toggles and seconds; then
+      "M-done" with every switch off.
   sequence <run> --marker M [--baseline 60] [--profile 60]
       One scene: marker M with every switch off, then with the sampler on,
       then "M-done".
@@ -176,6 +179,23 @@ def sweep(a):
     print(f'{time.strftime("%H:%M:%S")} done: switch off', flush=True)
 
 
+def steps(a):
+    """Switch states in order, one step each."""
+    import time
+    run = run_folder(a.run)
+    for item in a.steps.split(','):
+        toggles, seconds = (int(v, 0) for v in item.split(':'))
+        values = read_control(run)
+        values.update(marker=a.marker, toggles=str(toggles))
+        write_control(run, values)
+        print(f'{time.strftime("%H:%M:%S")} toggles {toggles} for {seconds} s', flush=True)
+        time.sleep(seconds)
+    values = read_control(run)
+    values.update(marker=f'{a.marker}-done', toggles='0')
+    write_control(run, values)
+    print(f'{time.strftime("%H:%M:%S")} done: every switch off', flush=True)
+
+
 def newest_log(run):
     logs = sorted(run.glob('cpuopt-*.jsonl'), key=lambda p: p.stat().st_mtime)
     if not logs:
@@ -240,6 +260,10 @@ def main():
     s.add_argument('--marker', required=True)
     s.add_argument('--steps', required=True)
     s.add_argument('--profile', action='store_true')
+    s = sub.add_parser('steps')
+    s.add_argument('run')
+    s.add_argument('--marker', required=True)
+    s.add_argument('--steps', required=True)
     s = sub.add_parser('sequence')
     s.add_argument('run')
     s.add_argument('--marker', required=True)
@@ -259,6 +283,8 @@ def main():
         sequence(a)
     elif a.action == 'sweep':
         sweep(a)
+    elif a.action == 'steps':
+        steps(a)
     elif a.action == 'status':
         status(a)
     else:

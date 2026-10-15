@@ -17,6 +17,9 @@ struct Host {
     bool frame_events{}, present_events{};  // subscribed to al.frame / al.d3d12
     // al.frame's state (AL_FRAME_*), or -1 without al.frame; any thread.
     int (*frame_state)() noexcept {};
+    // Switches the executeJob timing detour (job_timing.hpp) on or off; the
+    // first "on" registers it. False with the reason when it cannot. Any thread.
+    bool (*job_timing)(bool on, const char** reason) noexcept {};
 };
 
 // al_plugin_init: reads the run folder from <folder>\cpuopt.dll.output-dir,

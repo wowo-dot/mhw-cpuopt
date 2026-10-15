@@ -137,3 +137,26 @@ Game thread, hub start, 37,436 samples over 60 s (stock scheduling):
   `sub_14221ACE0` is the unit move pass (`sUnit`): one job per unit of a move
   line, each `cUnit::genericMove(unit)`, timed per line by the game's own
   MtPerformanceCounter.
+
+### The spin, read from the round's counters (al-05, v0.3.2)
+
+14,461 spin samples, hub start (the game thread's time: executeJob 63.5%, of
+which spin 39.0%, own jobs 20.2%):
+
+| Round from | Share of spins | Released | Not started (mean; samples with any) | Still running (mean; exactly one; two or more) |
+|---|---|---|---|---|
+| `sub_14221A050` (camera draw) | 68.6% | 30.0 | 0.06; 1.1% | 1.38; 58.8%; 32.6% |
+| `sub_14221ACE0` (unit move) | 25.1% | 29.4 | 0.69; 7.8% | 0.69; 53.4%; 6.4% |
+
+- Wake-up is not the cost: the threads of a round have nearly all started
+  when the game thread spins. It waits for one or two threads still running
+  a job while the other 28-29 are idle (job threads idle 94.9% in the ticks
+  the game thread spun).
+- The camera draw round's straggler job is mostly `sub_141FAF590`, a
+  virtual per-object draw (flag check, a visibility test `sub_1422E1F60`, then
+  `sub_1422F7C20` records the object's draws into the thread's buffer). The
+  round runs one job per object.
+- Hypothesis H5: the rounds end on a few expensive objects whose jobs start
+  late in the list; ordering the list so expensive jobs start first (longest
+  first) would shorten the rounds. Test: v0.4 times every job of every round
+  (`src/plugin/job_timing.hpp`, toggle 4).

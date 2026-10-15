@@ -3,6 +3,7 @@
 #include "../core/json.hpp"
 #include "../core/toggles.hpp"
 #include "frame_events.hpp"
+#include "job_timing.hpp"
 #include "log.hpp"
 #include "sampler.hpp"
 #include "system_info.hpp"
@@ -63,6 +64,7 @@ struct State {
     std::uint64_t control_stamp{};
     std::string marker;
     unsigned job_threads{16};  // participants while toggle job_thread_cap is on
+    bool timing{};             // the job_timing detour is in the chain
     unsigned window_ms{5000};
     std::uint64_t seq{}, updates{}, presents{};
     double window_start{};
@@ -136,6 +138,8 @@ void write_window(State& s) {
     event_log.write(out);
     const auto profile = sampler::take_event(t, toggles.load(), s.marker);
     if (!profile.empty()) event_log.write(profile);
+    const auto timing = job_timing::take_event(t, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)));
+    if (!timing.empty()) event_log.write(timing);
     // Sampled every tick: the game thread, the present thread, then the busiest others.
     std::vector<DWORD> tracked;
     for (const DWORD tid : {DWORD(frames.game_thread), DWORD(frames.present_thread)})
@@ -172,6 +176,20 @@ void poll_control(State& s, bool initial) {
     if (parsed->window_ms) s.window_ms = *parsed->window_ms;
     if (parsed->job_threads) s.job_threads = *parsed->job_threads;
     job_cap::request(on(job_thread_cap) ? s.job_threads : 0);  // applied on the game thread at the next frame
+    if (on(time_jobs) != s.timing && host.job_timing) {
+        const char* why = "";
+        const bool ok = host.job_timing(on(time_jobs), &why);
+        s.timing = on(time_jobs) && ok;
+        std::string note = "{";
+        json::key(note, "event");
+        json::string(note, "job_timing_switch");
+        json::key(note, "on");
+        note += s.timing ? "true" : "false";
+        json::key(note, "reason");
+        json::string(note, why);
+        note += '}';
+        event_log.write(note);
+    }
     json::key(out, "t_ms");
     json::fixed(out, now_ms(), 3);
     json::key(out, "toggles");

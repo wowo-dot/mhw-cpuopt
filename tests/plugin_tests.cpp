@@ -10,6 +10,7 @@
 #include "../src/plugin/frame_events.hpp"
 #include "../src/plugin/job_cap.hpp"
 #include "../src/plugin/spin_probe.hpp"
+#include "../src/plugin/job_timing.hpp"
 #include "../src/plugin/log.hpp"
 #include "../src/plugin/sampler.hpp"
 #include "../src/plugin/system_info.hpp"
@@ -186,6 +187,113 @@ void frame_events_test() {
 }
 
 // spin_probe against a stand-in sMain's started and done counters.
+// job_timing: the round analysis on hand-made records, then the detour on a
+// stand-in executeJob that runs a list's jobs in order on this thread.
+std::uintptr_t timing_seen_context[8], timing_seen_rdx[8];
+__declspec(noinline) std::uintptr_t timing_job(std::uintptr_t context, std::uintptr_t rdx, std::uintptr_t, std::uintptr_t) {
+    const auto i = *reinterpret_cast<const std::uintptr_t*>(context + 8);  // object: vtable, index
+    timing_seen_context[i] = context;
+    timing_seen_rdx[i] = rdx;
+    const auto due = cpuopt::qpc_now() + cpuopt::qpc_frequency() * static_cast<std::int64_t>(i + 1) / 10000;  // (i+1) * 0.1 ms
+    while (cpuopt::qpc_now() < due) {}
+    return i;
+}
+void __fastcall stand_in_execute_job(std::uintptr_t smain, int, std::uintptr_t jobs, std::uint32_t count, std::uintptr_t) {
+    const auto list = jobs ? jobs : smain + cpuopt::job_timing::default_jobs_offset;
+    const auto n = jobs ? count : *reinterpret_cast<const std::uint32_t*>(smain + cpuopt::job_timing::job_count_offset);
+    for (std::uint32_t i = 0; i < n; ++i) {
+        const auto* entry = reinterpret_cast<const std::uintptr_t*>(list + 32ULL * i);
+        reinterpret_cast<std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t)>(entry[1])(entry[0], 0xAA, 0, 0);
+    }
+}
+const std::uintptr_t timing_vtable[2] = {};  // in this exe's data: stands in for a game class
+__declspec(noinline) std::uintptr_t timing_noop(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t) { return 0; }
+__declspec(noinline) void timing_round(std::uintptr_t smain, std::uintptr_t list, std::uint32_t n) {
+    cpuopt::job_timing::detour(smain, 1, list, n, 0);
+}
+
+void job_timing_test() {
+    namespace jt = cpuopt::job_timing;
+    // Analysis: three jobs on two lanes; the last to end is job 2.
+    const jt::Record recs[3] = {{0, 0, 100, 400, 1}, {0, 0, 110, 210, 2}, {0, 0, 220, 900, 2}};
+    const auto r = jt::analyse(recs, 3, 90, 950, 2);
+    CHECK(r.jobs == 3 && r.duration == 860 && r.work == 300 + 100 + 680 && r.longest == 680);
+    CHECK(r.bound == 680);  // the longest job beats work / 2 = 540
+    CHECK(r.last == 2 && r.last_start == 130 && r.last_duration == 680 && r.threads_used == 2);
+    const jt::Record not_run[1] = {};
+    CHECK(jt::analyse(not_run, 1, 0, 10, 4).work == 0);
+
+    // The detour on a stand-in executeJob.
+    *jt::next_slot() = &stand_in_execute_job;
+    std::uintptr_t objects[4][2];
+    std::uintptr_t list[4][4];
+    for (std::uintptr_t i = 0; i < 4; ++i) {
+        objects[i][0] = reinterpret_cast<std::uintptr_t>(timing_vtable);
+        objects[i][1] = i;
+        list[i][0] = reinterpret_cast<std::uintptr_t>(objects[i]);
+        list[i][1] = reinterpret_cast<std::uintptr_t>(&timing_job);
+        list[i][2] = 0x5000 + i;
+        list[i][3] = 0x6000 + i;
+    }
+    std::uintptr_t before[4][4];
+    std::memcpy(before, list, sizeof(list));
+    auto smain = std::make_unique<std::uint8_t[]>(0x200);
+    std::memset(smain.get(), 0, 0x200);
+    *reinterpret_cast<std::uint32_t*>(smain.get() + jt::participants_offset) = 2;
+    const auto smain_address = reinterpret_cast<std::uintptr_t>(smain.get());
+
+    jt::take_event(0, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)));
+    jt::set_measuring(false);
+    timing_round(smain_address, reinterpret_cast<std::uintptr_t>(list), 4);  // passes straight through
+    CHECK(jt::take_event(0, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr))).empty());
+    jt::set_measuring(true);
+    std::memset(timing_seen_context, 0, sizeof(timing_seen_context));
+    timing_round(smain_address, reinterpret_cast<std::uintptr_t>(list), 4);
+    CHECK(std::memcmp(before, list, sizeof(list)) == 0);  // every entry back as it was
+    bool forwarded = true;
+    for (unsigned i = 0; i < 4; ++i)
+        forwarded = forwarded && timing_seen_context[i] == reinterpret_cast<std::uintptr_t>(objects[i]) && timing_seen_rdx[i] == 0xAA;
+    CHECK(forwarded);
+    // sMain's own list (no list passed): count from +0xB0, list at +0xF0.
+    auto own = std::make_unique<std::uint8_t[]>(jt::default_jobs_offset + 32 * 4);
+    std::memset(own.get(), 0, jt::default_jobs_offset + 32 * 4);
+    std::memcpy(own.get() + jt::default_jobs_offset, list, sizeof(list));
+    *reinterpret_cast<std::uint32_t*>(own.get() + jt::job_count_offset) = 4;
+    *reinterpret_cast<std::uint32_t*>(own.get() + jt::participants_offset) = 2;
+    timing_round(reinterpret_cast<std::uintptr_t>(own.get()), 0, 0);
+    CHECK(std::memcmp(own.get() + jt::default_jobs_offset, list, sizeof(list)) == 0);
+    // Too many jobs, or a list that cannot be written: untouched, counted as skipped.
+    std::vector<std::uintptr_t> big(4 * (jt::capacity + 1));
+    for (std::size_t i = 0; i < jt::capacity + 1; ++i) {
+        big[4 * i] = reinterpret_cast<std::uintptr_t>(objects[0]);
+        big[4 * i + 1] = reinterpret_cast<std::uintptr_t>(&timing_noop);
+    }
+    const auto big_before = big;
+    timing_round(smain_address, reinterpret_cast<std::uintptr_t>(big.data()), jt::capacity + 1);
+    CHECK(big == big_before);
+    auto* page = static_cast<std::uintptr_t*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    page[0] = reinterpret_cast<std::uintptr_t>(objects[0]);
+    page[1] = reinterpret_cast<std::uintptr_t>(&timing_noop);
+    DWORD old{};
+    VirtualProtect(page, 4096, PAGE_READONLY, &old);
+    timing_round(smain_address, reinterpret_cast<std::uintptr_t>(page), 1);
+    VirtualFree(page, 0, MEM_RELEASE);
+    jt::set_measuring(false);
+
+    const auto e = jt::take_event(1, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)));
+    const auto exe = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    char job[96];
+    const auto at = e.find("\"callers\":[[");
+    const auto caller_rva = std::strtoull(e.c_str() + at + 12, nullptr, 10);
+    const auto caller_fn = rva_of(reinterpret_cast<const void*>(&timing_round));
+    std::snprintf(job, sizeof(job), ",%u,%llu,8,", rva_of(reinterpret_cast<const void*>(&timing_job)),
+                  static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(timing_vtable) - exe));
+    std::printf("job_timing: %s\n", e.substr(0, 300).c_str());
+    CHECK(e.find("\"rounds\":2,\"skipped\":2,") != std::string::npos);
+    CHECK(caller_rva > caller_fn && caller_rva < caller_fn + 64);  // the return address inside timing_round
+    CHECK(e.find(job) != std::string::npos);  // (timing_job, timing_vtable): 4 jobs in each of 2 rounds
+}
+
 void spin_probe_test() {
     namespace sp = cpuopt::spin_probe;
     auto object = std::make_unique<std::uint8_t[]>(sp::done_offset + 8);
@@ -370,10 +478,12 @@ void start_event_test() {
 }  // namespace
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // output survives a crash
     frame_clock_test();
     frame_events_test();
     job_cap_test();
     spin_probe_test();
+    job_timing_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);
