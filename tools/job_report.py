@@ -122,7 +122,10 @@ def main():
                 game_threads.add(e['update']['thread'])
     profiles = [e for e in events if e.get('event') == 'profile' and (a.marker is None or e['marker'] == a.marker)]
     if not profiles:
-        raise SystemExit('no matching profile events')
+        sym = Symbolizer(run, paths)
+        print(f'{log.name}: no profile events (sampler off); job timing only')
+        timing_report(events, a.marker, sym, a.top)
+        return
     sym = Symbolizer(run, paths)
     label = lambda f: sym.label(*f) if f else '(none)'
     is_game = lambda f, span: bool(f) and f[0] == GAME and span[0] <= (f[1] & ~RAW) < span[1]

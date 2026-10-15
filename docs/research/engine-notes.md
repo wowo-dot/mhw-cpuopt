@@ -58,7 +58,7 @@ depended on modified bytes.
 
 | Run | Scheduling | fps | p50 / p95 / p99 ms | Game thread busy | Self time in the executeJob spin |
 |---|---|---|---|---|---|
-| al-01 | Process Lasso → cache CCD (affinity 0xffff); FLiNG trainer's TrSpeedHack DLL injected | 253.3 | 3.75 / 5.60 / 6.40 | 94.1% | 41.2% of 37,285 samples |
+| al-01 | Process Lasso → cache CCD (affinity 0xffff); a third-party DLL hooking timing functions was injected | 253.3 | 3.75 / 5.60 / 6.40 | 94.1% | 41.2% of 37,285 samples |
 | al-02 | stock: BIOS CPPC Auto, Game Bar + AMD driver (frequency CCD parked, 0% busy); no trainer | 258.5 | 3.85 / 4.40 / 4.70 | 93.5% | 39.3% of 37,436 samples |
 
 - The game thread (start `0x22E4AE0`) runs Main:Update and calls Present
@@ -68,7 +68,7 @@ depended on modified bytes.
 - The process ran 158-165 threads; 30 job threads (start `0x225F2B0`) each
   used about 0.37-0.40 ms of CPU per frame with about 14 context switches per
   frame; process CPU 16.9-17.6 ms per frame.
-- The two runs differ in more than scheduling (the trainer), so they do not
+- The two runs differ in more than scheduling (the injected timing DLL), so they do not
   rank the two scheduling setups.
 
 ### Confirmed (decompiler, clean database)
