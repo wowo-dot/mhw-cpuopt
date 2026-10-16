@@ -71,7 +71,7 @@ struct State {
     bool prim{}, server{};                // the prim_stores change / the server_time detours are in
     unsigned spin_us{300};                // toggle spin_workers: spin window
     bool spin{};                          // the worker_spin change is in
-    unsigned unit_us{60};                 // toggle unit_threshold: the threshold to set
+    unsigned unit_us{40};                 // toggle unit_threshold: the threshold to set (al-15: 40-50 best)
     bool running{};                       // the steam_running change is in
     bool prim_buffer{};                   // the prim ring's memory has been reported
     unsigned window_ms{5000};

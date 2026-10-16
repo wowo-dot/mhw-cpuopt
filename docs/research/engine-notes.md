@@ -411,3 +411,34 @@ below the wait site).
   usvfs NtClose hook) is about 1.5% (v0.7.2's cache_steam_running); the
   Steam overlay's ClipCursor hook 0.4%; our own detour's VirtualQuery on
   timed rounds 0.3%.
+
+### unit_threshold and cache_steam_running (al-15, v0.7.3)
+
+Ancient Forest at a camp, v0.6's switches on in every step (120), each
+variant a 30 s step between two 120 steps (the first window of each left
+out). The 120 steps drifted from 237 to 217 fps over the session (in-game
+time of day), so each variant is compared with its two neighbours.
+
+| Variant | first pass | second pass | third / fourth |
+|---|---|---|---|
+| cache_steam_running (632) | -0.4% | +0.8% | |
+| unit_us 1 | -6.7% | -7.4% | |
+| unit_us 20 | -0.9% | -1.1% | |
+| unit_us 30 | +1.8% | +0.7% | |
+| **unit_us 40** | **+2.8%** | **+3.3%** | **+2.8%, +2.8%** |
+| unit_us 50 | +2.8% | +2.6% | |
+| unit_us 120 | -10.2% | -11.7% | |
+
+- **unit_threshold: +2.8% at 40 us** (four of four), the same at 50;
+  lower costs more in round overhead than it moves off the game thread,
+  higher keeps more on it. The game's 60 us is not the best on this CPU.
+  With 40 us the unit move round runs 12.6 times a frame (10.4 at 60) and
+  the third pass's round (sub_14221B5A8) 5.9 times (2.4).
+- **cache_steam_running: no measurable gain.** It worked (about 3,400
+  answers reused for every 5 Steam calls in 5 s); the registry work it
+  saves is smaller than the profile's 1.5% suggested, or hidden in noise.
+- Next, from job timing with the best set (376) on: the camera round still
+  loses 95 us a round (379 us a frame) against its bound; its work is
+  SpeedTree draws (uBindSpeedTree, 294 a frame, 1.8 ms of work), base model
+  instances (733 a frame, 1.6 ms) and effects (0.8 ms). No single hot spot
+  stands out in the profile any more.

@@ -131,10 +131,10 @@
 | 32 | reuse_server_time | Steam's server time read once per time_ms (two detours) | time_ms (1000) |
 | 64 | inline_rounds | rounds with little work run on the game thread alone | inline_us (25) |
 | 128 | spin_workers | job threads spin after a round and take the next round's places without being woken (al.patch, 11 bytes, and a jump stub); slower in game (al-13), research only | spin_us (300) |
-| 256 | unit_threshold | sMhUnit's threshold between running a unit line alone and on the job threads | unit_us (60, the game's) |
-| 512 | cache_steam_running | SteamAPI_IsSteamRunning answered once per time_ms at its two per-frame call sites (al.patch, 2 x 6 bytes) | time_ms (1000) |
+| 256 | unit_threshold | sMhUnit's threshold between running a unit line alone and on the job threads (al-15: +2.8% at 40 us) | unit_us (40; the game's is 60) |
+| 512 | cache_steam_running | SteamAPI_IsSteamRunning answered once per time_ms at its two per-frame call sites (al.patch, 2 x 6 bytes); no measurable gain (al-15) | time_ms (1000) |
 
 Toggles add up: 8 + 16 + 32 + 64 = 120 is every optimization switch of
-v0.6; v0.7.2 adds 256 and 512 (888 with both). A
+v0.6; 376 adds unit_threshold, the best measured set (al-15). A
 switch whose code is not found, or that Astera Loader refuses, stays off and
 says why in the log; the rest still apply.
