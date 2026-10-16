@@ -31,7 +31,7 @@ std::atomic<std::int64_t> last_begin{};
 
 int row_of(std::uint32_t id) {
     if (id >= id_effect_stores && id <= id_sleep_limiter) return static_cast<int>(id - id_effect_stores);
-    if (id == id_remove_fps_cap) return remove_fps_cap;
+    if (id == id_remove_fps_cap) return row_remove_fps_cap;
     return -1;
 }
 bool* flag_of(Settings& s, std::uint32_t id) {
@@ -48,8 +48,10 @@ bool* flag_of(Settings& s, std::uint32_t id) {
     default: return nullptr;
     }
 }
-constexpr unsigned toggle_of_row[row_count] = {plain_prim_stores, order_jobs, reuse_server_time, unit_threshold,
-                                              cache_ccd, parallel_contacts, sleep_limiter, uncap};
+constexpr unsigned toggle_of_row[row_count] = {cpuopt::plain_prim_stores, cpuopt::order_jobs, cpuopt::reuse_server_time,
+                                              cpuopt::unit_threshold,   cpuopt::cache_ccd,  cpuopt::parallel_contacts,
+                                              cpuopt::sleep_limiter,    cpuopt::uncap};
+static_assert(toggle_of_row[row_unit_threshold] == 256U && toggle_of_row[row_parallel_contacts] == 32768U);
 
 cmfm_result_t CMFM_CALL get(void*, std::uint32_t id, cmfm_value_t* value) {
     auto s = runtime::settings();
@@ -113,7 +115,7 @@ std::string status_text() {
     const auto requested = toggles_of(s);
     const auto failed = runtime::failed_toggles();
     unsigned on = 0, usable = 0, broken = 0;
-    for (unsigned r = 0; r < remove_fps_cap; ++r) {  // the optimizations, not the cap switch
+    for (unsigned r = 0; r < row_remove_fps_cap; ++r) {  // the optimizations, not the cap switch
         if (available.why[r]) continue;
         ++usable;
         if (!(requested & toggle_of_row[r])) continue;
@@ -126,7 +128,7 @@ std::string status_text() {
     char line[128];
     if (!s.enabled) std::snprintf(line, sizeof(line), "%soptimizations off", fps);
     else if (broken) std::snprintf(line, sizeof(line), "%s%u of %u on, %u could not start (cpuopt.log)", fps, on - broken, usable, broken);
-    else if (on == usable) std::snprintf(line, sizeof(line), "%sall %u optimizations on", fps, usable);
+    else if (on == usable) std::snprintf(line, sizeof(line), usable == 1 ? "%sthe optimization on" : "%sall %u optimizations on", fps, usable);
     else std::snprintf(line, sizeof(line), "%s%u of %u optimizations on", fps, on, usable);
     return line;
 }

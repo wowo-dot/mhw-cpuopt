@@ -390,6 +390,10 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     if (hotkey_fn) hotkey_fn(self, hotkey_live, hotkey_user);
     Sleep(1500);
     CHECK(read_all(ini).find("enabled = on") != std::string::npos);
+    // Every usable switch counted as on (the row names once shadowed four toggles).
+    added_page.get_text(added_page.user, 3, status, sizeof(status));
+    std::printf("  status: %s\n", status);
+    CHECK(std::string(status).find("optimization") != std::string::npos && std::string(status).find(" on") != std::string::npos && std::string(status).find(" of ") == std::string::npos);
     // A hand edit while the game runs.
     write_all(ini, replaced(read_all(ini), "unit_us = 40", "unit_us = 50"));
     Sleep(2000);

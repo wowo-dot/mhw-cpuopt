@@ -11,7 +11,18 @@ namespace cpuopt::menu {
 // saves (CMFM's callbacks run on the game's menu thread and stay short).
 
 // The rows that can be unavailable on this game or CPU.
-enum Row : unsigned { effect_stores, job_order, server_time, unit_threshold, cache_ccd, parallel_contacts, sleep_limiter, remove_fps_cap, row_count };
+// (row_ names: the plain ones would shadow the switches' toggle names.)
+enum Row : unsigned {
+    row_effect_stores,
+    row_job_order,
+    row_server_time,
+    row_unit_threshold,
+    row_cache_ccd,
+    row_parallel_contacts,
+    row_sleep_limiter,
+    row_remove_fps_cap,
+    row_count
+};
 struct Availability {
     const char* why[row_count]{};  // nullptr: available; else greyed with this reason
 };
