@@ -19,8 +19,9 @@ namespace cpuopt::unit_lines {
 // in these passes outside executeJob, walking lines alone.
 //
 // The switch writes control.ini's unit_us there instead (checked first: the
-// field must hold the constructor's 60, as a qword), and writes 60 back when
-// off and at EXITING. If anything else changes the field, it stops for good.
+// dword must hold the constructor's 60; the dword after it is an atomic
+// counter, sub_14221A890), and writes 60 back when off and at EXITING. If
+// anything else changes the field, it stops for good.
 //
 // Signatures (tested exe c2ebbbd2..., clean image a78ea69b...), each matched
 // once: the threshold read in the move pass and in the second pass, the

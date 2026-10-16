@@ -187,7 +187,11 @@ bool running_patch(bool on, const char** reason) noexcept {
         ok = false;
         *reason = "IsSteamRunning calls not found";
     } else if (!running_handles[0] && !running_handles[1]) {
-        if (on) {
+        const auto steam = GetModuleHandleW(L"steam_api64.dll");
+        const auto function = steam ? reinterpret_cast<std::uintptr_t>(GetProcAddress(steam, "SteamAPI_IsSteamRunning")) : 0;
+        if (on && !running.real && !cpuopt::steam_running::resolve(running, function, reason)) {
+            ok = false;
+        } else if (on) {
             static const std::string poll(cpuopt::steam_running::poll_signature), lobby(cpuopt::steam_running::lobby_signature);
             const std::string* patterns[2] = {&poll, &lobby};
             const unsigned offsets[2] = {cpuopt::steam_running::poll_call, cpuopt::steam_running::lobby_call};
@@ -429,13 +433,9 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             std::uintptr_t poll[2]{}, lobby[2]{};
             const auto poll_count = find(cpuopt::steam_running::poll_signature, poll, 2);
             const auto lobby_count = find(cpuopt::steam_running::lobby_signature, lobby, 2);
-            const auto steam = GetModuleHandleW(L"steam_api64.dll");
-            const auto function = steam ? reinterpret_cast<std::uintptr_t>(GetProcAddress(steam, "SteamAPI_IsSteamRunning")) : 0;
-            running = cpuopt::steam_running::discover(poll, poll_count, lobby, lobby_count, function);
-            if (running.found) {
+            running = cpuopt::steam_running::discover(poll, poll_count, lobby, lobby_count);
+            if (running.found)
                 running.stub = cpuopt::worker_spin::make_stub(running.sites[0], reinterpret_cast<const void*>(&cpuopt::steam_running::is_running));
-                cpuopt::steam_running::set_real(running.real);
-            }
             host.running = running;
         }
 

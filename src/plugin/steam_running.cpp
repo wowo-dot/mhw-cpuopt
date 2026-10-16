@@ -26,8 +26,7 @@ std::uintptr_t slot_of(std::uintptr_t call) noexcept {
 }
 }  // namespace
 
-Discovery discover(const std::uintptr_t* poll, unsigned poll_count, const std::uintptr_t* lobby, unsigned lobby_count,
-                   std::uintptr_t steam_function) noexcept {
+Discovery discover(const std::uintptr_t* poll, unsigned poll_count, const std::uintptr_t* lobby, unsigned lobby_count) noexcept {
     Discovery d;
     d.counts[0] = poll_count;
     d.counts[1] = lobby_count;
@@ -46,20 +45,26 @@ Discovery discover(const std::uintptr_t* poll, unsigned poll_count, const std::u
         d.reason = "different imports";
         return d;
     }
+    d.found = true;
+    d.reason = "ok";
+    d.slot = slot;
+    return d;
+}
+
+bool resolve(Discovery& d, std::uintptr_t steam_function, const char** reason) noexcept {
     std::uintptr_t value{};
     __try {
-        value = *reinterpret_cast<volatile const std::uintptr_t*>(slot);
+        value = *reinterpret_cast<volatile const std::uintptr_t*>(d.slot);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         value = 0;
     }
-    if (!steam_function || value != steam_function) {
-        d.reason = "import is not SteamAPI_IsSteamRunning";
-        return d;
+    if (!d.found || !steam_function || value != steam_function) {
+        *reason = !steam_function ? "steam_api64 not loaded" : "import is not SteamAPI_IsSteamRunning";
+        return false;
     }
-    d.found = true;
-    d.reason = "ok";
     d.real = value;
-    return d;
+    set_real(value);
+    return true;
 }
 
 std::string discovery_event(const Discovery& d, std::uintptr_t base, double t_ms, std::string_view scanner) {

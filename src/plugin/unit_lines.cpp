@@ -22,9 +22,9 @@ bool read_ptr(std::uintptr_t at, std::uintptr_t& value) noexcept {
         return false;
     }
 }
-bool read_u64(std::uintptr_t at, std::uint64_t& value) noexcept {
+bool read_u32(std::uintptr_t at, std::uint32_t& value) noexcept {
     __try {
-        value = *reinterpret_cast<volatile const std::uint64_t*>(at);
+        value = *reinterpret_cast<volatile const std::uint32_t*>(at);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -49,13 +49,13 @@ void write_locked(unsigned value) noexcept {
         state.store(waiting);
         return;
     }
-    std::uint64_t field{};
-    if (!read_u64(u + threshold_offset, field)) {
+    std::uint32_t field{};
+    if (!read_u32(u + threshold_offset, field)) {
         state.store(waiting);
         return;
     }
     if (!unit) {
-        if (field != native_threshold) {  // the constructor's qword 60
+        if (field != native_threshold) {  // the constructor's 60
             state.store(layout_mismatch);
             return;
         }

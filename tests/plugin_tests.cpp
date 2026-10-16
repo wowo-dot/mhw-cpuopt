@@ -899,7 +899,9 @@ void unit_lines_test() {
     auto unit = std::make_unique<std::uint8_t[]>(ul::threshold_offset + 16);
     std::memset(smain.get(), 0, ul::unit_offset + 8);
     std::memset(unit.get(), 0, ul::threshold_offset + 16);
-    auto& field = *reinterpret_cast<std::uint64_t*>(unit.get() + ul::threshold_offset);
+    auto& field = *reinterpret_cast<std::uint32_t*>(unit.get() + ul::threshold_offset);
+    auto& counter = *reinterpret_cast<std::uint32_t*>(unit.get() + ul::threshold_offset + 4);  // an atomic counter in the game
+    counter = 60;
     const auto state = [] {
         std::string out = "{";
         ul::append(out);
@@ -917,7 +919,10 @@ void unit_lines_test() {
     ul::apply();
     CHECK(state() == "set" && field == 20);
     ul::request(150);
-    CHECK(field == 150);
+    CHECK(field == 150 && counter == 60);  // the dword after it untouched
+    counter = 3;
+    ul::apply();
+    CHECK(state() == "set" && field == 150);  // its changes are not drift
     ul::request(0);
     CHECK(state() == "native" && field == 60);
     ul::request(30);
@@ -974,14 +979,17 @@ void steam_running_test() {
     plant(planted_poll, sr::poll_signature, sr::poll_call, &running_slot);
     plant(planted_lobby, sr::lobby_signature, sr::lobby_call, &running_slot);
     const std::uintptr_t poll[1] = {reinterpret_cast<std::uintptr_t>(planted_poll)}, lobby[1] = {reinterpret_cast<std::uintptr_t>(planted_lobby)};
-    auto d = sr::discover(poll, 1, lobby, 1, function);
-    CHECK(d.found && d.real == function && d.sites[0] == poll[0] + sr::poll_call && d.sites[1] == lobby[0] + sr::lobby_call);
-    CHECK(std::string(sr::discover(poll, 1, lobby, 1, function + 16).reason) == "import is not SteamAPI_IsSteamRunning");
-    CHECK(std::string(sr::discover(poll, 0, lobby, 1, function).reason) == "signature not found");
+    auto d = sr::discover(poll, 1, lobby, 1);
+    CHECK(d.found && d.slot == reinterpret_cast<std::uintptr_t>(&running_slot) && d.sites[0] == poll[0] + sr::poll_call &&
+          d.sites[1] == lobby[0] + sr::lobby_call);
+    const char* why = "";
+    CHECK(!sr::resolve(d, 0, &why) && std::string(why) == "steam_api64 not loaded");
+    CHECK(!sr::resolve(d, function + 16, &why) && std::string(why) == "import is not SteamAPI_IsSteamRunning");
+    CHECK(sr::resolve(d, function, &why) && d.real == function);
+    CHECK(std::string(sr::discover(poll, 0, lobby, 1).reason) == "signature not found");
     plant(planted_lobby, sr::lobby_signature, sr::lobby_call, &other_running_slot);
-    CHECK(std::string(sr::discover(poll, 1, lobby, 1, function).reason) == "different imports");
+    CHECK(std::string(sr::discover(poll, 1, lobby, 1).reason) == "different imports");
 
-    sr::set_real(function);
     real_running_calls = 0;
     sr::set_active(false, 1000);
     CHECK(sr::is_running() && sr::is_running() && real_running_calls == 2);  // off: every call is Steam's

@@ -23,8 +23,9 @@ namespace cpuopt::steam_running {
 // are left alone.
 //
 // Signatures (tested exe c2ebbbd2..., clean image a78ea69b...), each matched
-// once; both calls must go through the same import slot, which must hold
-// steam_api64's SteamAPI_IsSteamRunning.
+// once; both calls must go through the same import slot. steam_api64 is not
+// loaded yet at PRE_MAIN (al-14), so the slot is checked against its
+// SteamAPI_IsSteamRunning when the switch first goes on (`resolve`).
 inline constexpr std::string_view poll_signature =
     "85 C0 74 06 FF 15 ?? ?? ?? ?? FF 15 ?? ?? ?? ?? 48 8B 5C 24 30 84 C0 0F 84 87 00 00 00 48 8D 0D ?? ?? ?? ?? FF 15";
 inline constexpr std::string_view lobby_signature =
@@ -36,12 +37,14 @@ struct Discovery {
     const char* reason{"not searched"};
     unsigned counts[2]{};          // poll, lobby
     std::uintptr_t sites[2]{};     // the two calls
-    std::uintptr_t real{};         // SteamAPI_IsSteamRunning
+    std::uintptr_t slot{};         // their import slot
+    std::uintptr_t real{};         // SteamAPI_IsSteamRunning, once resolved
     std::uintptr_t stub{};         // made at PRE_MAIN by the plugin entry
 };
-// `steam_function`: the address the import slot must hold.
-Discovery discover(const std::uintptr_t* poll, unsigned poll_count, const std::uintptr_t* lobby, unsigned lobby_count,
-                   std::uintptr_t steam_function) noexcept;
+Discovery discover(const std::uintptr_t* poll, unsigned poll_count, const std::uintptr_t* lobby, unsigned lobby_count) noexcept;
+// The slot must now hold `steam_function` (steam_api64's export); sets
+// `real` and the function `is_running` calls. False with the reason.
+bool resolve(Discovery& d, std::uintptr_t steam_function, const char** reason) noexcept;
 std::string discovery_event(const Discovery&, std::uintptr_t image_base, double t_ms, std::string_view scanner);
 // NOP, then call rel32 to `stub`, returning to `site` + 6; false out of reach.
 bool build_replacement(std::uintptr_t site, std::uintptr_t stub, std::array<std::uint8_t, call_length>& out) noexcept;
