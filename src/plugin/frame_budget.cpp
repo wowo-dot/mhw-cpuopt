@@ -142,9 +142,10 @@ Totals take_totals() noexcept {
     Totals t;
     for (unsigned i = 0; i < parts; ++i) {
         const auto s = histograms[i].take();
-        if (i != cpu_frame) continue;
-        t.frames = s.count;
-        t.cpu_frame_ms = s.count ? double(s.total_us) / double(s.count) / 1000.0 : 0.0;
+        const double mean = s.count ? double(s.total_us) / double(s.count) / 1000.0 : 0.0;
+        if (i == cpu_frame) t.frames = s.count;
+        double* to[parts] = {nullptr, &t.update_ms, &t.limiter_ms, &t.rounds_ms, &t.present_ms, nullptr, nullptr, &t.serial_ms, &t.cpu_frame_ms};
+        if (to[i]) *to[i] = mean;
     }
     return t;
 }

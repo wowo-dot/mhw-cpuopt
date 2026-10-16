@@ -225,6 +225,17 @@ std::string write_settings(std::string_view text, const Settings& s) {
     return out;
 }
 
+std::optional<std::string> ini_lookup(std::string_view text, std::string_view key) {
+    while (!text.empty()) {
+        const auto end = text.find('\n');
+        const auto line = text.substr(0, end);
+        text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
+        const auto l = split(line);
+        if (l.setting && same(l.key, key)) return std::string(l.value);
+    }
+    return std::nullopt;
+}
+
 unsigned toggles_of(const Settings& s) noexcept {
     unsigned t = s.remove_fps_cap ? unsigned(uncap) : 0U;  // not under the master switch
     if (!s.enabled) return t;

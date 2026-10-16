@@ -15,12 +15,27 @@ double median(std::vector<double> v) {
 double change(double before, double after) { return before > 0 ? after / before - 1.0 : 0.0; }
 
 void add(std::string& out, const char* format, ...) {
-    char line[512];
     va_list args;
     va_start(args, format);
-    const int n = std::vsnprintf(line, sizeof(line), format, args);
+    va_list again;
+    va_copy(again, args);
+    const int n = std::vsnprintf(nullptr, 0, format, args);
     va_end(args);
-    if (n > 0) out.append(line, static_cast<std::size_t>(n < int(sizeof(line)) ? n : int(sizeof(line)) - 1));
+    if (n > 0) {
+        const auto at = out.size();
+        out.resize(at + static_cast<std::size_t>(n) + 1);
+        std::vsnprintf(out.data() + at, static_cast<std::size_t>(n) + 1, format, again);
+        out.resize(at + static_cast<std::size_t>(n));
+    }
+    va_end(again);
+}
+// The median of one value over each state's windows.
+template <typename F>
+double median_of(std::span<const Window> w, bool on, F value) {
+    std::vector<double> v;
+    for (const auto& x : w)
+        if (x.on == on && x.frames) v.push_back(value(x));
+    return median(std::move(v));
 }
 // "+48%" / "-3%" / "+0.4%": one decimal below 10%.
 std::string percent(double g) {
@@ -40,13 +55,19 @@ double countdown_ms(double window_ms) noexcept { return std::min(10000.0, window
 
 Result summarize(std::span<const Window> w) {
     Result r;
-    std::vector<double> fps[2], p99[2], cpu[2], process[2], gains;
-    r.cpu = r.process = !w.empty();
+    std::vector<double> fps[2], p99[2], busy[2], share[2], cpu[2], process[2], gains;
+    r.busy = r.cpu = r.process = !w.empty();
     for (const auto& x : w) {
         if (!x.frames || x.seconds <= 0) continue;
         const int s = x.on ? 1 : 0;
         fps[s].push_back(x.fps());
         p99[s].push_back(x.p99_ms);
+        if (x.busy_ms > 0) {
+            busy[s].push_back(x.busy_ms);
+            share[s].push_back(x.busy_share);
+        } else {
+            r.busy = false;
+        }
         if (x.cpu_frames) cpu[s].push_back(x.cpu_ms);
         else r.cpu = false;
         if (x.process_ms > 0) process[s].push_back(x.process_ms);
@@ -70,6 +91,14 @@ Result summarize(std::span<const Window> w) {
     }
     r.off_p99 = median(p99[0]);
     r.on_p99 = median(p99[1]);
+    r.busy = r.busy && !busy[0].empty() && !busy[1].empty();
+    if (r.busy) {
+        r.off_busy = median(busy[0]);
+        r.on_busy = median(busy[1]);
+        r.busy_change = change(r.off_busy, r.on_busy);
+        r.off_share = median(share[0]);
+        r.on_share = median(share[1]);
+    }
     r.cpu = r.cpu && !cpu[0].empty() && !cpu[1].empty();
     if (r.cpu) {
         r.off_cpu = median(cpu[0]);
@@ -95,48 +124,82 @@ std::string report(const Machine& m, std::span<const Window> w, const Result& r)
     add(out, "Game options: %s\n", m.display.c_str());
     add(out, "Optimizations in the \"on\" windows: %s\n", m.switches.c_str());
     if (m.fps_cap_removed) add(out, "Remove 300 fps limit: on in both halves\n");
+    if (!m.processors.empty()) add(out, "Processors MHW may use: %s\n", m.processors.c_str());
+    if (!m.dlss.empty()) add(out, "DLSS mod: %s\n", m.dlss.c_str());
+    if (!m.effect_memory.empty()) add(out, "Effect vertex memory: %s\n", m.effect_memory.c_str());
     if (!m.modules.empty()) add(out, "Also loaded: %s\n", m.modules.c_str());
     add(out, "%u pairs of %.0f s windows, the first %.1f s of each not counted", pairs, m.window_s, settle_ms(m.window_s * 1000.0) / 1000.0);
     if (m.pauses) add(out, "; %u window(s) measured again after a pause", m.pauses);
-    out += "\n\n";
+    out += '\n';
+    if (!m.stopped.empty()) add(out, "Stopped early (%s): %zu of the %u pairs measured\n", m.stopped.c_str(), w.size() / 2, pairs);
+    out += '\n';
 
     add(out, "Frame rate: %.1f -> %.1f fps, %s", r.off_fps, r.on_fps, percent(r.gain).c_str());
     if (r.pairs > 1) add(out, " (the pairs: %s to %s)", percent(r.gain_low).c_str(), percent(r.gain_high).c_str());
     out += '\n';
     add(out, "Frame time p99: %.2f -> %.2f ms\n", r.off_p99, r.on_p99);
-    if (r.cpu) {
-        add(out, "Game thread CPU time per frame: %.2f -> %.2f ms, %s", r.off_cpu, r.on_cpu, percent(r.cpu_change).c_str());
-        if (r.on_cpu > 0) add(out, " (the CPU alone could reach %.0f fps)", 1000.0 / r.on_cpu);
-        out += '\n';
+    // The CPU alone: the game thread's CPU time when it was counted, else frame_budget's.
+    const double on_need = r.busy ? r.on_busy : r.cpu ? r.on_cpu : 0.0;
+    if (r.busy) {
+        add(out, "Game thread CPU time per frame: %.2f -> %.2f ms, %s (the CPU alone could reach about %.0f fps)\n", r.off_busy, r.on_busy,
+            percent(r.busy_change).c_str(), 1000.0 / r.on_busy);
+        add(out, "Game thread busy: %.0f%% -> %.0f%% of the time\n", r.off_share * 100.0, r.on_share * 100.0);
+    } else if (r.cpu) {
+        add(out, "Game thread time per frame outside Present and the frame limiter: %.2f -> %.2f ms, %s (the CPU alone could reach about %.0f fps)\n",
+            r.off_cpu, r.on_cpu, percent(r.cpu_change).c_str(), 1000.0 / r.on_cpu);
     } else {
-        out += "Game thread CPU time per frame: not measured on this game version\n";
+        out += "Game thread CPU time per frame: not measured\n";
     }
     if (r.process) add(out, "All threads' CPU time per frame: %.1f -> %.1f ms, %s\n", r.off_process, r.on_process, percent(r.process_change).c_str());
     out += '\n';
 
-    out += " #  optimizations    fps   p50 ms   p99 ms   max ms   CPU ms  all threads ms\n";
+    out += " #  optimizations    fps   p50 ms   p99 ms   max ms   CPU ms   busy  all threads ms\n";
     for (std::size_t i = 0; i < w.size(); ++i) {
         const auto& x = w[i];
         add(out, "%2zu  %-13s %6.1f %8.2f %8.2f %8.2f", i + 1, x.on ? "on" : "off", x.fps(), x.p50_ms, x.p99_ms, x.max_ms);
-        if (x.cpu_frames) add(out, " %8.2f", x.cpu_ms);
-        else out += "        -";
+        if (x.busy_ms > 0) add(out, " %8.2f %5.0f%%", x.busy_ms, x.busy_share * 100.0);
+        else if (x.cpu_frames) add(out, " %8.2f      -", x.cpu_ms);
+        else out += "        -      -";
         if (x.process_ms > 0) add(out, " %15.1f", x.process_ms);
         else out += "               -";
         out += '\n';
     }
     out += '\n';
+    // Where the game thread's frame went (frame_budget, wall time).
+    if (r.cpu) {
+        out += "Where the game thread's frame goes (ms, median of the off / on windows):\n";
+        const auto row = [&](const char* name, auto value) {
+            add(out, "  %-38s %6.2f  %6.2f\n", name, median_of(w, false, value), median_of(w, true, value));
+        };
+        row("frame time", [](const Window& x) { return x.frames && x.seconds > 0 ? x.seconds * 1000.0 / double(x.frames) : 0.0; });
+        row("frame limiter (its wait)", [](const Window& x) { return x.limiter_ms; });
+        row("job rounds (with the job threads)", [](const Window& x) { return x.rounds_ms; });
+        row("its own work", [](const Window& x) { return x.serial_ms; });
+        row("Present (mostly the wait for the GPU)", [](const Window& x) { return x.present_ms; });
+        row("outside the game's update", [](const Window& x) {
+            return x.frames && x.seconds > 0 ? std::max(0.0, x.seconds * 1000.0 / double(x.frames) - x.update_ms) : 0.0;
+        });
+        out += '\n';
+    }
 
     // What the numbers mean here.
     if (r.pairs > 1 && r.gain_high - r.gain_low > 0.25)
         add(out, "- The pairs differ a lot (%s to %s): the scene changed while it ran. Stand still in one spot, camera too, and run it again.\n",
             percent(r.gain_low).c_str(), percent(r.gain_high).c_str());
-    if (r.cpu && r.on_cpu > 0 && r.on_fps < 0.9 * 1000.0 / r.on_cpu) {
-        add(out, "- With the optimizations on, something besides the CPU held the frame rate here (the graphics card, V-Sync or a frame rate "
-                 "limit): the CPU alone could reach %.0f fps, the game ran at %.0f.",
-            1000.0 / r.on_cpu, r.on_fps);
-        if (r.off_cpu > 0 && r.off_fps < 0.9 * 1000.0 / r.off_cpu) out += " The same held the \"off\" windows, so the CPU time shows the gain better than fps.";
+    const double off_need = r.busy ? r.off_busy : r.cpu ? r.off_cpu : 0.0;
+    if (on_need > 0 && r.on_fps < 0.9 * 1000.0 / on_need) {
+        add(out, "- With the optimizations on, something besides the CPU held the frame rate here (the graphics card, V-Sync, a frame rate "
+                 "limit or Reflex): the CPU alone could reach about %.0f fps, the game ran at %.0f.",
+            1000.0 / on_need, r.on_fps);
+        if (off_need > 0 && r.off_fps < 0.9 * 1000.0 / off_need) out += " The same held the \"off\" windows, so the CPU time shows the gain better than fps.";
         out += '\n';
     }
+    if (m.reflex)
+        out += "- The DLSS mod's Reflex is on: while the graphics card is the limit, Reflex holds each frame back until the GPU is ready, so the "
+               "time cpuopt saves goes into that wait (same fps, likely lower latency). The game thread's CPU time shows the saving.\n";
+    if (!m.processors.empty() && m.processors.find(" of ") != std::string::npos)
+        out += "- Something outside cpuopt limits which processors MHW may use, while the game still starts a job thread for every logical "
+               "processor of the PC. If that was set on purpose (Process Lasso, a launch script, a guide), compare a benchmark without it.\n";
     out += "- fps counts the game's own frames; frames that frame generation adds are not counted.\n\n";
     return out;
 }
@@ -147,9 +210,10 @@ std::string fps_line(const Result& r) {
     return line;
 }
 std::string cpu_line(const Result& r) {
-    if (!r.cpu) return "not measured";
+    if (!r.busy && !r.cpu) return "not measured";
     char line[64];
-    std::snprintf(line, sizeof(line), "%s, %.2f to %.2f ms", percent(r.cpu_change).c_str(), r.off_cpu, r.on_cpu);
+    if (r.busy) std::snprintf(line, sizeof(line), "%s, %.2f to %.2f ms", percent(r.busy_change).c_str(), r.off_busy, r.on_busy);
+    else std::snprintf(line, sizeof(line), "%s, %.2f to %.2f ms", percent(r.cpu_change).c_str(), r.off_cpu, r.on_cpu);
     return line;
 }
 }  // namespace cpuopt::bench

@@ -45,5 +45,8 @@ unsigned toggles_of(const Settings& s) noexcept;
 // Key names as written in the file: "None", "F9", "Ctrl+Shift+K", "Mouse4",
 // "Numpad5", "VK 0xBA" for keys without a name here.
 std::string key_name(std::uint32_t key);
+// One key's value from any "key = value ; comment" text (the first line with
+// that key, case kept), or nothing.
+std::optional<std::string> ini_lookup(std::string_view text, std::string_view key);
 std::optional<std::uint32_t> parse_key(std::string_view name);
 }  // namespace cpuopt

@@ -39,6 +39,10 @@ std::string ccd_event(const Ccd&, double t_ms);
 DWORD_PTR first_bits(DWORD_PTR mask, unsigned count) noexcept;
 // The process's affinity when first read (at startup), before any change.
 DWORD_PTR original() noexcept;
+// The affinity in effect now, or the one before cpuopt's own while that
+// stands: what the process may use as set outside cpuopt (Process Lasso, a
+// launch script).
+DWORD_PTR outside() noexcept;
 // Window thread only. 0 = none of ours: what this module set goes back (see above).
 void set_mask(DWORD_PTR mask, unsigned limit) noexcept;  // `limit`: cpu_count for the log, 0 if none
 void restore() noexcept;                                 // EXITING; safe more than once

@@ -13,6 +13,7 @@
 #include "sampler.hpp"
 #include "system_info.hpp"
 #include "thread_census.hpp"
+#include <intrin.h>
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -65,16 +66,16 @@ std::wstring trim(std::wstring s) {
     return s.substr(start);
 }
 
-// Whole small file as bytes, or nothing.
-bool read_small(const std::wstring& path, std::string& out) {
+// Whole small file as bytes (less than `limit`), or nothing.
+bool read_small(const std::wstring& path, std::string& out, DWORD limit = 8192) {
     const auto file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
                                   FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
-    char buffer[8192];
+    std::string buffer(limit, '\0');
     DWORD n{};
-    const bool ok = ReadFile(file, buffer, sizeof(buffer), &n, nullptr) && n < sizeof(buffer);
+    const bool ok = ReadFile(file, buffer.data(), limit, &n, nullptr) && n < limit;
     CloseHandle(file);
-    if (ok) out.assign(buffer, n);
+    if (ok) out.assign(buffer.data(), n);
     return ok;
 }
 
@@ -577,9 +578,19 @@ void status_event() {
 }
 
 // The benchmark (bench.hpp) ---------------------------------------------------
+struct HandleCloser {
+    void operator()(void* h) const noexcept {
+        if (h) CloseHandle(h);
+    }
+};
 struct Bench {
     enum class Phase { idle, armed, countdown, running, paused } phase{Phase::idle};
     Settings settings;        // as they were when it was asked for
+    bool ccd_found{};         // "Stay on the cache die" can run on this CPU
+    unsigned failed{};        // switches that could not start in an "on" window
+    std::unique_ptr<void, HandleCloser> game_thread;  // for its cycle count
+    ULONG64 cycles_from{};    // the game thread's cycles when counting began
+    std::uint64_t tsc_from{};
     double window_ms{15000};
     unsigned window{};        // the window running
     double started{}, due{};  // the window's start and end (running), the first window (countdown)
@@ -627,6 +638,11 @@ void bench_event(const char* what, const Bench& b) {
     if (n > 0) event_log.write(std::string_view(line, static_cast<std::size_t>(n)));
 }
 
+ULONG64 thread_cycles(const Bench& b) noexcept {
+    ULONG64 c{};
+    return b.game_thread && QueryThreadCycleTime(b.game_thread.get(), &c) ? c : 0;
+}
+
 // The settings with the optimizations on or off, and frame_budget in both.
 Control bench_control(const Settings& st, bool on) {
     auto copy = st;
@@ -637,23 +653,72 @@ Control bench_control(const Settings& st, bool on) {
     return c;
 }
 
-std::string switch_names(const Settings& st) {
-    const std::pair<bool, const char*> names[] = {{st.effect_stores, "effect drawing"},      {st.job_order, "draw job order"},
-                                                  {st.server_time, "Steam server time"},    {st.unit_threshold, "update threads"},
-                                                  {st.cache_ccd, "stay on the cache die"},  {st.parallel_contacts, "parallel hit detection"},
-                                                  {st.sleep_limiter, "sleeping frame limiter"}};
+// The optimizations the "on" windows ran: chosen, and usable on this game and CPU.
+std::string switch_names(const Bench& b) {
+    const auto& st = b.settings;
+    struct Item {
+        bool on, usable;
+        unsigned toggle;
+        const char* name;
+    };
+    const Item items[] = {
+        {st.effect_stores, host.prim.found, cpuopt::plain_prim_stores, "effect drawing"},
+        {st.job_order, host.job.found && host.order_site == "ok", cpuopt::order_jobs, "draw job order"},
+        {st.server_time, host.server.found, cpuopt::reuse_server_time, "Steam server time"},
+        {st.unit_threshold, host.job.found && host.units.found, cpuopt::unit_threshold, "update threads"},
+        {st.cache_ccd, b.ccd_found, cpuopt::cache_ccd, "stay on the cache die"},
+        {st.parallel_contacts, host.contacts.found, cpuopt::parallel_contacts, "parallel hit detection"},
+        {st.sleep_limiter, host.budget.found, cpuopt::sleep_limiter, "sleeping frame limiter"},
+    };
     std::string out;
-    for (const auto& [on, name] : names) {
-        if (!on) continue;
+    for (const auto& i : items) {
+        if (!i.on || !i.usable) continue;
         if (!out.empty()) out += ", ";
-        out += name;
-    }
-    if (const auto f = failed.load() & ~unsigned(uncap)) {
-        unsigned n = 0;
-        for (auto m = f; m; m &= m - 1) ++n;
-        out += " (" + std::to_string(n) + " could not start: cpuopt-session.log)";
+        out += i.name;
+        if (b.failed & i.toggle) out += " (could not start: cpuopt-session.log)";
     }
     return out.empty() ? "none" : out;
+}
+
+// The processors and priority MHW runs with as set outside cpuopt, when not all or not normal.
+std::string processors_of() {
+    unsigned allowed = 0;
+    for (auto m = cpu_limit::outside(); m; m &= m - 1) ++allowed;
+    const unsigned total = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    const auto priority = GetPriorityClass(GetCurrentProcess());
+    const char* name = priority == HIGH_PRIORITY_CLASS           ? "High"
+                       : priority == REALTIME_PRIORITY_CLASS     ? "Realtime"
+                       : priority == ABOVE_NORMAL_PRIORITY_CLASS ? "Above normal"
+                       : priority == BELOW_NORMAL_PRIORITY_CLASS ? "Below normal"
+                       : priority == IDLE_PRIORITY_CLASS         ? "Low"
+                                                                 : nullptr;
+    const bool limited = allowed && allowed < total;
+    if (!limited && !name) return {};
+    std::string out = limited ? std::to_string(allowed) + " of " + std::to_string(total) + ", set outside cpuopt" : "all " + std::to_string(total);
+    if (name) out += std::string("; priority ") + name;
+    return out;
+}
+
+// The DLSS mod's mode, frame generation and Reflex, from its file, when it is loaded.
+std::string dlss_of(bool& reflex) {
+    reflex = false;
+    if (!GetModuleHandleW(L"mhw_dlss.dll")) return {};
+    std::string text;
+    const auto path = system_info::folder_of(system_info::module_path(nullptr)) + L"\\AsteraLoader\\plugins\\mhw_dlss\\mhw_dlss.ini";
+    if (!read_small(path, text, 1U << 16)) return "loaded, its settings file not found";
+    const auto value = [&](const char* key) { return ini_lookup(text, key).value_or("?"); };
+    const auto r = value("reflex");
+    reflex = r == "on" || r == "boost";
+    return value("dlss_mode") + ", frame generation " + value("frame_generation") + ", Reflex " + r;
+}
+
+// The effect vertex ring's memory: write-combined is what makes the game's reads slow.
+std::string effect_memory_of() {
+    if (!host.prim.found) return {};
+    const auto b = prim_stores::probe(reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) + host.prim.global_rva);
+    if (!b.pointer) return "not mapped yet";
+    return b.write_combined() ? "write-combined (slow to read back, as the effect drawing fix expects)"
+                              : "not write-combined (cheap to read back here: the effect drawing fix has less to save)";
 }
 
 bench::Machine machine_of(const Bench& b) {
@@ -674,7 +739,10 @@ bench::Machine machine_of(const Bench& b) {
     m.display = value(L"Resolution").empty() ? std::string("graphics_option.ini not found")
                                              : value(L"Resolution") + ", " + value(L"ScreenMode") + ", frame rate " + value(L"FrameRate") +
                                                    ", V-Sync " + value(L"V-Sync") + ", the in-game DLSS option " + value(L"NVIDIA DLSS");
-    m.switches = switch_names(b.settings);
+    m.switches = switch_names(b);
+    m.processors = processors_of();
+    m.dlss = dlss_of(m.reflex);
+    m.effect_memory = effect_memory_of();
     m.modules = system_info::other_modules(self_module);
     m.fps_cap_removed = b.settings.remove_fps_cap;
     m.pauses = b.pauses;
@@ -701,12 +769,53 @@ bool append_report(const std::string& text) {
     return ok;
 }
 
-void result_event(const bench::Result& r, const Bench& b) {
+// One window's numbers, as the "windows" rows and the bench_window event hold them.
+void append_window(std::string& out, const bench::Window& w) {
+    out += w.on ? "[1," : "[0,";
+    json::fixed(out, w.seconds, 3);
+    out += ',';
+    json::number(out, w.frames);
+    for (const double v : {w.p50_ms, w.p99_ms, w.max_ms, w.busy_ms, w.busy_share}) {
+        out += ',';
+        json::fixed(out, v, 4);
+    }
+    out += ',';
+    json::number(out, w.cpu_frames);
+    for (const double v : {w.cpu_ms, w.update_ms, w.limiter_ms, w.rounds_ms, w.present_ms, w.serial_ms, w.process_ms}) {
+        out += ',';
+        json::fixed(out, v, 4);
+    }
+    out += ']';
+}
+constexpr const char* window_columns =
+    "[\"on\",\"seconds\",\"frames\",\"p50\",\"p99\",\"max\",\"busy_ms\",\"busy_share\",\"cpu_frames\",\"cpu_ms\",\"update_ms\","
+    "\"limiter_ms\",\"rounds_ms\",\"present_ms\",\"serial_ms\",\"process_ms\"]";
+
+// Every window as it ends: written at once, so even a killed game keeps them.
+void window_event(std::size_t index, const bench::Window& w) {
+    std::string out = "{";
+    json::key(out, "event");
+    json::string(out, "bench_window");
+    json::key(out, "t_ms");
+    json::fixed(out, now_ms(), 3);
+    json::key(out, "index");
+    json::number(out, std::uint64_t(index));
+    json::key(out, "columns");
+    out += window_columns;
+    json::key(out, "values");
+    append_window(out, w);
+    out += '}';
+    event_log.write(out);
+}
+
+void result_event(const bench::Result& r, const Bench& b, std::span<const bench::Window> windows, const char* ended_early) {
     std::string out = "{";
     json::key(out, "event");
     json::string(out, "benchmark");
     json::key(out, "t_ms");
     json::fixed(out, now_ms(), 3);
+    json::key(out, "stopped");
+    json::string(out, ended_early ? ended_early : "");
     json::key(out, "window_ms");
     json::number(out, std::uint64_t(b.window_ms));
     json::key(out, "pauses");
@@ -720,27 +829,12 @@ void result_event(const bench::Result& r, const Bench& b) {
         json::fixed(out, v, 4);
     }
     json::key(out, "columns");
-    out += "[\"on\",\"seconds\",\"frames\",\"p50\",\"p99\",\"max\",\"cpu_frames\",\"cpu_ms\",\"process_ms\"]";
+    out += window_columns;
     json::key(out, "windows");
     out += '[';
-    for (std::size_t i = 0; i < b.done.size(); ++i) {
-        const auto& w = b.done[i];
-        out += i ? ",[" : "[";
-        out += w.on ? "1," : "0,";
-        json::fixed(out, w.seconds, 3);
-        out += ',';
-        json::number(out, w.frames);
-        for (const double v : {w.p50_ms, w.p99_ms, w.max_ms}) {
-            out += ',';
-            json::fixed(out, v, 3);
-        }
-        out += ',';
-        json::number(out, w.cpu_frames);
-        out += ',';
-        json::fixed(out, w.cpu_ms, 4);
-        out += ',';
-        json::fixed(out, w.process_ms, 4);
-        out += ']';
+    for (std::size_t i = 0; i < windows.size(); ++i) {
+        if (i) out += ',';
+        append_window(out, windows[i]);
     }
     out += "]}";
     event_log.write(out);
@@ -748,6 +842,7 @@ void result_event(const bench::Result& r, const Bench& b) {
 
 void bench_start_window(State& s, Bench& b, double t) {
     apply_control(s, bench_control(b.settings, bench::window_on(b.window)), false, "{\"event\":\"control\"");
+    if (bench::window_on(b.window)) b.failed |= failed.load();
     b.phase = Bench::Phase::running;
     b.started = t;
     b.due = t + b.window_ms;
@@ -780,6 +875,7 @@ void bench_tick(State& s, Bench& b) {
             b.phase = Bench::Phase::armed;
             set_bench_line("Close the menu to start", "then stand still, camera too");
         } else if (t >= b.due) {
+            if (const auto id = frame_events::game_thread()) b.game_thread.reset(OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, id));
             bench_event("start", b);
             bench_start_window(s, b, t);
         }
@@ -809,6 +905,8 @@ void bench_tick(State& s, Bench& b) {
         frame_events::take();
         frame_budget::take_totals();
         b.cpu_from = process_cpu();
+        b.cycles_from = thread_cycles(b);
+        b.tsc_from = __rdtsc();
         b.counting_from = t;
         b.counting = true;
         return bench_line_running(b, t);
@@ -817,6 +915,8 @@ void bench_tick(State& s, Bench& b) {
     const auto frames = frame_events::take();
     const auto budget_totals = frame_budget::take_totals();
     const auto cpu = process_cpu();
+    const auto cycles = thread_cycles(b);
+    const auto tsc = __rdtsc();
     bench::Window w;
     w.on = bench::window_on(b.window);
     w.seconds = (t - b.counting_from) / 1000.0;
@@ -824,15 +924,27 @@ void bench_tick(State& s, Bench& b) {
     w.max_ms = double(frames.update_interval.max_us) / 1000.0;
     w.p50_ms = std::min(double(frames.update_interval.p50_us) / 1000.0, w.max_ms);  // bucket edges, up to 50 us high
     w.p99_ms = std::min(double(frames.update_interval.p99_us) / 1000.0, w.max_ms);
+    // The game thread's cycles count at the invariant TSC rate (thread_census.cpp).
+    if (b.cycles_from && cycles > b.cycles_from && tsc > b.tsc_from && w.frames && t > b.counting_from) {
+        const double tsc_per_ms = double(tsc - b.tsc_from) / (t - b.counting_from);
+        w.busy_share = std::min(1.0, double(cycles - b.cycles_from) / double(tsc - b.tsc_from));
+        w.busy_ms = double(cycles - b.cycles_from) / tsc_per_ms / double(w.frames);
+    }
     w.cpu_frames = budget_totals.frames;
     w.cpu_ms = budget_totals.cpu_frame_ms;
+    w.update_ms = budget_totals.update_ms;
+    w.limiter_ms = budget_totals.limiter_ms;
+    w.rounds_ms = budget_totals.rounds_ms;
+    w.present_ms = budget_totals.present_ms;
+    w.serial_ms = budget_totals.serial_ms;
     w.process_ms = w.frames && cpu > b.cpu_from ? double(cpu - b.cpu_from) / 10000.0 / double(w.frames) : 0.0;
     b.done.push_back(w);
+    window_event(b.done.size() - 1, w);
     if (++b.window < bench::windows) return bench_start_window(s, b, t);
     // Done: the report, the player's own settings back, a sound.
     const auto r = bench::summarize(b.done);
     const bool written = append_report(bench::report(machine_of(b), b.done, r));
-    result_event(r, b);
+    result_event(r, b, b.done, nullptr);
     apply_control(s, control_of(settings()), false, "{\"event\":\"control\"");
     set_bench_line(bench::fps_line(r), written ? bench::cpu_line(r) : "report not written: see log");
     if (b.check_front) MessageBeep(MB_ICONASTERISK);  // someone at the game to hear it
@@ -840,9 +952,10 @@ void bench_tick(State& s, Bench& b) {
     bench_running = false;
 }
 
-void bench_arm(Bench& b, const Settings& st) {
+void bench_arm(const State& s, Bench& b, const Settings& st) {
     b = Bench{};
     b.settings = st;
+    b.ccd_found = s.ccd.found;
     b.window_ms = double(st.benchmark_s) * 1000.0;
     b.check_front = has_window();
     b.phase = Bench::Phase::armed;
@@ -851,11 +964,27 @@ void bench_arm(Bench& b, const Settings& st) {
     set_bench_line("Close the menu to start", "then stand still, camera too");
 }
 
-void bench_stop(Bench& b, const char* why) {
+// A benchmark that ends early: its complete pairs, from two on, as a report
+// and on the page. False when there are fewer.
+bool bench_partial(const Bench& b, const char* why) {
+    const std::span<const bench::Window> windows(b.done.data(), b.done.size() / 2 * 2);
+    if (windows.size() < 4) return false;
+    const auto r = bench::summarize(windows);
+    auto m = machine_of(b);
+    m.stopped = why;
+    const bool written = append_report(bench::report(m, windows, r));
+    result_event(r, b, windows, why);
+    char first[64];
+    std::snprintf(first, sizeof(first), "%s (%zu/%u)", bench::fps_line(r).c_str(), windows.size() / 2, bench::pairs);
+    set_bench_line(first, written ? bench::cpu_line(r) : "report not written: see log");
+    return true;
+}
+
+void bench_stop(Bench& b, const char* line, const char* why) {
     bench_event("stopped", b);
+    if (!bench_partial(b, why)) set_bench_line(line, "run it again");
     b = Bench{};
     bench_running = false;
-    set_bench_line(why, "run it again");
 }
 
 DWORD WINAPI player_worker(void* parameter) noexcept {
@@ -880,19 +1009,23 @@ DWORD WINAPI player_worker(void* parameter) noexcept {
             save_if_dirty(s);
             const auto now = settings();
             if (!(now == applied)) {
-                if (b.phase != Bench::Phase::idle) bench_stop(b, "Stopped: a setting changed");
+                if (b.phase != Bench::Phase::idle) bench_stop(b, "Stopped: a setting changed", "a setting changed");
                 apply_control(s, control_of(now), false, "{\"event\":\"control\"");
                 if (now.toggle_key != key && host.hotkey) host.hotkey(key = now.toggle_key);
                 applied = now;
                 status_due = now_ms() + 10000.0;
             }
-            if (bench_requested.exchange(false) && b.phase == Bench::Phase::idle) bench_arm(b, now);
+            if (bench_requested.exchange(false) && b.phase == Bench::Phase::idle) bench_arm(s, b, now);
             bench_tick(s, b);
             if (now_ms() >= status_due) {
                 status_event();
                 if (auto e = modules.changed_event(now_ms()); !e.empty()) event_log.write(e);
                 status_due = now_ms() + 300000.0;
             }
+        }
+        if (b.phase == Bench::Phase::running || b.phase == Bench::Phase::paused) {  // the game closing mid-run
+            bench_event("stopped", b);
+            bench_partial(b, "the game closed");
         }
         save_if_dirty(s);
         status_event();

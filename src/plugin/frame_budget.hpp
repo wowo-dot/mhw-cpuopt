@@ -59,11 +59,11 @@ void set_active(bool on) noexcept;  // measuring; the timing detour also serves 
 bool active() noexcept;
 // "budget": per frame, means and p50/p95 in ms, since the last call.
 void append(std::string& out);
-// The same window as plain numbers (the benchmark): frames, and the CPU
-// frame's mean in ms. Starts a new window like append.
+// The same window as plain numbers (the benchmark): frames, and each part's
+// mean in ms. Starts a new window like append.
 struct Totals {
     std::uint64_t frames{};
-    double cpu_frame_ms{};
+    double cpu_frame_ms{}, update_ms{}, limiter_ms{}, rounds_ms{}, present_ms{}, serial_ms{};
 };
 Totals take_totals() noexcept;
 }  // namespace cpuopt::frame_budget

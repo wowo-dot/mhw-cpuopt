@@ -451,6 +451,26 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     std::printf("  benchmark: %s\n", status);
     CHECK(std::string(status) == "not measured" || std::string(status).find(" ms") != std::string::npos);
     CHECK(added_page.locked(added_page.user, 31, why_locked, sizeof(why_locked)) == 0);
+    // Stopped by a change after a few pairs: those pairs are reported.
+    added_page.on_event(added_page.user, CMFM_EVENT_OPENED);
+    CHECK(added_page.press(added_page.user, 31) == CMFM_OK);
+    added_page.on_event(added_page.user, CMFM_EVENT_CLOSED);
+    Sleep(6500);  // the countdown and five windows or so
+    v.i = 0;
+    CHECK(added_page.set(added_page.user, 12, &v) == CMFM_OK);  // Draw job order off
+    Sleep(1500);
+    added_page.get_text(added_page.user, 32, status, sizeof(status));
+    std::printf("  benchmark: %s\n", status);
+    CHECK(std::string(status).find("/8)") != std::string::npos);
+    CHECK(read_all(report_path).find("Stopped early (a setting changed): ") != std::string::npos);
+    v.i = 1;
+    CHECK(added_page.set(added_page.user, 12, &v) == CMFM_OK);
+    Sleep(1500);
+    // And one the game closes on (EXITING below).
+    added_page.on_event(added_page.user, CMFM_EVENT_OPENED);
+    CHECK(added_page.press(added_page.user, 31) == CMFM_OK);
+    added_page.on_event(added_page.user, CMFM_EVENT_CLOSED);
+    Sleep(6500);
 
     const auto t_exit = qpc();
     info->on_phase(self, AL_PHASE_EXITING, nullptr);
@@ -476,8 +496,11 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     // The benchmark's windows, its result, and the player's settings after it.
     CHECK(log.find("\"marker\":\"benchmark-off\"") != std::string::npos && log.find("\"marker\":\"benchmark-on\"") != std::string::npos);
     CHECK(log.find("\"event\":\"benchmark\"") != std::string::npos && log.find("\"what\":\"paused\"") != std::string::npos);
-    CHECK(log.rfind("\"marker\":\"benchmark-") < log.rfind("\"marker\":\"player\""));
+    CHECK(log.find("\"marker\":\"player\"", log.find("\"event\":\"benchmark\"")) != std::string::npos);  // its own settings back
     CHECK(log.find("\"event\":\"modules\"") != std::string::npos && log.find("al_d3d12_subscribed") == std::string::npos);
+    CHECK(lines_with(log, "\"event\":\"bench_window\"").size() >= 16 + 4 + 4);
+    CHECK(log.find("\"stopped\":\"a setting changed\"") != std::string::npos && log.find("\"stopped\":\"the game closed\"") != std::string::npos);
+    CHECK(read_all(folder + L"\\cpuopt-benchmark.txt").find("Stopped early (the game closed): ") != std::string::npos);
     CHECK(exiting_ms < 2500);
     std::printf(failures ? "al_host_smoke (player): %d failure(s)\n" : "al_host_smoke (player): ok\n", failures);
     std::fflush(stdout);

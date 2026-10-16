@@ -8,6 +8,7 @@
 #include "../src/core/signature.hpp"
 #include <cmath>
 #include <cstdio>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -200,6 +201,10 @@ void settings() {
         CHECK(cpuopt::parse_key(cpuopt::key_name(k)) == k);
     CHECK(cpuopt::parse_key("ctrl + shift + k") == 0x300u + 'K');
     CHECK(!cpuopt::parse_key("Hyper+F1") && !cpuopt::parse_key("F25") && !cpuopt::parse_key("Ctrl+"));
+    // Any key from another mod's file (the DLSS mod's).
+    const auto dlss = "# x\ndlss_mode = performance ; off, dlaa\nreflex = on            ; on, boost, off\n";
+    CHECK(cpuopt::ini_lookup(dlss, "reflex") == "on" && cpuopt::ini_lookup(dlss, "dlss_mode") == "performance");
+    CHECK(!cpuopt::ini_lookup(dlss, "frame_generation"));
     // The benchmark's window length.
     CHECK(defaults.benchmark_s == 6 && file.find("benchmark_s = 6 ") != std::string::npos);
     CHECK(cpuopt::parse_settings("benchmark_s = 1\n").benchmark_s == 1 && cpuopt::parse_settings("benchmark_s = 61\n").benchmark_s == 6);
@@ -226,17 +231,25 @@ void benchmark() {
         x.p50_ms = 1000.0 / fps;
         x.p99_ms = x.on ? 4.4 : 16.7;
         x.max_ms = 20;
+        x.busy_ms = x.on ? 3.5 : 5.1;
+        x.busy_share = x.on ? 0.95 : 0.92;
         x.cpu_frames = x.frames;
         x.cpu_ms = x.on ? 3.6 : 5.2;
+        x.update_ms = x.on ? 3.5 : 5.0;
+        x.limiter_ms = 0.01;
+        x.rounds_ms = x.on ? 1.2 : 2.1;
+        x.serial_ms = x.on ? 2.0 : 2.6;
+        x.present_ms = 0.3;
         x.process_ms = x.on ? 22.0 : 46.0;
         w.push_back(x);
     }
     const auto r = b::summarize(w);
     CHECK(r.pairs == 8 && near(r.off_fps, 180) && near(r.on_fps, 270) && near(r.gain, 0.5));
     CHECK(near(r.gain_low, 0.4) && near(r.gain_high, 0.5) && near(r.off_p99, 16.7) && near(r.on_p99, 4.4));
+    CHECK(r.busy && near(r.off_busy, 5.1) && near(r.on_busy, 3.5) && near(r.off_share, 0.92) && near(r.on_share, 0.95));
     CHECK(r.cpu && near(r.off_cpu, 5.2) && near(r.on_cpu, 3.6) && near(r.cpu_change, 3.6 / 5.2 - 1.0));
     CHECK(r.process && near(r.off_process, 46) && near(r.on_process, 22));
-    CHECK(b::fps_line(r) == "+50% fps, 180 to 270" && b::cpu_line(r) == "-31%, 5.20 to 3.60 ms");
+    CHECK(b::fps_line(r) == "+50% fps, 180 to 270" && b::cpu_line(r) == "-31%, 5.10 to 3.50 ms");
     b::Machine m;
     m.when = "2026-10-16 22:10";
     m.version = "0.14.0";
@@ -253,26 +266,56 @@ void benchmark() {
     std::printf("%s", text.c_str());
     CHECK(text.find("== cpuopt benchmark, 2026-10-16 22:10 ==\n") == 0);
     CHECK(text.find("Frame rate: 180.0 -> 270.0 fps, +50% (the pairs: +40% to +50%)\n") != std::string::npos);
-    CHECK(text.find("Game thread CPU time per frame: 5.20 -> 3.60 ms, -31% (the CPU alone could reach 278 fps)\n") != std::string::npos);
+    CHECK(text.find("Game thread CPU time per frame: 5.10 -> 3.50 ms, -31% (the CPU alone could reach about 286 fps)\n") != std::string::npos);
+    CHECK(text.find("Game thread busy: 92% -> 95% of the time\n") != std::string::npos);
     CHECK(text.find("All threads' CPU time per frame: 46.0 -> 22.0 ms, -52%\n") != std::string::npos);
     CHECK(text.find("8 pairs of 15 s windows, the first 3.0 s of each not counted; 1 window(s) measured again") != std::string::npos);
     CHECK(text.find("\n16  off ") != std::string::npos && text.find("\n17 ") == std::string::npos);
+    CHECK(text.find("  job rounds (with the job threads)        2.10    1.20\n") != std::string::npos);
     CHECK(text.find("something besides the CPU") == std::string::npos && text.find("differ a lot") == std::string::npos);
     CHECK(text.find("Also loaded: cmfm.dll, mhw_dlss.dll\n") != std::string::npos && text.find("Remove 300 fps limit") == std::string::npos);
+    CHECK(text.find("Reflex") == std::string::npos && text.find("Processors MHW may use") == std::string::npos);
     // Held by the GPU with the optimizations on: the CPU could do 500 fps.
     auto held = w;
     for (auto& x : held)
-        if (x.on) x.cpu_ms = 2.0;
-    CHECK(b::report(m, held, b::summarize(held)).find("the CPU alone could reach 500 fps, the game ran at 270.") != std::string::npos);
+        if (x.on) x.busy_ms = 2.0;
+    CHECK(b::report(m, held, b::summarize(held)).find("the CPU alone could reach about 500 fps, the game ran at 270.") != std::string::npos);
     // A scene that changed: the pairs from +10% to +80%.
     auto drift = w;
     drift[1].frames = static_cast<std::uint64_t>(198 * 12);
     drift[2].frames = static_cast<std::uint64_t>(324 * 12);
     CHECK(b::report(m, drift, b::summarize(drift)).find("The pairs differ a lot (+10% to +80%)") != std::string::npos);
-    // Without frame_budget: fps only.
+    // Stopped early: the complete pairs so far.
+    auto stopped = m;
+    stopped.stopped = "a setting changed";
+    const std::span<const b::Window> first(w.data(), 10);
+    const auto partial = b::report(stopped, first, b::summarize(first));
+    CHECK(partial.find("Stopped early (a setting changed): 5 of the 8 pairs measured\n") != std::string::npos);
+    CHECK(text.find("Stopped early") == std::string::npos);
+    // The PC's own limits and the DLSS mod's Reflex, said and explained; a long
+    // module list stays whole.
+    auto limited = m;
+    limited.processors = "6 of 16, set outside cpuopt; priority High";
+    limited.dlss = "performance, frame generation off, Reflex on";
+    limited.reflex = true;
+    limited.effect_memory = "write-combined";
+    limited.modules = std::string(600, 'x') + ".dll";
+    const auto noted = b::report(limited, w, r);
+    CHECK(noted.find("Processors MHW may use: 6 of 16, set outside cpuopt; priority High\n") != std::string::npos);
+    CHECK(noted.find("DLSS mod: performance, frame generation off, Reflex on\n") != std::string::npos);
+    CHECK(noted.find("Effect vertex memory: write-combined\n") != std::string::npos);
+    CHECK(noted.find("- The DLSS mod's Reflex is on") != std::string::npos && noted.find("- Something outside cpuopt limits") != std::string::npos);
+    CHECK(noted.find(std::string(600, 'x') + ".dll\n") != std::string::npos);
+    // Without the cycle count: frame_budget's time, named as what it is.
+    for (auto& x : w) x.busy_ms = 0;
+    const auto r1 = b::summarize(w);
+    CHECK(!r1.busy && r1.cpu && b::cpu_line(r1) == "-31%, 5.20 to 3.60 ms");
+    CHECK(b::report(m, w, r1).find("Game thread time per frame outside Present and the frame limiter: 5.20 -> 3.60 ms, -31% (the CPU alone could reach about 278 fps)") !=
+          std::string::npos);
+    // Without either: fps only.
     for (auto& x : w) x.cpu_frames = 0;
     const auto r2 = b::summarize(w);
-    CHECK(!r2.cpu && r2.process && b::fps_line(r2) == "+50% fps, 180 to 270" && b::cpu_line(r2) == "not measured");
+    CHECK(!r2.cpu && !r2.busy && r2.process && b::fps_line(r2) == "+50% fps, 180 to 270" && b::cpu_line(r2) == "not measured");
     CHECK(b::report(m, w, r2).find("Game thread CPU time per frame: not measured") != std::string::npos);
     CHECK(b::fps_line(r).size() <= 30 && b::cpu_line(r).size() <= 30);
 }

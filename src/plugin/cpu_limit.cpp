@@ -45,6 +45,15 @@ DWORD_PTR original() noexcept {
     return m;
 }
 
+DWORD_PTR outside() noexcept {
+    AcquireSRWLockExclusive(&lock);
+    DWORD_PTR process{}, system{};
+    GetProcessAffinityMask(GetCurrentProcess(), &process, &system);
+    const auto m = ours && process == ours ? before : process;
+    ReleaseSRWLockExclusive(&lock);
+    return m;
+}
+
 Ccd find_cache_ccd() noexcept {
     Ccd c;
     DWORD bytes = 0;
