@@ -27,7 +27,7 @@ struct Settings {
     bool remove_fps_cap{false};    // uncap, only from the game's "no limit" 300
     unsigned limiter_margin_us{1000};  // 50..2000
     unsigned unit_us{40};              // 10..200
-    unsigned benchmark_s{15};          // 1..60: seconds per half of each benchmark pair
+    unsigned benchmark_s{6};           // 1..60: seconds per half of each benchmark pair (16 windows: about 1:45 at 6)
     bool operator==(const Settings&) const = default;
 };
 

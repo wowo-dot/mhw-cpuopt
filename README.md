@@ -64,7 +64,7 @@ Then put `cpuopt.dll` here, or install the zip as a mod in Mod Organizer 2
 <game folder>\AsteraLoader\plugins\cpuopt\cpuopt.dll
 ```
 
-Start the game. `cpuopt.ini` (the settings) and `cpuopt.log` (what cpuopt
+Start the game. `cpuopt.ini` (the settings) and `cpuopt-session.log` (what cpuopt
 found and did, new each start) appear next to the DLL. In the Mods menu
 (below Options on the title screen, or in the Start menu's System tab), the
 **CPU optimizations** page should say "all 7 optimizations on" ("all 6" on
@@ -79,7 +79,7 @@ Organizer 2. Nothing else on the PC or in the game is changed.
   (the row below it) to compare with and without cpuopt while you play.
 - **The switches:** each optimization on its own, applied at once.
 - **Status:** the frame rate and how many optimizations run; if one could
-  not start, it says so and `cpuopt.log` says why.
+  not start, it says so and `cpuopt-session.log` says why.
 - `cpuopt.ini` holds the same settings with a comment on each line. Edits
   made while the game runs are picked up within a second.
 
@@ -91,8 +91,8 @@ optimizations in the spot where you stand:
 1. Go somewhere busy and stand still: a camp in the Ancient Forest, or the
    middle of Astera or Seliana. Keep the camera still too.
 2. Mods menu, CPU optimizations, **Run benchmark**, Yes. Close all menus.
-3. It starts 10 seconds later and takes about four minutes: 8
-   pairs of 15 seconds, the optimizations off and on in turns. Opening a
+3. It starts 10 seconds later and takes under two minutes: 8
+   pairs of 6 seconds, the optimizations off and on in turns. Opening a
    menu or switching to another window pauses it; that part is measured
    again. A sound plays when it is done.
 4. The result shows on the page, and the full report is added to
@@ -120,7 +120,7 @@ the CPU time per frame: the report says when that is the case.
 
 ## Reporting a problem
 
-Say what happened and attach `cpuopt.log` from that session (it is replaced
+Say what happened and attach `cpuopt-session.log` from that session (it is replaced
 at each start) and `cpuopt-benchmark.txt` if you ran one. The log contains
 the paths of the game and mod folders, which can include your Windows user
 name. Beta testers: see `docs/beta-testing.md`.

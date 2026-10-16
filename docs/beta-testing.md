@@ -27,7 +27,7 @@ This is a closed beta: please do not pass the files on.
 2. **Benchmark, two spots.** For each spot:
    - Stand still and keep the camera still.
    - Run **Run benchmark** and answer Yes, then close every menu.
-   - It runs about 4 minutes and plays a sound when done.
+   - It runs under 2 minutes and plays a sound when done.
    - Do not touch the mouse or keyboard meanwhile; opening a menu or
      alt-tabbing pauses it, and that part is measured again.
 
@@ -54,10 +54,12 @@ lobbies: if something is wrong, better to find it in your own hunt.
 ## What to send
 
 - `cpuopt-benchmark.txt` (no file paths or user names in it).
-- `cpuopt.log` from the session where something happened. It is replaced at
-  every start, so copy it before you launch again. It contains the paths of
-  your game and mod folders, which can include your Windows user name;
-  check it before sending if that matters to you.
+- `cpuopt-session.log` from the session where something happened, next to
+  `cpuopt.dll` (Astera Loader's `logs\plugins\cpuopt.log` is a different,
+  shorter one). It is replaced at every start, so copy it before you launch
+  again. It contains the paths of your game and mod folders, which can
+  include your Windows user name; check it before sending if that matters to
+  you.
 - The screenshot of the page.
 - In a few words:
   - your resolution and upscaling (the DLSS mod and its mode, or none);

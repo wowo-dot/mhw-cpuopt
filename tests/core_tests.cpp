@@ -201,8 +201,8 @@ void settings() {
     CHECK(cpuopt::parse_key("ctrl + shift + k") == 0x300u + 'K');
     CHECK(!cpuopt::parse_key("Hyper+F1") && !cpuopt::parse_key("F25") && !cpuopt::parse_key("Ctrl+"));
     // The benchmark's window length.
-    CHECK(defaults.benchmark_s == 15 && file.find("benchmark_s = 15") != std::string::npos);
-    CHECK(cpuopt::parse_settings("benchmark_s = 1\n").benchmark_s == 1 && cpuopt::parse_settings("benchmark_s = 61\n").benchmark_s == 15);
+    CHECK(defaults.benchmark_s == 6 && file.find("benchmark_s = 6 ") != std::string::npos);
+    CHECK(cpuopt::parse_settings("benchmark_s = 1\n").benchmark_s == 1 && cpuopt::parse_settings("benchmark_s = 61\n").benchmark_s == 6);
 }
 
 bool near(double a, double b) { return std::fabs(a - b) < 1e-6 * (std::fabs(b) + 1.0); }

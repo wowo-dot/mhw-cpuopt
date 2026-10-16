@@ -7,7 +7,8 @@
       sidecar (moved into the folder if there was one), so the plugin starts
       in player mode with the slot's cpuopt.ini (copied in as it was).
   collect <run>
-      After a player-mode launch: copies the slot's cpuopt.log, cpuopt.ini
+      After a player-mode launch: copies the slot's cpuopt-session.log (or
+      cpuopt.log before 0.14.2), cpuopt.ini
       and cpuopt-benchmark.txt into the run folder (then seal it).
   control <run> [--toggles N] [--marker M] [--window-ms N] [--job-threads N]
           [--job-order 1|2] [--order-us N] [--inline-us N] [--time-ms N]
@@ -140,7 +141,7 @@ def collect(a):
     run = run_folder(a.run)
     folder = Path(machine()['slot']).parent
     copied = []
-    for name in ('cpuopt.log', 'cpuopt.ini', 'cpuopt-benchmark.txt'):
+    for name in ('cpuopt-session.log', 'cpuopt.log', 'cpuopt.ini', 'cpuopt-benchmark.txt'):
         if (folder / name).exists():
             shutil.copyfile(folder / name, run / name)
             copied.append(name)

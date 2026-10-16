@@ -651,7 +651,7 @@ std::string switch_names(const Settings& st) {
     if (const auto f = failed.load() & ~unsigned(uncap)) {
         unsigned n = 0;
         for (auto m = f; m; m &= m - 1) ++n;
-        out += " (" + std::to_string(n) + " could not start: cpuopt.log)";
+        out += " (" + std::to_string(n) + " could not start: cpuopt-session.log)";
     }
     return out.empty() ? "none" : out;
 }
@@ -956,9 +956,10 @@ bool start(HMODULE self, const Host& h, std::string& reason) noexcept {
         const auto sidecar_path = host.folder + L"\\cpuopt.dll.output-dir";
         if (!read_small(sidecar_path, sidecar)) {
             // Player mode.
-            const auto log_path = host.folder + L"\\cpuopt.log";
+            // Not "cpuopt.log": Astera Loader's own log of the plugin has that name (logs\plugins).
+            const auto log_path = host.folder + L"\\cpuopt-session.log";
             if (!event_log.open_file(log_path, 1ULL << 20)) {
-                reason = "cpuopt.log cannot be written: idle";
+                reason = "cpuopt-session.log cannot be written: idle";
                 return false;
             }
             auto state = std::make_unique<State>();

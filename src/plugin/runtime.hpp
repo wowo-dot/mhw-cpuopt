@@ -50,7 +50,7 @@ struct Host {
 // al_plugin_init. With <folder>\cpuopt.dll.output-dir (a research run):
 // opens the run log there and starts the window thread. Without it, player
 // mode: settings from <folder>\cpuopt.ini (made with the defaults if
-// missing), the log <folder>\cpuopt.log (new each launch, at most 1 MB), the
+// missing), the log <folder>\cpuopt-session.log (new each launch, at most 1 MB), the
 // switches applied on the runtime's own thread, no sampler and no window
 // statistics. False, with the reason, when neither log can be opened: the
 // plugin then stays idle.

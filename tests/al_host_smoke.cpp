@@ -13,7 +13,7 @@
 // Player mode instead: no run folder; the host also serves al.input and a
 // stand-in CMFM (cmfm.menu), and the test checks cpuopt.ini (made with the
 // defaults), the Mods page's switches and hotkey, a hand edit of the file,
-// and cpuopt.log.
+// and cpuopt-session.log.
 #include "al/al_plugin.h"
 #include "cmfm/cmfm.h"
 #include "../src/core/signature.hpp"
@@ -415,7 +415,7 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     std::printf("  status: %s\n", status);
     CHECK(std::string(status).find("optimization") != std::string::npos && std::string(status).find(" on") != std::string::npos && std::string(status).find(" of ") == std::string::npos);
     // A hand edit while the game runs (and 1 s benchmark windows).
-    write_all(ini, replaced(replaced(read_all(ini), "unit_us = 40", "unit_us = 50"), "benchmark_s = 15", "benchmark_s = 1"));
+    write_all(ini, replaced(replaced(read_all(ini), "unit_us = 40", "unit_us = 50"), "benchmark_s = 6 ", "benchmark_s = 1 "));
     Sleep(2000);
 
     // The benchmark: Run on the page, then it starts once the page closes. The
@@ -462,8 +462,8 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     const al_phase_shutdown_t shutdown{sizeof(al_phase_shutdown_t), 0};
     info->on_phase(self, AL_PHASE_SHUTDOWN, &shutdown);
 
-    const auto log = read_all(folder + L"\\cpuopt.log");
-    std::printf("al_host_smoke (player): %zu bytes of cpuopt.log, EXITING took %.1f ms\n", log.size(), exiting_ms);
+    const auto log = read_all(folder + L"\\cpuopt-session.log");
+    std::printf("al_host_smoke (player): %zu bytes of cpuopt-session.log, EXITING took %.1f ms\n", log.size(), exiting_ms);
     CHECK(log.find("{\"event\":\"start\"") == 0 || log.find("\n{\"event\":\"start\"") != std::string::npos);
     CHECK(log.find("\"toggles\":51512,\"requested_toggles\":51512,\"marker\":\"player\"") != std::string::npos);
     CHECK(log.find("\"toggles\":0,\"requested_toggles\":0,\"marker\":\"player\"") != std::string::npos);
