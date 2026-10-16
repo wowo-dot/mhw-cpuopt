@@ -9,6 +9,7 @@
 #include "cpu_limit.hpp"
 #include "frame_budget.hpp"
 #include "frame_cap.hpp"
+#include "limiter.hpp"
 #include "frame_clock.hpp"
 #include "frame_events.hpp"
 #include "image_scan.hpp"
@@ -357,6 +358,7 @@ void AL_CALL on_phase(al_plugin_t*, al_phase_t phase, const void* data) {
         cpuopt::job_timing::set_inline(false, 1);
         cpuopt::frame_budget::set_active(false);
         cpuopt::frame_cap::restore();
+        cpuopt::limiter::set_active(false, 500);  // the game's own spin for its teardown
         cpuopt::server_time::set_active(false, 0);
         cpuopt::worker_spin::set_active(false, 0);  // job threads block again for the game's teardown
         cpuopt::unit_lines::restore();

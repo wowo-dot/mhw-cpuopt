@@ -463,7 +463,7 @@ int wmain(int argc, wchar_t** argv) {
     const auto game_id = std::to_string(game_tid.load());
     for (const auto& w : windows) {
         const double ms = number_in(w, "\"event\":\"window\"", "ms");
-        if (ms < 950 || ms > 1100) continue;
+        if (ms < 950 || ms > 1250) continue;  // a loaded machine (the game running) stretches windows
         const double fps = number_in(w, "\"update\":{", "fps"), present_fps = number_in(w, "\"present\":{", "fps");
         const double work = number_in(w, "\"work\":{", "p50"), call = number_in(w, "\"call\":{", "p50");
         const double interval = number_in(w, "\"update\":{", "p50");

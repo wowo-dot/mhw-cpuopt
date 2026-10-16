@@ -1,6 +1,7 @@
 #include "frame_budget.hpp"
 #include "../core/histogram.hpp"
 #include "../core/json.hpp"
+#include "limiter.hpp"
 #include "log.hpp"
 #include <intrin.h>
 #include <windows.h>
@@ -95,10 +96,11 @@ Timing* timing_next() noexcept { return &timing_fn; }
 Present* present_next() noexcept { return &present_fn; }
 
 std::uint64_t __fastcall timing_detour(std::uintptr_t smain) {
-    if (!on.load(std::memory_order_relaxed)) return timing_fn(smain);
-    const auto t0 = __rdtsc();
+    const bool measure = on.load(std::memory_order_relaxed);
+    const auto t0 = measure ? __rdtsc() : 0;
+    limiter::before(smain);  // toggle sleep_limiter's wait: part of the limiter's time
     const auto r = timing_fn(smain);
-    limiter_cycles += __rdtsc() - t0;
+    if (measure) limiter_cycles += __rdtsc() - t0;
     return r;
 }
 

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mhw_cpuopt VERSION 0.9.0 LANGUAGES CXX)
+project(mhw_cpuopt VERSION 0.10.0 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "64-bit Windows only")
@@ -44,6 +44,8 @@ set(CPUOPT_PLUGIN_SOURCES
     src/plugin/frame_budget.hpp
     src/plugin/frame_cap.cpp
     src/plugin/frame_cap.hpp
+    src/plugin/limiter.cpp
+    src/plugin/limiter.hpp
     src/plugin/frame_clock.cpp
     src/plugin/frame_clock.hpp
     src/plugin/frame_events.cpp

@@ -103,6 +103,10 @@ void control() {
     CHECK(parse_control("max_fps=1000")->max_fps == 1000u);
     CHECK(!parse_control("max_fps=59"));
     CHECK(!parse_control("max_fps=1001"));
+    CHECK(parse_control("toggles=32767")->toggles == 32767u);
+    CHECK(parse_control("margin_us=500")->margin_us == 500u);
+    CHECK(!parse_control("margin_us=49"));
+    CHECK(!parse_control("margin_us=2001"));
     CHECK(parse_control("cpu_count=12")->cpu_count == 12u);
     CHECK(!parse_control("cpu_count=1"));
     CHECK(!parse_control("cpu_count=65"));

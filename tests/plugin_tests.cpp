@@ -14,6 +14,7 @@
 #include "../src/plugin/cpu_limit.hpp"
 #include "../src/plugin/frame_budget.hpp"
 #include "../src/plugin/frame_cap.hpp"
+#include "../src/plugin/limiter.hpp"
 #include "../src/plugin/frame_clock.hpp"
 #include "../src/plugin/image_scan.hpp"
 #include "../src/plugin/frame_events.hpp"
@@ -1176,6 +1177,78 @@ void frame_cap_test() {
     fake_cap_smain = 0;
 }
 
+// limiter: the game's remaining wait from a stand-in sMain, and the wait
+// before the game's function: until margin_us before the deadline, and none
+// in the fixed-step branch, without a cap, or when the frame is already late.
+void limiter_test() {
+    namespace lm = cpuopt::limiter;
+    auto smain = std::make_unique<std::uint8_t[]>(0x100);
+    std::memset(smain.get(), 0, 0x100);
+    const auto base = reinterpret_cast<std::uintptr_t>(smain.get());
+    auto& scale = *reinterpret_cast<float*>(base + lm::scale_offset);
+    auto& max_fps = *reinterpret_cast<float*>(base + lm::max_fps_offset);
+    auto& mode = *reinterpret_cast<std::uint8_t*>(base + lm::mode_offset);
+    auto& scaled = *reinterpret_cast<std::uint64_t*>(base + lm::scaled_offset);
+    auto& reference = *reinterpret_cast<std::uint64_t*>(base + lm::reference_offset);
+    auto& last = *reinterpret_cast<std::int64_t*>(base + lm::last_qpc_offset);
+    const auto f = cpuopt::qpc_frequency();
+    scale = 60.0f;
+    max_fps = 300.0f;
+    scaled = reference = 123456789;
+    // A frame that began 1 ms ago (in the summed, scaled ticks): 2.33 ms left.
+    scaled += static_cast<std::uint64_t>(double(f) / 1000.0 * 60.0);
+    const auto now = cpuopt::qpc_now();
+    last = now;
+    double left{};
+    CHECK(lm::remaining(base, now, f, left) && left > 2.30e-3 && left < 2.37e-3);
+    // 0.5 ms more since the last reading.
+    CHECK(lm::remaining(base, now + f / 2000, f, left) && left > 1.80e-3 && left < 1.87e-3);
+    mode = 1;
+    CHECK(!lm::remaining(base, now, f, left));
+    mode = 0;
+    max_fps = 0.0f;
+    CHECK(!lm::remaining(base, now, f, left));
+    max_fps = 300.0f;
+    // The wait: frame starts now, so 3.33 ms left; margin 500 us, about 2.83 ms of sleep.
+    lm::set_active(true, 500);
+    std::string out = "{";
+    lm::append(out);  // reset
+    double longest{};
+    for (int i = 0; i < 5; ++i) {
+        scaled = reference;
+        last = cpuopt::qpc_now();
+        const auto t0 = cpuopt::qpc_now();
+        lm::before(base);
+        const double took = double(cpuopt::qpc_now() - t0) / double(f);
+        CHECK(took > 2.6e-3 && took < 4.5e-3);
+        longest = took > longest ? took : longest;
+    }
+    // Late (the frame took 5 ms already) and the fixed-step branch: no wait.
+    scaled = reference + static_cast<std::uint64_t>(double(f) / 200.0 * 60.0);
+    last = cpuopt::qpc_now();
+    auto t0 = cpuopt::qpc_now();
+    lm::before(base);
+    CHECK(double(cpuopt::qpc_now() - t0) / double(f) < 0.5e-3);
+    mode = 1;
+    scaled = reference;
+    t0 = cpuopt::qpc_now();
+    lm::before(base);
+    CHECK(double(cpuopt::qpc_now() - t0) / double(f) < 0.5e-3);
+    out = "{";
+    lm::append(out);
+    out += '}';
+    std::printf("limiter: longest %.3f ms; %s\n", longest * 1000.0, out.c_str());
+    CHECK(out.find("\"state\":\"fixed-step branch\"") != std::string::npos);
+    CHECK(out.find("\"frames\":7,") != std::string::npos);
+    CHECK(out.find("\"waits\":5,") != std::string::npos);
+    // Off: nothing.
+    lm::set_active(false, 500);
+    mode = 0;
+    t0 = cpuopt::qpc_now();
+    lm::before(base);
+    CHECK(double(cpuopt::qpc_now() - t0) / double(f) < 0.5e-3);
+}
+
 void spin_probe_test() {
     namespace sp = cpuopt::spin_probe;
     auto object = std::make_unique<std::uint8_t[]>(sp::done_offset + 8);
@@ -1419,6 +1492,7 @@ int main() {
     cpu_limit_test();
     frame_budget_test();
     frame_cap_test();
+    limiter_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);

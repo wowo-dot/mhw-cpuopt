@@ -72,6 +72,9 @@ std::optional<Control> parse_control(std::string_view text) {
         } else if (key == "max_fps") {
             c.max_fps = number(value);
             if (!c.max_fps || *c.max_fps < 60 || *c.max_fps > 1000) return std::nullopt;
+        } else if (key == "margin_us") {
+            c.margin_us = number(value);
+            if (!c.margin_us || *c.margin_us < 50 || *c.margin_us > 2000) return std::nullopt;
         } else if (key == "marker") {
             if (value.size() > 64) return std::nullopt;
             for (const char ch : value)

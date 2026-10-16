@@ -119,7 +119,7 @@
 - Record the scene, graphics settings and which mods are loaded in the run
   note; the log records what it can detect itself.
 
-## The switches (v0.6)
+## The switches (v0.6 to v0.10)
 
 | Toggle | Name | What it changes | Parameters |
 |---|---|---|---|
@@ -135,6 +135,9 @@
 | 512 | cache_steam_running | SteamAPI_IsSteamRunning answered once per time_ms at its two per-frame call sites (al.patch, 2 x 6 bytes); no measurable gain (al-15) | time_ms (1000) |
 | 2048 | cache_ccd | the process confined to the processors sharing the largest L3 (the 3D V-Cache die of a 7950X3D/9950X3D) and job rounds sized to match; nothing on CPUs with one or equal L3s (al-17: +4.9% on CCD0) | |
 | 1024 | smaller_cpu | research: the process confined to its first cpu_count logical processors (SMT siblings adjacent: 12 = six cores) and job rounds to as many threads; the original affinity back when off and at exit | cpu_count (12) |
+| 4096 | budget | research: the game thread's frame split into limiter, job rounds, Present path (GPU wait, swapchain call) and serial work; the CPU frame (interval minus limiter and GPU wait). Two detours: sMain's frame timing and cD3DRender::present | |
+| 8192 | uncap | research: the engine's frame cap (sMain mMaxFps) set to max_fps on the game thread, the game's value back when off and at exit; hands off if the options change it | max_fps (1000) |
+| 16384 | sleep_limiter | the frame limiter waits on a high-resolution timer until margin_us before its deadline instead of spinning; the game's function still does its own timing (the frame-timing detour) | margin_us (500) |
 
 Toggles add up: 8 + 16 + 32 + 64 = 120 is every optimization switch of
 v0.6; 376 adds unit_threshold, the best measured set (al-15). A

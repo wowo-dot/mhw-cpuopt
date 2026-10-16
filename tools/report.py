@@ -97,6 +97,14 @@ def main():
         if toggles & 8192:
             c = ws[-1].get('cap', {})
             state += f', frame cap {c.get("applied")} ({c.get("state")}; the game\'s {c.get("game")})'
+        if toggles & 16384:
+            lm = [w.get('limiter', {}) for w in ws]
+            waits = sum(x.get('waits', 0) for x in lm)
+            waited = sum(x.get('wait', {}).get('mean', 0) * x.get('waits', 0) for x in lm) / max(waits, 1)
+            state += (f', sleep limiter ({lm[-1].get("state")}, margin {lm[-1].get("margin_us")} us: {waits} waits in '
+                      f'{sum(x.get("frames", 0) for x in lm)} frames, {waited:.3f} ms each, woke late p99 '
+                      f'{max((x.get("late", {}).get("p99", 0) for x in lm), default=0):.3f} ms, '
+                      f'{sum(x.get("past_margin", 0) for x in lm)} past the margin)')
         if toggles & 64:
             il = [w.get('inline', {}) for w in ws]
             sites = il[-1].get('sites', [])
@@ -113,7 +121,9 @@ def main():
               f'{med(lambda w: w["update"]["work"]["p95"]):.2f})  Present {sum(w["present"]["count"] for w in ws) / seconds:.1f}/s, '
               f'inside Present {weighted_mean(ws, ("present", "call")):.3f} ms mean (median p95 {med(lambda w: w["present"]["call"]["p95"]):.2f})  '
               f'sRender frames {sum(w["render"]["frames"] for w in ws)}')
-        print(f'  process CPU {sum(w["process_cpu_ms"] for w in ws) / frames:.2f} ms/frame; threads {med(lambda w: w["thread_count"])}')
+        game_cpu = sum(t[1] for w in ws for t in w['threads'] if t[0] == w['update']['thread'])
+        print(f'  process CPU {sum(w["process_cpu_ms"] for w in ws) / frames:.2f} ms/frame, game thread {game_cpu / frames:.3f} '
+              f'ms/frame; threads {med(lambda w: w["thread_count"])}')
         # Frame budget (toggle 4096): the game thread's frame split up, and the
         # CPU frame (no cap, an infinitely fast GPU).
         bw = [w for w in ws if w.get('budget', {}).get('frames')]

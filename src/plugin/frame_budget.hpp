@@ -55,7 +55,7 @@ void add_swapchain(std::int64_t qpc_ticks) noexcept;
 void on_begin(std::int64_t qpc) noexcept;
 void on_end(std::int64_t qpc) noexcept;
 // Measuring on or off. Any thread.
-void set_active(bool on) noexcept;
+void set_active(bool on) noexcept;  // measuring; the timing detour also serves limiter.hpp
 bool active() noexcept;
 // "budget": per frame, means and p50/p95 in ms, since the last call.
 void append(std::string& out);

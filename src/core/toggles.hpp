@@ -34,8 +34,10 @@ enum Toggle : unsigned {
                               // rounds, Present path, GPU wait and serial work (frame_budget.hpp)
     uncap = 8192U,            // research: the engine's frame cap (sMain mMaxFps) raised to
                               // control.ini max_fps, for measuring capped scenes (frame_cap.hpp)
+    sleep_limiter = 16384U,   // the engine's frame limiter waits on a high-resolution timer until
+                              // control.ini margin_us before its deadline instead of spinning (limiter.hpp)
 };
-inline constexpr unsigned toggle_mask = 16383U;  // every defined bit
+inline constexpr unsigned toggle_mask = 32767U;  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }
