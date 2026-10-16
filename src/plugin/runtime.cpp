@@ -50,10 +50,11 @@ constexpr unsigned tracked_max = 6;
 // its line for the Mods page under bench_lock.
 std::atomic<bool> bench_requested{}, menu_open{}, bench_running{};
 SRWLOCK bench_lock = SRWLOCK_INIT;
-std::string bench_line = "Not run yet.";
-void set_bench_line(std::string line) {
+std::string bench_lines[2] = {"Not run yet", "-"};
+void set_bench_line(std::string first, std::string second) {
     AcquireSRWLockExclusive(&bench_lock);
-    bench_line = std::move(line);
+    bench_lines[0] = std::move(first);
+    bench_lines[1] = std::move(second);
     ReleaseSRWLockExclusive(&bench_lock);
 }
 
@@ -672,7 +673,7 @@ bench::Machine machine_of(const Bench& b) {
     const auto value = [&](const wchar_t* key) { return system_info::ini_value(ini, L"GraphicsOption", key); };
     m.display = value(L"Resolution").empty() ? std::string("graphics_option.ini not found")
                                              : value(L"Resolution") + ", " + value(L"ScreenMode") + ", frame rate " + value(L"FrameRate") +
-                                                   ", V-Sync " + value(L"V-Sync") + ", the game's DLSS " + value(L"NVIDIA DLSS");
+                                                   ", V-Sync " + value(L"V-Sync") + ", the in-game DLSS option " + value(L"NVIDIA DLSS");
     m.switches = switch_names(b.settings);
     m.modules = system_info::other_modules(self_module);
     m.fps_cap_removed = b.settings.remove_fps_cap;
@@ -755,10 +756,9 @@ void bench_start_window(State& s, Bench& b, double t) {
 
 void bench_line_running(const Bench& b, double t) {
     const double left_s = (double(bench::windows - b.window - 1) * b.window_ms + (b.due - t)) / 1000.0;
-    char line[128];
-    std::snprintf(line, sizeof(line), "Window %u of %u (optimizations %s), about %u:%02u left", b.window + 1, bench::windows,
-                  bench::window_on(b.window) ? "on" : "off", unsigned(left_s) / 60, unsigned(left_s) % 60);
-    set_bench_line(line);
+    char line[64];
+    std::snprintf(line, sizeof(line), "%u of %u, about %u:%02u left", b.window + 1, bench::windows, unsigned(left_s) / 60, unsigned(left_s) % 60);
+    set_bench_line(line, bench::window_on(b.window) ? "now with them on" : "now with them off");
 }
 
 // One step, every 50 ms while a benchmark is on.
@@ -772,13 +772,13 @@ void bench_tick(State& s, Bench& b) {
         if (!menu_open.load()) {
             b.phase = Bench::Phase::countdown;
             b.due = t + bench::countdown_ms(b.window_ms);
-            set_bench_line("Starting soon: stand still, camera too.");
+            set_bench_line("Starting in 10 s", "stand still, camera too");
         }
         return;
     case Bench::Phase::countdown:
         if (menu_open.load()) {
             b.phase = Bench::Phase::armed;
-            set_bench_line("Close the menu: it starts 10 s later.");
+            set_bench_line("Close the menu to start", "then stand still, camera too");
         } else if (t >= b.due) {
             bench_event("start", b);
             bench_start_window(s, b, t);
@@ -800,8 +800,8 @@ void bench_tick(State& s, Bench& b) {
         b.phase = Bench::Phase::paused;
         ++b.pauses;
         bench_event("paused", b);
-        set_bench_line(menu_open.load() ? "Paused while the menu is open: this window runs again after it closes."
-                                        : "Paused while the game is in the background.");
+        set_bench_line(menu_open.load() ? "Paused: the menu is open" : "Paused: game in background",
+                       "window " + std::to_string(b.window + 1) + " runs again");
         return;
     }
     if (!b.counting) {
@@ -834,7 +834,7 @@ void bench_tick(State& s, Bench& b) {
     const bool written = append_report(bench::report(machine_of(b), b.done, r));
     result_event(r, b);
     apply_control(s, control_of(settings()), false, "{\"event\":\"control\"");
-    set_bench_line(written ? bench::short_result(r) : bench::short_result(r) + " (cpuopt-benchmark.txt could not be written)");
+    set_bench_line(bench::fps_line(r), written ? bench::cpu_line(r) : "report not written: see log");
     if (b.check_front) MessageBeep(MB_ICONASTERISK);  // someone at the game to hear it
     b = Bench{};
     bench_running = false;
@@ -848,14 +848,14 @@ void bench_arm(Bench& b, const Settings& st) {
     b.phase = Bench::Phase::armed;
     bench_running = true;
     bench_event("armed", b);
-    set_bench_line("Close the menu: it starts 10 s later. Stand still, camera too.");
+    set_bench_line("Close the menu to start", "then stand still, camera too");
 }
 
 void bench_stop(Bench& b, const char* why) {
     bench_event("stopped", b);
     b = Bench{};
     bench_running = false;
-    set_bench_line(why);
+    set_bench_line(why, "run it again");
 }
 
 DWORD WINAPI player_worker(void* parameter) noexcept {
@@ -880,7 +880,7 @@ DWORD WINAPI player_worker(void* parameter) noexcept {
             save_if_dirty(s);
             const auto now = settings();
             if (!(now == applied)) {
-                if (b.phase != Bench::Phase::idle) bench_stop(b, "Stopped: a setting changed (the hotkey too). Run it again.");
+                if (b.phase != Bench::Phase::idle) bench_stop(b, "Stopped: a setting changed");
                 apply_control(s, control_of(now), false, "{\"event\":\"control\"");
                 if (now.toggle_key != key && host.hotkey) host.hotkey(key = now.toggle_key);
                 applied = now;
@@ -937,9 +937,9 @@ void menu_shown(bool open) noexcept {
     if (change_event) SetEvent(change_event);
 }
 bool bench_busy() noexcept { return bench_running.load() || bench_requested.load(); }
-std::string bench_text() {
+std::string bench_text(unsigned line) {
     AcquireSRWLockShared(&bench_lock);
-    auto copy = bench_line;
+    auto copy = bench_lines[line ? 1 : 0];
     ReleaseSRWLockShared(&bench_lock);
     return copy;
 }

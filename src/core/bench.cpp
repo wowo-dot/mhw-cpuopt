@@ -92,7 +92,7 @@ std::string report(const Machine& m, std::span<const Window> w, const Result& r)
     add(out, "CPU: %s\n", m.cpu.c_str());
     add(out, "GPU: %s\n", m.gpu.empty() ? "unknown" : m.gpu.c_str());
     add(out, "Windows %s\n", m.windows.c_str());
-    add(out, "Game settings: %s\n", m.display.c_str());
+    add(out, "Game options: %s\n", m.display.c_str());
     add(out, "Optimizations in the \"on\" windows: %s\n", m.switches.c_str());
     if (m.fps_cap_removed) add(out, "Remove 300 fps limit: on in both halves\n");
     if (!m.modules.empty()) add(out, "Also loaded: %s\n", m.modules.c_str());
@@ -141,13 +141,15 @@ std::string report(const Machine& m, std::span<const Window> w, const Result& r)
     return out;
 }
 
-std::string short_result(const Result& r) {
-    char line[128];
-    if (r.cpu)
-        std::snprintf(line, sizeof(line), "%s fps (%.0f to %.0f), CPU time %s. Details: cpuopt-benchmark.txt", percent(r.gain).c_str(), r.off_fps,
-                      r.on_fps, percent(r.cpu_change).c_str());
-    else
-        std::snprintf(line, sizeof(line), "%s fps (%.0f to %.0f). Details: cpuopt-benchmark.txt", percent(r.gain).c_str(), r.off_fps, r.on_fps);
+std::string fps_line(const Result& r) {
+    char line[64];
+    std::snprintf(line, sizeof(line), "%s fps, %.0f to %.0f", percent(r.gain).c_str(), r.off_fps, r.on_fps);
+    return line;
+}
+std::string cpu_line(const Result& r) {
+    if (!r.cpu) return "not measured";
+    char line[64];
+    std::snprintf(line, sizeof(line), "%s, %.2f to %.2f ms", percent(r.cpu_change).c_str(), r.off_cpu, r.on_cpu);
     return line;
 }
 }  // namespace cpuopt::bench

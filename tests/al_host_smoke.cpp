@@ -375,7 +375,7 @@ std::string replaced(std::string text, const std::string& from, const std::strin
 int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     CHECK(last_status == AL_STATUS_ACTIVE);
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && !present_callback);  // no Present timing
-    CHECK(added_title == "CPU optimizations" && added_rows == 16 && added_page.get && added_page.set && added_page.get_text);
+    CHECK(added_title == "CPU optimizations" && added_rows == 17 && added_page.get && added_page.set && added_page.get_text);
     CHECK(added_page.press && added_page.on_event && added_page.locked);
     if (!too_long.empty()) std::printf("  too long for CMFM: %s\n", too_long.c_str());
     CHECK(too_long.empty());
@@ -432,7 +432,7 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     Sleep(400);
     added_page.get_text(added_page.user, 32, status, sizeof(status));
     std::printf("  benchmark: %s\n", status);
-    CHECK(std::string(status).find("Paused") == 0);
+    CHECK(std::string(status).find("Paused") == 0 && std::string(status).size() <= 30);
     added_page.get_text(added_page.user, 3, status, sizeof(status));
     CHECK(std::string(status).find("benchmark") != std::string::npos);
     added_page.on_event(added_page.user, CMFM_EVENT_CLOSED);
@@ -446,7 +446,10 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     CHECK(report.find("\n16  off ") != std::string::npos);
     added_page.get_text(added_page.user, 32, status, sizeof(status));
     std::printf("  benchmark: %s\n", status);
-    CHECK(std::string(status).find(" fps (") != std::string::npos && std::string(status).find("cpuopt-benchmark.txt") != std::string::npos);
+    CHECK(std::string(status).find(" fps, ") != std::string::npos && std::string(status).size() <= 30);
+    added_page.get_text(added_page.user, 33, status, sizeof(status));
+    std::printf("  benchmark: %s\n", status);
+    CHECK(std::string(status) == "not measured" || std::string(status).find(" ms") != std::string::npos);
     CHECK(added_page.locked(added_page.user, 31, why_locked, sizeof(why_locked)) == 0);
 
     const auto t_exit = qpc();

@@ -58,6 +58,8 @@ struct Machine {
 };
 // The report's section for cpuopt-benchmark.txt (lines end in '\n').
 std::string report(const Machine& m, std::span<const Window> w, const Result& r);
-// One line for the Mods page (less than 128 bytes).
-std::string short_result(const Result& r);
+// The Mods page's two lines (its value boxes fit about 30 characters):
+// "+58% fps, 172 to 270" and "-32%, 5.03 to 3.44 ms" (or "not measured").
+std::string fps_line(const Result& r);
+std::string cpu_line(const Result& r);
 }  // namespace cpuopt::bench

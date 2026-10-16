@@ -236,7 +236,7 @@ void benchmark() {
     CHECK(near(r.gain_low, 0.4) && near(r.gain_high, 0.5) && near(r.off_p99, 16.7) && near(r.on_p99, 4.4));
     CHECK(r.cpu && near(r.off_cpu, 5.2) && near(r.on_cpu, 3.6) && near(r.cpu_change, 3.6 / 5.2 - 1.0));
     CHECK(r.process && near(r.off_process, 46) && near(r.on_process, 22));
-    CHECK(b::short_result(r) == "+50% fps (180 to 270), CPU time -31%. Details: cpuopt-benchmark.txt");
+    CHECK(b::fps_line(r) == "+50% fps, 180 to 270" && b::cpu_line(r) == "-31%, 5.20 to 3.60 ms");
     b::Machine m;
     m.when = "2026-10-16 22:10";
     m.version = "0.14.0";
@@ -272,9 +272,9 @@ void benchmark() {
     // Without frame_budget: fps only.
     for (auto& x : w) x.cpu_frames = 0;
     const auto r2 = b::summarize(w);
-    CHECK(!r2.cpu && r2.process && b::short_result(r2) == "+50% fps (180 to 270). Details: cpuopt-benchmark.txt");
+    CHECK(!r2.cpu && r2.process && b::fps_line(r2) == "+50% fps, 180 to 270" && b::cpu_line(r2) == "not measured");
     CHECK(b::report(m, w, r2).find("Game thread CPU time per frame: not measured") != std::string::npos);
-    CHECK(b::short_result(r2).size() < 128 && b::short_result(r).size() < 128);
+    CHECK(b::fps_line(r).size() <= 30 && b::cpu_line(r).size() <= 30);
 }
 }  // namespace
 

@@ -72,7 +72,9 @@ unsigned failed_toggles() noexcept;
 void bench_press() noexcept;
 void menu_shown(bool open) noexcept;  // CMFM's Mods page opened or closed
 bool bench_busy() noexcept;           // asked for, waiting or running
-std::string bench_text();             // its state, or the last result, for the page
+// The page's two lines: the frame rate's result or where the run is (0), and
+// the CPU time's result or the run's state (1). About 30 characters each.
+std::string bench_text(unsigned line);
 
 // One line into the run log from a phase callback (GAME_READY, SHUTDOWN).
 void note(const char* event, const char* key, long long value) noexcept;

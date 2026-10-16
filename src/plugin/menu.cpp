@@ -28,6 +28,7 @@ enum Id : std::uint32_t {
     id_benchmark = 30,
     id_run,
     id_result,
+    id_cpu_result,
 };
 Availability available;
 std::atomic<double> interval_ms{};  // smoothed time between frame starts
@@ -91,7 +92,8 @@ cmfm_result_t CMFM_CALL validate(void*, std::uint32_t id, const cmfm_value_t* va
 }
 void CMFM_CALL get_text(void*, std::uint32_t id, char* text, std::uint32_t size) {
     if (id == id_status) std::snprintf(text, size, "%s", status_text().c_str());
-    if (id == id_result) std::snprintf(text, size, "%s", runtime::bench_text().c_str());
+    if (id == id_result) std::snprintf(text, size, "%s", runtime::bench_text(0).c_str());
+    if (id == id_cpu_result) std::snprintf(text, size, "%s", runtime::bench_text(1).c_str());
 }
 cmfm_result_t CMFM_CALL press(void*, std::uint32_t id) {
     if (id != id_run) return CMFM_ERROR;
@@ -149,9 +151,9 @@ std::string status_text() {
     const double ms = interval_ms.load(std::memory_order_relaxed);
     if (ms > 0.1) std::snprintf(fps, sizeof(fps), "%.0f fps, ", 1000.0 / ms);
     char line[128];
-    if (runtime::bench_busy()) std::snprintf(line, sizeof(line), "%sbenchmark: the optimizations switch by themselves", fps);
+    if (runtime::bench_busy()) std::snprintf(line, sizeof(line), "%sbenchmark running", fps);
     else if (!s.enabled) std::snprintf(line, sizeof(line), "%soptimizations off", fps);
-    else if (broken) std::snprintf(line, sizeof(line), "%s%u of %u on, %u could not start (cpuopt.log)", fps, on - broken, usable, broken);
+    else if (broken) std::snprintf(line, sizeof(line), "%s%u of %u on, %u failed (log)", fps, on - broken, usable, broken);
     else if (on == usable) std::snprintf(line, sizeof(line), usable == 1 ? "%sthe optimization on" : "%sall %u optimizations on", fps, usable);
     else std::snprintf(line, sizeof(line), "%s%u of %u optimizations on", fps, on, usable);
     return line;
@@ -213,7 +215,12 @@ bool add(const void* cmfm, const Availability& a, const char* version, std::stri
             d.remove_fps_cap),
         row(id_benchmark, CMFM_TYPE_SECTION, "Benchmark", nullptr),
         run,
-        row(id_result, CMFM_TYPE_TEXT, "Result", "The last benchmark, or where the one running is.", 0, CMFM_FLAG_LIVE),
+        row(id_result, CMFM_TYPE_TEXT, "Result",
+            "The last benchmark's frame rate, without and with the optimizations. The full report is in cpuopt-benchmark.txt next to cpuopt.dll.",
+            0, CMFM_FLAG_LIVE),
+        row(id_cpu_result, CMFM_TYPE_TEXT, "CPU time per frame",
+            "The game thread's CPU time per frame, without and with: what the CPU needs, whatever the graphics card or a frame limit allows.",
+            0, CMFM_FLAG_LIVE),
     };
     cmfm_page_t page;
     std::memset(&page, 0, sizeof(page));
