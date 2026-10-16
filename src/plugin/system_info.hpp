@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace cpuopt::system_info {
@@ -22,6 +23,15 @@ struct LoaderInfo {
 // and cache layout, CPU sets and affinity, OS build and the game's own
 // graphics and CPU settings files (read only).
 std::string start_event(HMODULE self, const std::wstring& control_path, const LoaderInfo& loader);
+
+// For the benchmark's report: plain text, no paths.
+std::string cpu_name();                         // the CPU's brand string
+std::string gpu_name();                         // the primary display's adapter
+std::string windows_version();                  // "10.0.26200"
+bool tested_exe(std::string_view sha256) noexcept;  // the build cpuopt was made on
+std::string ini_value(const std::wstring& file, const wchar_t* section, const wchar_t* key);
+// File names of the loaded DLLs from outside Windows but the exe and `self`, sorted, ", " between.
+std::string other_modules(HMODULE self);
 
 // Loaded modules; hashes are computed once per path for modules outside the
 // Windows directory (game folder, mods, overlays).

@@ -609,7 +609,7 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
                                                    0, on_d3d12, nullptr) == AL_OK;
         }
         cpuopt::runtime::note("al_frame_subscribed", "ok", host.frame_events ? 1 : 0);
-        cpuopt::runtime::note("al_d3d12_subscribed", "ok", host.present_events ? 1 : 0);
+        if (!cpuopt::runtime::player()) cpuopt::runtime::note("al_d3d12_subscribed", "ok", host.present_events ? 1 : 0);
         char line[384];
         std::snprintf(line, sizeof(line), "frame counter: %s (%u match(es), %s); job_cap: %s; al.frame %s; al.d3d12 Present events %s",
                       host.discovery.reason, host.discovery.matches, host.scanner.c_str(), host.job.reason, host.frame_events ? "on" : "off",

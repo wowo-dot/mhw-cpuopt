@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace cpuopt::menu {
 namespace {
@@ -24,6 +25,9 @@ enum Id : std::uint32_t {
     id_sleep_limiter,
     id_experimental = 20,
     id_remove_fps_cap,
+    id_benchmark = 30,
+    id_run,
+    id_result,
 };
 Availability available;
 std::atomic<double> interval_ms{};  // smoothed time between frame starts
@@ -87,8 +91,27 @@ cmfm_result_t CMFM_CALL validate(void*, std::uint32_t id, const cmfm_value_t* va
 }
 void CMFM_CALL get_text(void*, std::uint32_t id, char* text, std::uint32_t size) {
     if (id == id_status) std::snprintf(text, size, "%s", status_text().c_str());
+    if (id == id_result) std::snprintf(text, size, "%s", runtime::bench_text().c_str());
+}
+cmfm_result_t CMFM_CALL press(void*, std::uint32_t id) {
+    if (id != id_run) return CMFM_ERROR;
+    runtime::bench_press();
+    return CMFM_OK;
+}
+void CMFM_CALL on_event(void*, cmfm_event_t event) {
+    if (event == CMFM_EVENT_OPENED) runtime::menu_shown(true);
+    if (event == CMFM_EVENT_CLOSED) runtime::menu_shown(false);
 }
 std::uint32_t CMFM_CALL locked(void*, std::uint32_t id, char* why, std::uint32_t size) {
+    if (id == id_run) {
+        auto s = runtime::settings();
+        s.enabled = true;
+        const char* reason = runtime::bench_busy() ? "Running: the hotkey or any change here stops it."
+                             : (toggles_of(s) & ~unsigned(cpuopt::uncap)) == 0 ? "Turn on at least one optimization first."
+                                                                               : nullptr;
+        if (reason) std::snprintf(why, size, "%s", reason);
+        return reason ? 1 : 0;
+    }
     const int row = row_of(id);
     if (row < 0 || !available.why[row]) return 0;
     std::snprintf(why, size, "%s", available.why[row]);
@@ -126,7 +149,8 @@ std::string status_text() {
     const double ms = interval_ms.load(std::memory_order_relaxed);
     if (ms > 0.1) std::snprintf(fps, sizeof(fps), "%.0f fps, ", 1000.0 / ms);
     char line[128];
-    if (!s.enabled) std::snprintf(line, sizeof(line), "%soptimizations off", fps);
+    if (runtime::bench_busy()) std::snprintf(line, sizeof(line), "%sbenchmark: the optimizations switch by themselves", fps);
+    else if (!s.enabled) std::snprintf(line, sizeof(line), "%soptimizations off", fps);
     else if (broken) std::snprintf(line, sizeof(line), "%s%u of %u on, %u could not start (cpuopt.log)", fps, on - broken, usable, broken);
     else if (on == usable) std::snprintf(line, sizeof(line), usable == 1 ? "%sthe optimization on" : "%sall %u optimizations on", fps, usable);
     else std::snprintf(line, sizeof(line), "%s%u of %u optimizations on", fps, on, usable);
@@ -149,6 +173,17 @@ bool add(const void* cmfm, const Availability& a, const char* version, std::stri
     }
     available = a;
     const Settings d;
+    // The benchmark's question names its length (benchmark_s as the game started).
+    static std::string question;
+    const unsigned total_s = runtime::settings().benchmark_s * 16 + 10;
+    question = "Close the menu and stand still, camera too, for about " +
+               (total_s >= 90 ? std::to_string((total_s + 30) / 60) + " minutes" : std::to_string(total_s) + " seconds") +
+               " while cpuopt turns its optimizations off and on. Start?";
+    cmfm_setting_t run = row(id_run, CMFM_TYPE_BUTTON, "Run benchmark",
+                             "Measures this PC with and without the optimizations in the spot you stand: 8 pairs of turns. A sound plays "
+                             "at the end; the result shows below and in cpuopt-benchmark.txt next to cpuopt.dll.");
+    run.button = "Run";
+    run.confirm = question.c_str();
     const cmfm_setting_t settings[] = {
         row(id_enabled, CMFM_TYPE_BOOL, "All optimizations",
             "Every optimization below at once. Off is the game as it runs without cpuopt; the hotkey flips this in game.", d.enabled),
@@ -176,6 +211,9 @@ bool add(const void* cmfm, const Availability& a, const char* version, std::stri
         row(id_remove_fps_cap, CMFM_TYPE_BOOL, "Remove 300 fps limit",
             "Lifts the engine's 300 fps limit while the in-game frame rate is set to no limit. A lower limit you chose stays.",
             d.remove_fps_cap),
+        row(id_benchmark, CMFM_TYPE_SECTION, "Benchmark", nullptr),
+        run,
+        row(id_result, CMFM_TYPE_TEXT, "Result", "The last benchmark, or where the one running is.", 0, CMFM_FLAG_LIVE),
     };
     cmfm_page_t page;
     std::memset(&page, 0, sizeof(page));
@@ -190,6 +228,8 @@ bool add(const void* cmfm, const Availability& a, const char* version, std::stri
     page.validate = validate;
     page.get_text = get_text;
     page.locked = locked;
+    page.press = press;
+    page.on_event = on_event;
     page.version = version;
     page.mod = "cpuopt";
     const auto* menu = static_cast<const cmfm_menu_t*>(cmfm);

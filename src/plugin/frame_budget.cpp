@@ -138,6 +138,17 @@ void on_end(std::int64_t qpc) noexcept {
 void set_active(bool enable) noexcept { on.store(enable); }
 bool active() noexcept { return on.load(std::memory_order_relaxed); }
 
+Totals take_totals() noexcept {
+    Totals t;
+    for (unsigned i = 0; i < parts; ++i) {
+        const auto s = histograms[i].take();
+        if (i != cpu_frame) continue;
+        t.frames = s.count;
+        t.cpu_frame_ms = s.count ? double(s.total_us) / double(s.count) / 1000.0 : 0.0;
+    }
+    return t;
+}
+
 void append(std::string& out) {
     json::key(out, "budget");
     out += '{';

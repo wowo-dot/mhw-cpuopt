@@ -30,11 +30,12 @@ constexpr Field fields[] = {
     {"remove_fps_cap", Kind::flag, 0, 0, "lifts the engine's 300 fps limit (only with the in-game frame rate at no limit)"},
     {"limiter_margin_us", Kind::number, 50, 2000, "sleep_limiter: wakes this long before the frame is due (50 to 2000)"},
     {"unit_us", Kind::number, 10, 200, "unit_threshold: the threshold in microseconds (10 to 200)"},
+    {"benchmark_s", Kind::number, 1, 60, "the Mods page's benchmark: seconds per half of each of its 8 pairs (1 to 60)"},
 };
 constexpr const char* heading_before[] = {
     "# cpuopt: CPU optimizations for Monster Hunter: World (an Astera Loader plugin).\n"
     "# Change these here or in the game's Mods menu (with CMFM). Switches: on or off.\n\n",
-    nullptr, "\n# Optimizations\n", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, "\n# Experimental\n", "\n# Advanced\n", nullptr,
+    nullptr, "\n# Optimizations\n", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, "\n# Experimental\n", "\n# Advanced\n", nullptr, nullptr,
 };
 static_assert(std::size(heading_before) == std::size(fields));
 
@@ -53,6 +54,7 @@ bool* flag_of(Settings& s, std::string_view key) {
 unsigned* number_of(Settings& s, std::string_view key) {
     if (key == "limiter_margin_us") return &s.limiter_margin_us;
     if (key == "unit_us") return &s.unit_us;
+    if (key == "benchmark_s") return &s.benchmark_s;
     return nullptr;
 }
 const Field* field_of(std::string_view key) {
@@ -195,9 +197,19 @@ std::string write_settings(std::string_view text, const Settings& s) {
         const auto* f = l.setting ? field_of(l.key) : nullptr;
         if (f) {
             seen[static_cast<std::size_t>(f - fields)] = true;
+            const auto value = value_text(s, *f);
             out.append(line.substr(0, l.value_begin));
-            out += value_text(s, *f);
-            out.append(line.substr(l.value_end));
+            out += value;
+            // A comment after the value keeps its column while there is room.
+            auto rest = line.substr(l.value_end);
+            std::size_t gap = 0;
+            while (gap < rest.size() && rest[gap] == ' ') ++gap;
+            if (gap && gap < rest.size() && (rest[gap] == ';' || rest[gap] == '#')) {
+                const auto column = gap + (l.value_end - l.value_begin);
+                out.append(column > value.size() + 1 ? column - value.size() : 1, ' ');
+                rest.remove_prefix(gap);
+            }
+            out.append(rest);
         } else {
             out.append(line);
         }

@@ -65,6 +65,14 @@ void change(const Settings& s) noexcept;  // any thread; applied and saved by th
 void flip_enabled() noexcept;             // the master switch's hotkey; any thread
 // Toggle bits of switches that are on but could not be applied.
 unsigned failed_toggles() noexcept;
+// The benchmark (bench.hpp): the page's Run button, from CMFM's thread. It
+// starts 10 s after the Mods page closes, pauses while the page is open or
+// the game is in the background (that window runs again), and stops at any
+// settings change. The report goes to <folder>\cpuopt-benchmark.txt.
+void bench_press() noexcept;
+void menu_shown(bool open) noexcept;  // CMFM's Mods page opened or closed
+bool bench_busy() noexcept;           // asked for, waiting or running
+std::string bench_text();             // its state, or the last result, for the page
 
 // One line into the run log from a phase callback (GAME_READY, SHUTDOWN).
 void note(const char* event, const char* key, long long value) noexcept;

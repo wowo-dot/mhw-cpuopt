@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mhw_cpuopt VERSION 0.13.1 LANGUAGES CXX)
+project(mhw_cpuopt VERSION 0.14.0 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "64-bit Windows only")
@@ -26,6 +26,8 @@ set(CPUOPT_DEFINES WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 
 # Pure logic, unit tested outside the game.
 add_library(cpuopt_core STATIC
+    src/core/bench.cpp
+    src/core/bench.hpp
     src/core/control.cpp
     src/core/control.hpp
     src/core/histogram.hpp

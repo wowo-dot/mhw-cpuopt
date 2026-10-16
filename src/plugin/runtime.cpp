@@ -1,4 +1,5 @@
 #include "runtime.hpp"
+#include "../core/bench.hpp"
 #include "../core/control.hpp"
 #include "../core/json.hpp"
 #include "../core/settings.hpp"
@@ -19,6 +20,10 @@
 #include <span>
 #include <string>
 #include <vector>
+
+#ifndef CPUOPT_VERSION
+#define CPUOPT_VERSION "0.0.0"
+#endif
 
 namespace cpuopt::runtime {
 namespace {
@@ -41,6 +46,16 @@ void mark(unsigned toggle, bool failed_now) noexcept {
     else failed.fetch_and(~toggle);
 }
 constexpr unsigned tracked_max = 6;
+// The benchmark: requests from CMFM's thread, run by the runtime's thread;
+// its line for the Mods page under bench_lock.
+std::atomic<bool> bench_requested{}, menu_open{}, bench_running{};
+SRWLOCK bench_lock = SRWLOCK_INIT;
+std::string bench_line = "Not run yet.";
+void set_bench_line(std::string line) {
+    AcquireSRWLockExclusive(&bench_lock);
+    bench_line = std::move(line);
+    ReleaseSRWLockExclusive(&bench_lock);
+}
 
 std::wstring trim(std::wstring s) {
     while (!s.empty() && (s.back() == L'\r' || s.back() == L'\n' || s.back() == L' ' || s.back() == L'\t')) s.pop_back();
@@ -560,6 +575,289 @@ void status_event() {
     event_log.write(out);
 }
 
+// The benchmark (bench.hpp) ---------------------------------------------------
+struct Bench {
+    enum class Phase { idle, armed, countdown, running, paused } phase{Phase::idle};
+    Settings settings;        // as they were when it was asked for
+    double window_ms{15000};
+    unsigned window{};        // the window running
+    double started{}, due{};  // the window's start and end (running), the first window (countdown)
+    bool counting{};          // past the window's settle time
+    double counting_from{};
+    ULONGLONG cpu_from{};     // the process's CPU time then, 100 ns
+    unsigned pauses{};
+    bool check_front{};       // the game has a window: count only while it is in front
+    std::vector<bench::Window> done;
+};
+
+ULONGLONG process_cpu() noexcept {
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) return 0;
+    return (ULONGLONG(kernel.dwHighDateTime) << 32 | kernel.dwLowDateTime) + (ULONGLONG(user.dwHighDateTime) << 32 | user.dwLowDateTime);
+}
+// A visible window of this process that is not a console's.
+BOOL CALLBACK find_window(HWND window, LPARAM found) noexcept {
+    DWORD pid{};
+    GetWindowThreadProcessId(window, &pid);
+    wchar_t name[64]{};
+    GetClassNameW(window, name, 64);
+    if (pid == GetCurrentProcessId() && IsWindowVisible(window) && std::wstring_view(name) != L"ConsoleWindowClass" &&
+        std::wstring_view(name) != L"PseudoConsoleWindow") {
+        *reinterpret_cast<bool*>(found) = true;
+        return FALSE;
+    }
+    return TRUE;
+}
+bool has_window() noexcept {
+    bool found = false;
+    EnumWindows(find_window, reinterpret_cast<LPARAM>(&found));
+    return found;
+}
+bool in_front() noexcept {
+    DWORD pid{};
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    return pid == GetCurrentProcessId();
+}
+
+void bench_event(const char* what, const Bench& b) {
+    char line[200];
+    const int n = std::snprintf(line, sizeof(line), "{\"event\":\"bench\",\"t_ms\":%.3f,\"what\":\"%s\",\"window\":%u,\"pauses\":%u}", now_ms(), what,
+                                b.window, b.pauses);
+    if (n > 0) event_log.write(std::string_view(line, static_cast<std::size_t>(n)));
+}
+
+// The settings with the optimizations on or off, and frame_budget in both.
+Control bench_control(const Settings& st, bool on) {
+    auto copy = st;
+    copy.enabled = on;
+    auto c = control_of(copy);
+    c.toggles = *c.toggles | unsigned(budget);
+    c.marker = std::string(on ? "benchmark-on" : "benchmark-off");
+    return c;
+}
+
+std::string switch_names(const Settings& st) {
+    const std::pair<bool, const char*> names[] = {{st.effect_stores, "effect drawing"},      {st.job_order, "draw job order"},
+                                                  {st.server_time, "Steam server time"},    {st.unit_threshold, "update threads"},
+                                                  {st.cache_ccd, "stay on the cache die"},  {st.parallel_contacts, "parallel hit detection"},
+                                                  {st.sleep_limiter, "sleeping frame limiter"}};
+    std::string out;
+    for (const auto& [on, name] : names) {
+        if (!on) continue;
+        if (!out.empty()) out += ", ";
+        out += name;
+    }
+    if (const auto f = failed.load() & ~unsigned(uncap)) {
+        unsigned n = 0;
+        for (auto m = f; m; m &= m - 1) ++n;
+        out += " (" + std::to_string(n) + " could not start: cpuopt.log)";
+    }
+    return out.empty() ? "none" : out;
+}
+
+bench::Machine machine_of(const Bench& b) {
+    bench::Machine m;
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+    char when[32];
+    std::snprintf(when, sizeof(when), "%04u-%02u-%02u %02u:%02u", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
+    m.when = when;
+    m.version = CPUOPT_VERSION;
+    m.game = host.game_version.empty() ? "version unknown" : host.game_version;
+    if (!host.exe_sha256.empty()) m.game += system_info::tested_exe(host.exe_sha256) ? ", the build cpuopt was made on" : ", not the build cpuopt was made on";
+    m.cpu = system_info::cpu_name() + ", " + std::to_string(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)) + " threads";
+    m.gpu = system_info::gpu_name();
+    m.windows = system_info::windows_version();
+    const auto ini = system_info::folder_of(system_info::module_path(nullptr)) + L"\\graphics_option.ini";
+    const auto value = [&](const wchar_t* key) { return system_info::ini_value(ini, L"GraphicsOption", key); };
+    m.display = value(L"Resolution").empty() ? std::string("graphics_option.ini not found")
+                                             : value(L"Resolution") + ", " + value(L"ScreenMode") + ", frame rate " + value(L"FrameRate") +
+                                                   ", V-Sync " + value(L"V-Sync") + ", the game's DLSS " + value(L"NVIDIA DLSS");
+    m.switches = switch_names(b.settings);
+    m.modules = system_info::other_modules(self_module);
+    m.fps_cap_removed = b.settings.remove_fps_cap;
+    m.pauses = b.pauses;
+    m.window_s = b.window_ms / 1000.0;
+    return m;
+}
+
+// Appends the report to <folder>\cpuopt-benchmark.txt (CRLF; a new file past 1 MB).
+bool append_report(const std::string& text) {
+    std::string crlf;
+    for (const char c : text) {
+        if (c == '\n') crlf += '\r';
+        crlf += c;
+    }
+    const auto path = host.folder + L"\\cpuopt-benchmark.txt";
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    const bool big = GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data) && (data.nFileSizeHigh || data.nFileSizeLow > (1U << 20));
+    const auto file = CreateFileW(path.c_str(), big ? GENERIC_WRITE : FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, big ? CREATE_ALWAYS : OPEN_ALWAYS,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    DWORD n{};
+    const bool ok = WriteFile(file, crlf.data(), static_cast<DWORD>(crlf.size()), &n, nullptr) && n == crlf.size();
+    CloseHandle(file);
+    return ok;
+}
+
+void result_event(const bench::Result& r, const Bench& b) {
+    std::string out = "{";
+    json::key(out, "event");
+    json::string(out, "benchmark");
+    json::key(out, "t_ms");
+    json::fixed(out, now_ms(), 3);
+    json::key(out, "window_ms");
+    json::number(out, std::uint64_t(b.window_ms));
+    json::key(out, "pauses");
+    json::number(out, std::uint64_t(b.pauses));
+    const std::pair<const char*, double> fields[] = {{"off_fps", r.off_fps}, {"on_fps", r.on_fps},       {"gain", r.gain},
+                                                     {"gain_low", r.gain_low}, {"gain_high", r.gain_high}, {"off_p99", r.off_p99},
+                                                     {"on_p99", r.on_p99},   {"off_cpu", r.off_cpu},     {"on_cpu", r.on_cpu},
+                                                     {"off_process", r.off_process}, {"on_process", r.on_process}};
+    for (const auto& [name, v] : fields) {
+        json::key(out, name);
+        json::fixed(out, v, 4);
+    }
+    json::key(out, "columns");
+    out += "[\"on\",\"seconds\",\"frames\",\"p50\",\"p99\",\"max\",\"cpu_frames\",\"cpu_ms\",\"process_ms\"]";
+    json::key(out, "windows");
+    out += '[';
+    for (std::size_t i = 0; i < b.done.size(); ++i) {
+        const auto& w = b.done[i];
+        out += i ? ",[" : "[";
+        out += w.on ? "1," : "0,";
+        json::fixed(out, w.seconds, 3);
+        out += ',';
+        json::number(out, w.frames);
+        for (const double v : {w.p50_ms, w.p99_ms, w.max_ms}) {
+            out += ',';
+            json::fixed(out, v, 3);
+        }
+        out += ',';
+        json::number(out, w.cpu_frames);
+        out += ',';
+        json::fixed(out, w.cpu_ms, 4);
+        out += ',';
+        json::fixed(out, w.process_ms, 4);
+        out += ']';
+    }
+    out += "]}";
+    event_log.write(out);
+}
+
+void bench_start_window(State& s, Bench& b, double t) {
+    apply_control(s, bench_control(b.settings, bench::window_on(b.window)), false, "{\"event\":\"control\"");
+    b.phase = Bench::Phase::running;
+    b.started = t;
+    b.due = t + b.window_ms;
+    b.counting = false;
+}
+
+void bench_line_running(const Bench& b, double t) {
+    const double left_s = (double(bench::windows - b.window - 1) * b.window_ms + (b.due - t)) / 1000.0;
+    char line[128];
+    std::snprintf(line, sizeof(line), "Window %u of %u (optimizations %s), about %u:%02u left", b.window + 1, bench::windows,
+                  bench::window_on(b.window) ? "on" : "off", unsigned(left_s) / 60, unsigned(left_s) % 60);
+    set_bench_line(line);
+}
+
+// One step, every 50 ms while a benchmark is on.
+void bench_tick(State& s, Bench& b) {
+    const double t = now_ms();
+    const bool away = menu_open.load() || (b.check_front && !in_front());
+    switch (b.phase) {
+    case Bench::Phase::idle:
+        return;
+    case Bench::Phase::armed:
+        if (!menu_open.load()) {
+            b.phase = Bench::Phase::countdown;
+            b.due = t + bench::countdown_ms(b.window_ms);
+            set_bench_line("Starting soon: stand still, camera too.");
+        }
+        return;
+    case Bench::Phase::countdown:
+        if (menu_open.load()) {
+            b.phase = Bench::Phase::armed;
+            set_bench_line("Close the menu: it starts 10 s later.");
+        } else if (t >= b.due) {
+            bench_event("start", b);
+            bench_start_window(s, b, t);
+        }
+        return;
+    case Bench::Phase::paused:
+        if (!away) {  // the window again, from its start
+            b.phase = Bench::Phase::running;
+            b.started = t;
+            b.due = t + b.window_ms;
+            b.counting = false;
+            bench_event("resumed", b);
+        }
+        return;
+    case Bench::Phase::running:
+        break;
+    }
+    if (away) {
+        b.phase = Bench::Phase::paused;
+        ++b.pauses;
+        bench_event("paused", b);
+        set_bench_line(menu_open.load() ? "Paused while the menu is open: this window runs again after it closes."
+                                        : "Paused while the game is in the background.");
+        return;
+    }
+    if (!b.counting) {
+        if (t < b.started + bench::settle_ms(b.window_ms)) return bench_line_running(b, t);
+        frame_events::take();
+        frame_budget::take_totals();
+        b.cpu_from = process_cpu();
+        b.counting_from = t;
+        b.counting = true;
+        return bench_line_running(b, t);
+    }
+    if (t < b.due) return bench_line_running(b, t);
+    const auto frames = frame_events::take();
+    const auto budget_totals = frame_budget::take_totals();
+    const auto cpu = process_cpu();
+    bench::Window w;
+    w.on = bench::window_on(b.window);
+    w.seconds = (t - b.counting_from) / 1000.0;
+    w.frames = frames.update_interval.count;
+    w.max_ms = double(frames.update_interval.max_us) / 1000.0;
+    w.p50_ms = std::min(double(frames.update_interval.p50_us) / 1000.0, w.max_ms);  // bucket edges, up to 50 us high
+    w.p99_ms = std::min(double(frames.update_interval.p99_us) / 1000.0, w.max_ms);
+    w.cpu_frames = budget_totals.frames;
+    w.cpu_ms = budget_totals.cpu_frame_ms;
+    w.process_ms = w.frames && cpu > b.cpu_from ? double(cpu - b.cpu_from) / 10000.0 / double(w.frames) : 0.0;
+    b.done.push_back(w);
+    if (++b.window < bench::windows) return bench_start_window(s, b, t);
+    // Done: the report, the player's own settings back, a sound.
+    const auto r = bench::summarize(b.done);
+    const bool written = append_report(bench::report(machine_of(b), b.done, r));
+    result_event(r, b);
+    apply_control(s, control_of(settings()), false, "{\"event\":\"control\"");
+    set_bench_line(written ? bench::short_result(r) : bench::short_result(r) + " (cpuopt-benchmark.txt could not be written)");
+    if (b.check_front) MessageBeep(MB_ICONASTERISK);  // someone at the game to hear it
+    b = Bench{};
+    bench_running = false;
+}
+
+void bench_arm(Bench& b, const Settings& st) {
+    b = Bench{};
+    b.settings = st;
+    b.window_ms = double(st.benchmark_s) * 1000.0;
+    b.check_front = has_window();
+    b.phase = Bench::Phase::armed;
+    bench_running = true;
+    bench_event("armed", b);
+    set_bench_line("Close the menu: it starts 10 s later. Stand still, camera too.");
+}
+
+void bench_stop(Bench& b, const char* why) {
+    bench_event("stopped", b);
+    b = Bench{};
+    bench_running = false;
+    set_bench_line(why);
+}
+
 DWORD WINAPI player_worker(void* parameter) noexcept {
     std::unique_ptr<State> owned(static_cast<State*>(parameter));
     auto& s = *owned;
@@ -573,20 +871,26 @@ DWORD WINAPI player_worker(void* parameter) noexcept {
         apply_control(s, control_of(applied), true, "{\"event\":\"control\"");
         if (host.hotkey) host.hotkey(key);
         double status_due = now_ms() + 10000.0;  // the switches settle within a few frames
+        system_info::ModuleCensus modules;       // other mods: with each status line, when they changed
+        Bench b;
         for (;;) {
             const HANDLE waits[2] = {stop_event, change_event};
-            if (WaitForMultipleObjects(2, waits, FALSE, 1000) == WAIT_OBJECT_0) break;
+            if (WaitForMultipleObjects(2, waits, FALSE, b.phase == Bench::Phase::idle ? 1000 : 50) == WAIT_OBJECT_0) break;
             reload_if_edited(s);
             save_if_dirty(s);
             const auto now = settings();
             if (!(now == applied)) {
+                if (b.phase != Bench::Phase::idle) bench_stop(b, "Stopped: a setting changed (the hotkey too). Run it again.");
                 apply_control(s, control_of(now), false, "{\"event\":\"control\"");
                 if (now.toggle_key != key && host.hotkey) host.hotkey(key = now.toggle_key);
                 applied = now;
                 status_due = now_ms() + 10000.0;
             }
+            if (bench_requested.exchange(false) && b.phase == Bench::Phase::idle) bench_arm(b, now);
+            bench_tick(s, b);
             if (now_ms() >= status_due) {
                 status_event();
+                if (auto e = modules.changed_event(now_ms()); !e.empty()) event_log.write(e);
                 status_due = now_ms() + 300000.0;
             }
         }
@@ -622,6 +926,23 @@ void flip_enabled() noexcept {
     if (change_event) SetEvent(change_event);
 }
 unsigned failed_toggles() noexcept { return failed.load(); }
+void bench_press() noexcept {
+    if (bench_running.load()) return;
+    menu_open = true;  // pressed on the page, so it is open (CMFM's thread: before its CLOSED)
+    bench_requested = true;
+    if (change_event) SetEvent(change_event);
+}
+void menu_shown(bool open) noexcept {
+    menu_open = open;
+    if (change_event) SetEvent(change_event);
+}
+bool bench_busy() noexcept { return bench_running.load() || bench_requested.load(); }
+std::string bench_text() {
+    AcquireSRWLockShared(&bench_lock);
+    auto copy = bench_line;
+    ReleaseSRWLockShared(&bench_lock);
+    return copy;
+}
 
 bool start(HMODULE self, const Host& h, std::string& reason) noexcept {
     try {

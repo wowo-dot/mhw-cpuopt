@@ -27,6 +27,7 @@ struct Settings {
     bool remove_fps_cap{false};    // uncap, only from the game's "no limit" 300
     unsigned limiter_margin_us{1000};  // 50..2000
     unsigned unit_us{40};              // 10..200
+    unsigned benchmark_s{15};          // 1..60: seconds per half of each benchmark pair
     bool operator==(const Settings&) const = default;
 };
 
@@ -34,7 +35,8 @@ struct Settings {
 // default stays) and named in `problems` when given ("line 4: ...").
 Settings parse_settings(std::string_view text, std::string* problems = nullptr);
 // `text` with the known keys set to `s`: their lines keep everything but the
-// value (spacing, comments), missing keys are appended with their comment,
+// value (spacing, and a comment after it at the same column when there is
+// room), missing keys are appended with their comment,
 // all other lines stay as they are. An empty `text` gives the full default
 // file with `s`'s values.
 std::string write_settings(std::string_view text, const Settings& s);

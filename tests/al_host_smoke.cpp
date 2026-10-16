@@ -129,14 +129,31 @@ al_input_t make_input() {
     return in;
 }
 const al_input_t input = make_input();
-// cmfm.menu: the page the plugin adds (its callbacks stay valid; its rows are counted).
+// cmfm.menu: the page the plugin adds (its callbacks stay valid; its rows are
+// counted), with CMFM's text limits (CMFM src/menu/menu.hpp: title 24 bytes,
+// labels 64, help lines and questions 200, button texts 32).
 cmfm_page_t added_page{};
 std::string added_title;
 std::uint32_t added_rows{};
+std::string too_long;  // the first text over its limit
+void fits(const char* text, std::size_t limit, const char* what) {
+    if (text && std::strlen(text) > limit && too_long.empty()) too_long = std::string(what) + ": " + text;
+}
 uint32_t CMFM_CALL cmfm_add_page(const cmfm_page_t* page, char*, uint32_t) {
     added_page = *page;
     added_title = page->title ? page->title : "";
     added_rows = page->setting_count;
+    fits(page->title, 24, "title");
+    fits(page->help, 200, "page help");
+    for (std::uint32_t i = 0; i < page->setting_count; ++i) {
+        const auto& row = page->settings[i];
+        fits(row.label, 64, "label");
+        fits(row.help, 200, "help");
+        if (row.type == CMFM_TYPE_BUTTON) {
+            fits(row.button, 32, "button");
+            fits(row.confirm, 200, "question");
+        }
+    }
     return 1;
 }
 const cmfm_menu_t cmfm = {sizeof(cmfm_menu_t), CMFM_MENU_VERSION, cmfm_add_page};
@@ -358,7 +375,10 @@ std::string replaced(std::string text, const std::string& from, const std::strin
 int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     CHECK(last_status == AL_STATUS_ACTIVE);
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && !present_callback);  // no Present timing
-    CHECK(added_title == "CPU optimizations" && added_rows == 13 && added_page.get && added_page.set && added_page.get_text);
+    CHECK(added_title == "CPU optimizations" && added_rows == 16 && added_page.get && added_page.set && added_page.get_text);
+    CHECK(added_page.press && added_page.on_event && added_page.locked);
+    if (!too_long.empty()) std::printf("  too long for CMFM: %s\n", too_long.c_str());
+    CHECK(too_long.empty());
     const HANDLE jobs = CreateThread(nullptr, 0, job_thread, nullptr, 0, nullptr);
     const HANDLE threads[] = {CreateThread(nullptr, 0, game_thread, nullptr, 0, nullptr),
                               CreateThread(nullptr, 0, present_thread, nullptr, 0, nullptr)};
@@ -394,9 +414,40 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     added_page.get_text(added_page.user, 3, status, sizeof(status));
     std::printf("  status: %s\n", status);
     CHECK(std::string(status).find("optimization") != std::string::npos && std::string(status).find(" on") != std::string::npos && std::string(status).find(" of ") == std::string::npos);
-    // A hand edit while the game runs.
-    write_all(ini, replaced(read_all(ini), "unit_us = 40", "unit_us = 50"));
+    // A hand edit while the game runs (and 1 s benchmark windows).
+    write_all(ini, replaced(replaced(read_all(ini), "unit_us = 40", "unit_us = 50"), "benchmark_s = 15", "benchmark_s = 1"));
     Sleep(2000);
+
+    // The benchmark: Run on the page, then it starts once the page closes. The
+    // page opening on the way pauses it, and that window runs again.
+    char why_locked[200] = "";
+    CHECK(added_page.locked(added_page.user, 31, why_locked, sizeof(why_locked)) == 0);
+    added_page.on_event(added_page.user, CMFM_EVENT_OPENED);
+    CHECK(added_page.press(added_page.user, 31) == CMFM_OK);
+    Sleep(300);
+    CHECK(added_page.locked(added_page.user, 31, why_locked, sizeof(why_locked)) == 1 && why_locked[0]);
+    added_page.on_event(added_page.user, CMFM_EVENT_CLOSED);
+    Sleep(3500);  // a 1 s countdown, then two windows and a half
+    added_page.on_event(added_page.user, CMFM_EVENT_OPENED);
+    Sleep(400);
+    added_page.get_text(added_page.user, 32, status, sizeof(status));
+    std::printf("  benchmark: %s\n", status);
+    CHECK(std::string(status).find("Paused") == 0);
+    added_page.get_text(added_page.user, 3, status, sizeof(status));
+    CHECK(std::string(status).find("benchmark") != std::string::npos);
+    added_page.on_event(added_page.user, CMFM_EVENT_CLOSED);
+    const auto report_path = folder + L"\\cpuopt-benchmark.txt";
+    for (int i = 0; i < 300 && read_all(report_path).empty(); ++i) Sleep(100);
+    Sleep(300);
+    const auto report = read_all(report_path);
+    std::printf("%s", report.c_str());
+    CHECK(report.find("== cpuopt benchmark, ") == 0 && report.find("\r\n") != std::string::npos);
+    CHECK(report.find("Frame rate: ") != std::string::npos && report.find("1 window(s) measured again") != std::string::npos);
+    CHECK(report.find("\n16  off ") != std::string::npos);
+    added_page.get_text(added_page.user, 32, status, sizeof(status));
+    std::printf("  benchmark: %s\n", status);
+    CHECK(std::string(status).find(" fps (") != std::string::npos && std::string(status).find("cpuopt-benchmark.txt") != std::string::npos);
+    CHECK(added_page.locked(added_page.user, 31, why_locked, sizeof(why_locked)) == 0);
 
     const auto t_exit = qpc();
     info->on_phase(self, AL_PHASE_EXITING, nullptr);
@@ -419,6 +470,11 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     CHECK(log.find("\"event\":\"status\"") != std::string::npos && log.find("\"event\":\"stopped\"}") != std::string::npos);
     CHECK(log.find("\"event\":\"window\"") == std::string::npos && log.find("\"event\":\"profile\"") == std::string::npos);
     CHECK(read_all(ini).find("unit_us = 50") != std::string::npos);
+    // The benchmark's windows, its result, and the player's settings after it.
+    CHECK(log.find("\"marker\":\"benchmark-off\"") != std::string::npos && log.find("\"marker\":\"benchmark-on\"") != std::string::npos);
+    CHECK(log.find("\"event\":\"benchmark\"") != std::string::npos && log.find("\"what\":\"paused\"") != std::string::npos);
+    CHECK(log.rfind("\"marker\":\"benchmark-") < log.rfind("\"marker\":\"player\""));
+    CHECK(log.find("\"event\":\"modules\"") != std::string::npos && log.find("al_d3d12_subscribed") == std::string::npos);
     CHECK(exiting_ms < 2500);
     std::printf(failures ? "al_host_smoke (player): %d failure(s)\n" : "al_host_smoke (player): ok\n", failures);
     std::fflush(stdout);

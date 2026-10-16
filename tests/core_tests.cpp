@@ -1,10 +1,14 @@
-// Pure logic: signatures, frame-interval percentiles, control.ini, JSON text.
+// Pure logic: signatures, frame-interval percentiles, control.ini, JSON text,
+// cpuopt.ini, the benchmark's summary and report.
+#include "../src/core/bench.hpp"
 #include "../src/core/control.hpp"
 #include "../src/core/histogram.hpp"
 #include "../src/core/json.hpp"
 #include "../src/core/settings.hpp"
 #include "../src/core/signature.hpp"
+#include <cmath>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 namespace {
@@ -162,7 +166,14 @@ void settings() {
     changed.unit_us = 50;
     const auto text = "# mine\nenabled = on    ; keep this comment\nunit_us=40\nfoo = bar\n";
     const auto written = cpuopt::write_settings(text, changed);
-    CHECK(written.find("# mine\nenabled = off    ; keep this comment\nunit_us=50\nfoo = bar\n") == 0);
+    CHECK(written.find("# mine\nenabled = off   ; keep this comment\nunit_us=50\nfoo = bar\n") == 0);
+    // A comment keeps its column while there is room, then sits one space after the value.
+    Settings keyed = defaults;
+    keyed.toggle_key = 0x100 | 'P';
+    CHECK(cpuopt::write_settings("toggle_key = None   ; c\n", keyed).find("toggle_key = Ctrl+P ; c\n") == 0);
+    keyed.toggle_key = 0x300 | 0x7B;
+    CHECK(cpuopt::write_settings("toggle_key = None   ; c\n", keyed).find("toggle_key = Ctrl+Shift+F12 ; c\n") == 0);
+    CHECK(cpuopt::write_settings("toggle_key = None   ; c\n", defaults).find("toggle_key = None   ; c\n") == 0);
     CHECK(written.find("toggle_key = Ctrl+F9") != std::string::npos);  // missing keys appended
     CHECK(cpuopt::parse_settings(written) == changed);
     // CRLF files stay CRLF.
@@ -189,6 +200,81 @@ void settings() {
         CHECK(cpuopt::parse_key(cpuopt::key_name(k)) == k);
     CHECK(cpuopt::parse_key("ctrl + shift + k") == 0x300u + 'K');
     CHECK(!cpuopt::parse_key("Hyper+F1") && !cpuopt::parse_key("F25") && !cpuopt::parse_key("Ctrl+"));
+    // The benchmark's window length.
+    CHECK(defaults.benchmark_s == 15 && file.find("benchmark_s = 15") != std::string::npos);
+    CHECK(cpuopt::parse_settings("benchmark_s = 1\n").benchmark_s == 1 && cpuopt::parse_settings("benchmark_s = 61\n").benchmark_s == 15);
+}
+
+bool near(double a, double b) { return std::fabs(a - b) < 1e-6 * (std::fabs(b) + 1.0); }
+
+void benchmark() {
+    namespace b = cpuopt::bench;
+    // Off-on, on-off, ...: a drift in the scene falls on both states.
+    const bool order[] = {false, true, true, false, false, true, true, false, false, true, true, false, false, true, true, false};
+    static_assert(std::size(order) == b::windows);
+    for (unsigned i = 0; i < b::windows; ++i) CHECK(b::window_on(i) == order[i]);
+    CHECK(b::settle_ms(15000) == 3000 && b::settle_ms(1000) == 200);
+    CHECK(b::countdown_ms(15000) == 10000 && b::countdown_ms(1000) == 1000);
+    // Off at 180 fps, on at 270 (the first pair's on window at 252).
+    std::vector<b::Window> w;
+    for (unsigned i = 0; i < b::windows; ++i) {
+        b::Window x;
+        x.on = b::window_on(i);
+        x.seconds = 12;
+        const double fps = !x.on ? 180.0 : i == 1 ? 252.0 : 270.0;
+        x.frames = static_cast<std::uint64_t>(fps * 12 + 0.5);
+        x.p50_ms = 1000.0 / fps;
+        x.p99_ms = x.on ? 4.4 : 16.7;
+        x.max_ms = 20;
+        x.cpu_frames = x.frames;
+        x.cpu_ms = x.on ? 3.6 : 5.2;
+        x.process_ms = x.on ? 22.0 : 46.0;
+        w.push_back(x);
+    }
+    const auto r = b::summarize(w);
+    CHECK(r.pairs == 8 && near(r.off_fps, 180) && near(r.on_fps, 270) && near(r.gain, 0.5));
+    CHECK(near(r.gain_low, 0.4) && near(r.gain_high, 0.5) && near(r.off_p99, 16.7) && near(r.on_p99, 4.4));
+    CHECK(r.cpu && near(r.off_cpu, 5.2) && near(r.on_cpu, 3.6) && near(r.cpu_change, 3.6 / 5.2 - 1.0));
+    CHECK(r.process && near(r.off_process, 46) && near(r.on_process, 22));
+    CHECK(b::short_result(r) == "+50% fps (180 to 270), CPU time -31%. Details: cpuopt-benchmark.txt");
+    b::Machine m;
+    m.when = "2026-10-16 22:10";
+    m.version = "0.14.0";
+    m.game = "421810, the build cpuopt was made on";
+    m.cpu = "AMD Ryzen 9 9950X3D 16-Core Processor, 32 threads";
+    m.gpu = "NVIDIA GeForce RTX 5090";
+    m.windows = "10.0.26200";
+    m.display = "2560x1440, Windowed, frame rate No Limit, V-Sync Off, the game's DLSS Off";
+    m.switches = "effect drawing, draw job order";
+    m.modules = "cmfm.dll, mhw_dlss.dll";
+    m.window_s = 15;
+    m.pauses = 1;
+    const auto text = b::report(m, w, r);
+    std::printf("%s", text.c_str());
+    CHECK(text.find("== cpuopt benchmark, 2026-10-16 22:10 ==\n") == 0);
+    CHECK(text.find("Frame rate: 180.0 -> 270.0 fps, +50% (the pairs: +40% to +50%)\n") != std::string::npos);
+    CHECK(text.find("Game thread CPU time per frame: 5.20 -> 3.60 ms, -31% (the CPU alone could reach 278 fps)\n") != std::string::npos);
+    CHECK(text.find("All threads' CPU time per frame: 46.0 -> 22.0 ms, -52%\n") != std::string::npos);
+    CHECK(text.find("8 pairs of 15 s windows, the first 3.0 s of each not counted; 1 window(s) measured again") != std::string::npos);
+    CHECK(text.find("\n16  off ") != std::string::npos && text.find("\n17 ") == std::string::npos);
+    CHECK(text.find("something besides the CPU") == std::string::npos && text.find("differ a lot") == std::string::npos);
+    CHECK(text.find("Also loaded: cmfm.dll, mhw_dlss.dll\n") != std::string::npos && text.find("Remove 300 fps limit") == std::string::npos);
+    // Held by the GPU with the optimizations on: the CPU could do 500 fps.
+    auto held = w;
+    for (auto& x : held)
+        if (x.on) x.cpu_ms = 2.0;
+    CHECK(b::report(m, held, b::summarize(held)).find("the CPU alone could reach 500 fps, the game ran at 270.") != std::string::npos);
+    // A scene that changed: the pairs from +10% to +80%.
+    auto drift = w;
+    drift[1].frames = static_cast<std::uint64_t>(198 * 12);
+    drift[2].frames = static_cast<std::uint64_t>(324 * 12);
+    CHECK(b::report(m, drift, b::summarize(drift)).find("The pairs differ a lot (+10% to +80%)") != std::string::npos);
+    // Without frame_budget: fps only.
+    for (auto& x : w) x.cpu_frames = 0;
+    const auto r2 = b::summarize(w);
+    CHECK(!r2.cpu && r2.process && b::short_result(r2) == "+50% fps (180 to 270). Details: cpuopt-benchmark.txt");
+    CHECK(b::report(m, w, r2).find("Game thread CPU time per frame: not measured") != std::string::npos);
+    CHECK(b::short_result(r2).size() < 128 && b::short_result(r).size() < 128);
 }
 }  // namespace
 
@@ -198,6 +284,7 @@ int main() {
     control();
     json_text();
     settings();
+    benchmark();
     std::printf(failures ? "core_tests: %d failure(s)\n" : "core_tests: ok\n", failures);
     return failures ? 1 : 0;
 }

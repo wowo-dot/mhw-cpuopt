@@ -330,6 +330,57 @@ std::string start_event(HMODULE self, const std::wstring& control_path, const Lo
     return out;
 }
 
+std::string cpu_name() { return cpu_brand(); }
+
+std::string gpu_name() {
+    DISPLAY_DEVICEW device{};
+    device.cb = sizeof(device);
+    std::wstring first;
+    for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &device, 0); ++i) {
+        if (device.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) return utf8(device.DeviceString);
+        if (first.empty() && (device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)) first = device.DeviceString;
+        device.cb = sizeof(device);
+    }
+    return utf8(first);
+}
+
+std::string windows_version() {
+    std::string v;
+    os_version(v);  // [major,minor,build]
+    for (auto& c : v)
+        if (c == ',') c = '.';
+    return v.size() > 2 ? v.substr(1, v.size() - 2) : v;
+}
+
+bool tested_exe(std::string_view sha256) noexcept { return sha256 == tested_exe_sha256; }
+
+std::string ini_value(const std::wstring& file, const wchar_t* section, const wchar_t* key) {
+    wchar_t value[256]{};
+    GetPrivateProfileStringW(section, key, L"", value, static_cast<DWORD>(std::size(value)), file.c_str());
+    return utf8(value);
+}
+
+std::string other_modules(HMODULE self) {
+    std::vector<std::wstring> names;
+    const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return {};
+    MODULEENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    const auto exe = GetModuleHandleW(nullptr);
+    for (BOOL ok = Module32FirstW(snapshot, &entry); ok; ok = Module32NextW(snapshot, &entry))
+        if (entry.hModule != exe && entry.hModule != self && !in_windows_folder(entry.szExePath)) names.emplace_back(entry.szModule);
+    CloseHandle(snapshot);
+    std::sort(names.begin(), names.end(), [](const std::wstring& a, const std::wstring& b) {
+        return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_LESS_THAN;
+    });
+    std::string out;
+    for (const auto& n : names) {
+        if (!out.empty()) out += ", ";
+        out += utf8(n);
+    }
+    return out;
+}
+
 std::string ModuleCensus::changed_event(double t_ms) {
     std::vector<Entry> now;
     const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
