@@ -535,7 +535,7 @@ over it.
   (two pairs) 245.8 against 248.0 fps, process CPU 17.55 against 17.43 ms
   a frame; at the capped title screen 299.9 fps both. None measurable.
 
-### The frame limiter (sub_14225F9F0; v0.10.0, not yet run in game)
+### The frame limiter (sub_14225F9F0; v0.10.0, al-22)
 
 - sMain's frame timing ends each frame's wait: remaining ms = 1000 /
   mMaxFps (+0x5C) minus the elapsed time, from a running sum of QPC ticks
@@ -554,3 +554,98 @@ over it.
 - The sampler's follow mode (control.ini follow, a vtable RVA) samples the
   thread running one class's job every 20 us while it runs: uPlayer's move
   (vtable 0x34a6d18) is next.
+
+### The limiter in game (al-22, v0.10.0; 2026-10-16)
+
+Title screen (the slow one: with everything on it holds the 300 fps cap
+anyway), everything on + budget (6520) against the same + sleep_limiter,
+30 s steps, the first 5 s window of each left out.
+
+| Cap, margin | fps off / on | game thread CPU a frame off / on | process CPU a frame | wakes past the margin |
+|---|---|---|---|---|
+| 300, 500 us (four pairs) | 299.7 / 299.0 | 2.823 / 1.753 ms (-38%) | 5.73 / 4.61 ms | 9.1% |
+| 144, 500 us (two pairs) | 144.0 / 143.9 | 2.454 / 1.620 ms (-34%) | 5.28 / 4.45 ms | 6.8% |
+| 300, 500 us (margin run) | 299.7 / 298.9 | 2.798 / 1.750 ms | 5.70 / 4.63 ms | 9.4% |
+| 300, 1000 us (margin run) | 299.7 / 299.7 | 2.798 / 2.213 ms (-21%) | 5.70 / 5.11 ms | 0.2% |
+
+- Frame pacing unchanged at both caps (p50 3.35, p95 4.10 ms at 300).
+- In game the high-resolution timer woke up to about 0.85 ms late at p99
+  (0.24 ms in the unit test), so a 500 us margin left 9% of frames up to
+  ~0.3 ms late: -0.3% fps at the cap. With 1000 us the cap holds exactly.
+  Default margin_us is 1000 from v0.11.0; a margin learned from the
+  measured lateness would get most of the 500 us saving without the loss.
+
+### Following the critical jobs (al-22, sampler follow mode)
+
+Everything on, time_jobs and the sampler on, follow = a class's vtable
+RVA, 60 s each; sampling pauses the followed job, so these are profiles,
+not timings.
+
+- **uPlayer, Ancient Forest:** 66,000 jobs, 842,000 samples (12.8 a job).
+  Per frame the player has one move job (cUnit::genericMove, 77% of its
+  samples), four draw jobs in the camera rounds (22%) and one more (1%).
+  The game thread ran the player's job itself in 62% of the samples. Inside
+  the move (sub_141FBCCD0, the character update with the "On checking
+  mQuat before/after Animation" checks): uPlayer's own update
+  (sub_1420397F0, actions, stamina, targeting) about half; world collision
+  queries (cStageAdjustCollision, then capsule-vs-BVH: sub_14231E090 ->
+  sub_1425D1E20 -> sub_1425B0EC0 -> sub_1425AED40, pointer-chasing AABB
+  tests, and the narrow phase sub_1422C7E00/sub_1422CB250) 22-24%;
+  animation-event effect lookups (sub_142485020 -> sub_142363680: a hash
+  table and list walk in rEffectProvider, then its parents) 11-14%. The
+  hottest single function is 5%: no single waste.
+- **uEm124 (Arch-Tempered Velkhana), in the fight:** 58,000 jobs, 1.08
+  million samples. Move 66%, draw 34%. The same world collision chain
+  takes 24% of its job time (sub_1425D1E20 inclusive). Flat otherwise.
+- **uMhEffect, the same fight:** 3.6 million jobs (about 250 a frame:
+  move and three draw rounds), 49,000 samples (most jobs end before a
+  sample). 87% uEffect::move -> sub_1426342E0 -> sub_142633C60 (emitter
+  updates), mostly math (powf, atan2f, sinf): flat.
+
+### The Velkhana fight's frame (al-22, everything on)
+
+- Budget (60 s, time_jobs on): CPU frame 3.553 ms (281 fps CPU-bound) at
+  242 fps: rounds 1.969 ms, serial 1.212, swapchain 0.357, and 0.568 ms of
+  GPU wait: at 1440p this fight is partly GPU-bound with everything on.
+- Job types per frame (job timing): uMhEffect moves 1,641 us of work (122
+  jobs, max 759 us; they ended their round 2.6 times a frame), uMhEffect
+  draws 1,184 us (119), base model instance draws 903 us (543), the
+  monster's move 201 us and the player's 189 us (one each, each ending
+  its round every frame), the HUD radar's draw 121 us (one).
+- Replay (job_sim.py): the unit rounds (9.1 a frame) gain at most 32 us a
+  frame from any order (they wait on single long jobs; about 14 us a
+  round is waking and the tail); the camera rounds (3 a frame) up to 142
+  us with a perfect order, 75 us sorted by class means (job order mode
+  3), nothing more from mode 2 (already on).
+- The game thread (sampler, 60 s): unit passes 33% (rounds 27.5%, lines
+  run alone 5.7%), Present path 27% (present12 22%, endFrame12 5% in
+  D3D12Core), sMhRender::move 18% (camera rounds 10%, serial setup
+  sub_1423C3790 5%), **sCollision::Collider::move 4.2%**, a second unit
+  pass sub_14221B400 3.5%, sub_141B05440 3.1%. Job threads waited for work
+  96% of the time.
+
+### sCollision runs serially for the whole session (al-22, al-23; v0.11.0)
+
+- sCollision::NodeList::executeContact has two paths: with the collider's
+  flag +0x3D set it queues executeTargetActiveNodeContact per active node
+  on sMain's job list and runs one executeJob round; without it the game
+  thread calls them one by one. movePhase1_runSetupObjectCollisionSystem
+  does the same for its node lists with +0x3C.
+- sub_14248A160 sets both flags to "sMain +0xCC != 1" (more than one job
+  participant). It runs in sMhMain's constructor (sMhCollision built there,
+  stored at sMain +0xAF8E8, collider at +0x84E8), before the job threads
+  exist. Read from the running game (read-only, al-22): participants 16,
+  flags 0 and 0. Area loads do not run the setup again (al-23: the flag
+  stayed as set through a quest end and the return to Seliana).
+- **parallel_contacts (32768), Velkhana, al-23:** six rounds of 15 s steps
+  (serial, contact pass, both passes): the game thread's serial work fell in
+  every round (1.30 to 1.19 ms; 1.17 with both); the fight's own swings
+  (+-200-450 us between rounds) hide the total (CPU frame -47 us, -32 us
+  with both, on average). Job timing (45 s each): the contact round, 97
+  jobs, waits 45.1 us (longest job 28.5 us) for 183 us of work the game
+  thread did alone: about 140 us a frame back in this fight. The setup
+  pass adds nothing: contacts 1 is the default.
+- Hits looked and felt normal to the user (damage numbers, hits both ways,
+  part breaks, clutch claw); stable through the quest end, a loading
+  screen, alt-tab and menus; the loading screens' long frames (165-300 ms)
+  only. Kept, on in every session from now so it sees more fights.

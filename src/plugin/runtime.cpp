@@ -80,7 +80,7 @@ struct State {
     bool budget{};                        // the frame_budget detours are in
     unsigned max_fps{1000};               // toggle uncap: the cap to set
     unsigned margin_us{1000};             // toggle sleep_limiter: the spin left before the deadline (al-22)
-    unsigned contacts_mode{3};            // toggle parallel_contacts: bit 0 contact pass, bit 1 setup pass
+    unsigned contacts_mode{1};            // toggle parallel_contacts: bit 0 contact pass, bit 1 setup pass (al-23: 1)
     unsigned follow{};                    // follow mode: the followed class's vtable RVA (0 off)
     unsigned follow_us{20};               // follow mode: the gap between samples
     bool running{};                       // the steam_running change is in

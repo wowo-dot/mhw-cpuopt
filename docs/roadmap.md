@@ -1,6 +1,6 @@
 # Where cpuopt stands and what comes next
 
-Updated 2026-10-16 (after al-21). Numbers and methods: `research/engine-notes.md`;
+Updated 2026-10-16 (after al-23). Numbers and methods: `research/engine-notes.md`;
 how a run is done: `runtime-protocol.md`.
 
 ## Kept: switches that help (measured on and off in one session)
@@ -12,6 +12,8 @@ how a run is done: `runtime-protocol.md`.
 | 32 | reuse_server_time | Steam's server time read once a second: hub +3.0% |
 | 256 | unit_threshold (unit_us 40) | sMhUnit hands more lines to the job threads: Ancient Forest +2.8% |
 | 2048 | cache_ccd | the game on the 3D V-Cache die of a dual-die X3D CPU: +3.6% |
+| 32768 | parallel_contacts (contacts 1) | sCollision's contact pass as a job round, the engine's own path left off by an init-order slip: about 140 us a frame back in the Velkhana fight (al-23) |
+| 16384 | sleep_limiter (for capped play) | the frame limiter sleeps instead of spinning: game thread -21% at a 300 cap with margin 1000, same fps and pacing (al-22) |
 
 All of them (2424, with inline_rounds 64 which costs nothing measurable):
 Ancient Forest 181 to 244 fps (+35%), AT Velkhana 158 to 233 (+47%),
@@ -61,18 +63,19 @@ Both measuring switches stay on in both halves of every A/B.
 
 ## Plan
 
-1. **Measuring and the frame limiter:** frame_budget and uncap (v0.9.0)
-   re-measured the kept switches on the CPU frame (al-21, above). The
-   limiter spins whenever less than 2 ms remain: sleep_limiter (16384,
-   v0.10.0) sleeps on a high-resolution timer until 0.5 ms before the
-   deadline. Built and unit-tested; next run (al-22, prepared): limiter off
-   against on at the capped title screen and at a 144 fps cap.
-2. **The player's and the monster's moves:** the sampler's follow mode is
-   built (v0.10.0): it samples the thread running one class's job every
-   20 us while the job runs. Next: uPlayer's move in the Ancient Forest,
-   then a monster's in a fight, and look for waste inside those ~200 us.
-   In the forest the CPU frame is 55% job rounds, 37% serial game-thread
-   work and 7% the swapchain call; the serial part is next after the moves.
+1. **Measuring and the frame limiter (done, al-21, al-22):** the CPU frame
+   is the measure; sleep_limiter keeps capped play's pacing with a fifth to
+   a third less game-thread CPU. Left: a margin learned from the timer's
+   measured lateness.
+2. **The critical jobs (done, al-22):** the player's, Velkhana's and the
+   effects' jobs are flat profiles (world collision about a quarter of the
+   first two); no single waste. The fight breakdown found sCollision's
+   serial contacts instead (parallel_contacts, al-23).
+2b. **The game thread's serial work, next:** in the Velkhana fight 1.2 ms
+   a frame: unit lines run alone (~240 us), the second unit pass (~146
+   us), sCamera::draw's serial setup (~220 us, sub_1423C3790), sub_141B05440
+   (~130 us), endFrame12 (~220 us, D3D12). Also job order mode 3 in fights
+   (replay: 75 us a frame).
 3. **The DLSS mod together with cpuopt,** with the GPU's utilization logged
    (nvidia-smi, read-only): coexistence, and whether the GPU is now the
    limit at 1440p and 4K.

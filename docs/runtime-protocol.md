@@ -138,7 +138,7 @@
 | 4096 | budget | research: the game thread's frame split into limiter, job rounds, Present path (GPU wait, swapchain call) and serial work; the CPU frame (interval minus limiter and GPU wait). Two detours: sMain's frame timing and cD3DRender::present | |
 | 8192 | uncap | research: the engine's frame cap (sMain mMaxFps) set to max_fps on the game thread, the game's value back when off and at exit; hands off if the options change it | max_fps (1000) |
 | 16384 | sleep_limiter | the frame limiter waits on a high-resolution timer until margin_us before its deadline instead of spinning; the game's function still does its own timing (the frame-timing detour). al-22: game thread -38% (margin 500, -0.3% fps at the cap) or -21% (1000, no loss) at a 300 cap | margin_us (1000) |
-| 32768 | parallel_contacts | sCollision's contact pass (contacts bit 0) and setup pass (bit 1) as job rounds: the collider flags the engine sets itself with more than one job thread, left at 0 because its setup runs before the job threads exist; set at al.frame BEGIN, put back when off and at exit | contacts (3) |
+| 32768 | parallel_contacts | sCollision's contact pass (contacts bit 0) and setup pass (bit 1) as job rounds: the collider flags the engine sets itself with more than one job thread, left at 0 because its setup runs before the job threads exist; set at al.frame BEGIN, put back when off and at exit. al-23 (Velkhana): the contact round waits 45 us for 183 us of work the game thread did alone, about 140 us a frame back; hits normal, through a quest end and loads | contacts (1; al-23: the setup pass adds nothing) |
 
 Toggles add up: 8 + 16 + 32 + 64 = 120 is every optimization switch of
 v0.6; 376 adds unit_threshold, the best measured set (al-15). A
