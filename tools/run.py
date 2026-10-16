@@ -7,8 +7,8 @@
       sidecar (moved into the folder if there was one), so the plugin starts
       in player mode with the slot's cpuopt.ini (copied in as it was).
   collect <run>
-      After a player-mode launch: copies the slot's cpuopt.log and cpuopt.ini
-      into the run folder (then seal it).
+      After a player-mode launch: copies the slot's cpuopt.log, cpuopt.ini
+      and cpuopt-benchmark.txt into the run folder (then seal it).
   control <run> [--toggles N] [--marker M] [--window-ms N] [--job-threads N]
           [--job-order 1|2] [--order-us N] [--inline-us N] [--time-ms N]
       Changes control.ini while the game runs; the plugin closes the current
@@ -140,7 +140,7 @@ def collect(a):
     run = run_folder(a.run)
     folder = Path(machine()['slot']).parent
     copied = []
-    for name in ('cpuopt.log', 'cpuopt.ini'):
+    for name in ('cpuopt.log', 'cpuopt.ini', 'cpuopt-benchmark.txt'):
         if (folder / name).exists():
             shutil.copyfile(folder / name, run / name)
             copied.append(name)
