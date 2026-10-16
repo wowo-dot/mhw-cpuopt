@@ -6,6 +6,7 @@
 // thread starts. Per-frame work is limited to the callbacks below, which only
 // count (frame_events.hpp). EXITING stops every thread of ours.
 #include "al/al_plugin.h"
+#include "cpu_limit.hpp"
 #include "frame_clock.hpp"
 #include "frame_events.hpp"
 #include "image_scan.hpp"
@@ -307,12 +308,14 @@ void AL_CALL on_phase(al_plugin_t*, al_phase_t phase, const void* data) {
         cpuopt::worker_spin::set_active(false, 0);  // job threads block again for the game's teardown
         cpuopt::unit_lines::restore();
         cpuopt::steam_running::set_active(false, 0);
+        cpuopt::cpu_limit::restore();
         cpuopt::runtime::stop("exiting");
         say(AL_LOG_INFO, "stopped at EXITING");
     } else if (phase == AL_PHASE_SHUTDOWN) {
         const auto* shutdown = static_cast<const al_phase_shutdown_t*>(data);
         cpuopt::job_cap::restore();
         cpuopt::unit_lines::restore();
+        cpuopt::cpu_limit::restore();
         cpuopt::runtime::stop("shutdown");  // when EXITING did not come
         cpuopt::runtime::note("shutdown", "exit_code", shutdown && shutdown->size >= sizeof(*shutdown) ? shutdown->exit_code : 0);
     }

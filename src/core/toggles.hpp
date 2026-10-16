@@ -26,8 +26,10 @@ enum Toggle : unsigned {
                               // control.ini unit_us instead of the game's 60 us (unit_lines.hpp)
     cache_steam_running = 512U,  // SteamAPI_IsSteamRunning answered once per time_ms at its two
                                  // per-frame call sites (al.patch; steam_running.hpp)
+    smaller_cpu = 1024U,      // research: the process confined to control.ini cpu_count logical
+                              // processors and job rounds to as many threads (cpu_limit.hpp)
 };
-inline constexpr unsigned toggle_mask = 1023U;  // every defined bit
+inline constexpr unsigned toggle_mask = 2047U;  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }

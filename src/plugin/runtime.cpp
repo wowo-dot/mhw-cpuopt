@@ -2,6 +2,7 @@
 #include "../core/control.hpp"
 #include "../core/json.hpp"
 #include "../core/toggles.hpp"
+#include "cpu_limit.hpp"
 #include "frame_events.hpp"
 #include "job_timing.hpp"
 #include "log.hpp"
@@ -72,6 +73,7 @@ struct State {
     unsigned spin_us{300};                // toggle spin_workers: spin window
     bool spin{};                          // the worker_spin change is in
     unsigned unit_us{40};                 // toggle unit_threshold: the threshold to set (al-15: 40-50 best)
+    unsigned cpu_count{12};               // toggle smaller_cpu: logical processors kept
     bool running{};                       // the steam_running change is in
     bool prim_buffer{};                   // the prim ring's memory has been reported
     unsigned window_ms{5000};
@@ -147,6 +149,7 @@ void write_window(State& s) {
     worker_spin::append(out);
     unit_lines::append(out);
     steam_running::append(out);
+    cpu_limit::append(out);
     json::key(out, "prim_stores");
     out += s.prim ? "true" : "false";
     if (s.poller) append_poller(out, frame_clock::take(), ms);
@@ -222,7 +225,10 @@ void poll_control(State& s, bool initial) {
     if (parsed->marker) s.marker = *parsed->marker;
     if (parsed->window_ms) s.window_ms = *parsed->window_ms;
     if (parsed->job_threads) s.job_threads = *parsed->job_threads;
-    job_cap::request(on(job_thread_cap) ? s.job_threads : 0);  // applied on the game thread at the next frame
+    if (parsed->cpu_count) s.cpu_count = *parsed->cpu_count;
+    // A smaller CPU: fewer logical processors, and job rounds as the game would size them there.
+    cpu_limit::set(on(smaller_cpu) ? s.cpu_count : 0);
+    job_cap::request(on(job_thread_cap) ? s.job_threads : on(smaller_cpu) ? s.cpu_count : 0);  // applied on the game thread at the next frame
     if (parsed->job_order) s.job_order = *parsed->job_order;
     if (parsed->order_us) s.order_us = *parsed->order_us;
     if (parsed->inline_us) s.inline_us = *parsed->inline_us;
@@ -304,6 +310,8 @@ void poll_control(State& s, bool initial) {
     json::number(out, std::uint64_t(s.spin_us));
     json::key(out, "unit_us");
     json::number(out, std::uint64_t(s.unit_us));
+    json::key(out, "cpu_count");
+    json::number(out, std::uint64_t(s.cpu_count));
     out += '}';
     event_log.write(out);
 }

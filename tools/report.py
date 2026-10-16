@@ -90,6 +90,9 @@ def main():
             r = [w.get('steam_running', {}) for w in ws]
             state += (f', IsSteamRunning {"cached" if all(x.get("active") for x in r) else "NOT CACHED"} '
                       f'({sum(x.get("calls", 0) for x in r)} calls, {sum(x.get("reused", 0) for x in r)} reused)')
+        if toggles & 1024:
+            c = ws[-1].get('cpus', {})
+            state += f', CPU limit {c.get("limit")} ({"applied " + str(c.get("mask")) if c.get("applied") else "NOT APPLIED"})'
         if toggles & 64:
             il = [w.get('inline', {}) for w in ws]
             sites = il[-1].get('sites', [])

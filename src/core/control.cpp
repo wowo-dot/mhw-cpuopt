@@ -63,6 +63,9 @@ std::optional<Control> parse_control(std::string_view text) {
         } else if (key == "unit_us") {
             c.unit_us = number(value);
             if (!c.unit_us || *c.unit_us < 1 || *c.unit_us > 100000) return std::nullopt;
+        } else if (key == "cpu_count") {
+            c.cpu_count = number(value);
+            if (!c.cpu_count || *c.cpu_count < 2 || *c.cpu_count > 64) return std::nullopt;
         } else if (key == "marker") {
             if (value.size() > 64) return std::nullopt;
             for (const char ch : value)

@@ -11,6 +11,7 @@
 // - spinning job threads (worker_spin) keep executeJob's round accounting on
 //   a stand-in job system, and its jump stub and patch bytes are sound.
 #include "../src/core/toggles.hpp"
+#include "../src/plugin/cpu_limit.hpp"
 #include "../src/plugin/frame_clock.hpp"
 #include "../src/plugin/image_scan.hpp"
 #include "../src/plugin/frame_events.hpp"
@@ -1017,6 +1018,37 @@ void steam_running_test() {
     real_running_answer = true;
 }
 
+// cpu_limit: the process confined to its first N logical processors, and
+// its own affinity back.
+void cpu_limit_test() {
+    namespace cl = cpuopt::cpu_limit;
+    DWORD_PTR before{}, system{};
+    GetProcessAffinityMask(GetCurrentProcess(), &before, &system);
+    unsigned bits = 0;
+    for (auto m = before; m; m &= m - 1) ++bits;
+    if (bits < 4) {
+        std::printf("cpu_limit: only %u logical processors, skipped\n", bits);
+        return;
+    }
+    cl::set(2);
+    DWORD_PTR now{};
+    GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
+    unsigned kept = 0;
+    for (auto m = now; m; m &= m - 1) ++kept;
+    CHECK(kept == 2 && (now & before) == now);
+    std::string out = "{";
+    cl::append(out);
+    std::printf("cpu_limit: %s}\n", out.c_str());
+    CHECK(out.find("\"limit\":2,\"applied\":true") != std::string::npos);
+    cl::set(0);
+    GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
+    CHECK(now == before);
+    cl::set(3);
+    cl::restore();
+    GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
+    CHECK(now == before);
+}
+
 void spin_probe_test() {
     namespace sp = cpuopt::spin_probe;
     auto object = std::make_unique<std::uint8_t[]>(sp::done_offset + 8);
@@ -1226,6 +1258,7 @@ int main() {
     worker_spin_test();
     unit_lines_test();
     steam_running_test();
+    cpu_limit_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);
