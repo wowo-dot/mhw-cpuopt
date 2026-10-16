@@ -99,7 +99,7 @@ void control() {
     CHECK(parse_control("time_ms=1000")->time_ms == 1000u);
     CHECK(!parse_control("time_ms=9"));
     CHECK(!parse_control("time_ms=60001"));
-    CHECK(parse_control("toggles=2047")->toggles == 2047u);
+    CHECK(parse_control("toggles=4095")->toggles == 4095u);
     CHECK(parse_control("cpu_count=12")->cpu_count == 12u);
     CHECK(!parse_control("cpu_count=1"));
     CHECK(!parse_control("cpu_count=65"));

@@ -74,6 +74,7 @@ struct State {
     bool spin{};                          // the worker_spin change is in
     unsigned unit_us{40};                 // toggle unit_threshold: the threshold to set (al-15: 40-50 best)
     unsigned cpu_count{12};               // toggle smaller_cpu: logical processors kept
+    cpu_limit::Ccd ccd;                   // toggle cache_ccd: the largest L3's processors
     bool running{};                       // the steam_running change is in
     bool prim_buffer{};                   // the prim ring's memory has been reported
     unsigned window_ms{5000};
@@ -226,9 +227,14 @@ void poll_control(State& s, bool initial) {
     if (parsed->window_ms) s.window_ms = *parsed->window_ms;
     if (parsed->job_threads) s.job_threads = *parsed->job_threads;
     if (parsed->cpu_count) s.cpu_count = *parsed->cpu_count;
-    // A smaller CPU: fewer logical processors, and job rounds as the game would size them there.
-    cpu_limit::set(on(smaller_cpu) ? s.cpu_count : 0);
-    job_cap::request(on(job_thread_cap) ? s.job_threads : on(smaller_cpu) ? s.cpu_count : 0);  // applied on the game thread at the next frame
+    // The processors the game keeps: the largest L3's (cache_ccd), the first
+    // cpu_count of those or of all (smaller_cpu); job rounds sized to match.
+    DWORD_PTR mask = on(cache_ccd) && s.ccd.found ? s.ccd.mask : 0;
+    if (on(smaller_cpu)) mask = cpu_limit::first_bits(mask ? mask : cpu_limit::original(), s.cpu_count);
+    cpu_limit::set_mask(mask, on(smaller_cpu) ? s.cpu_count : 0);
+    unsigned kept = 0;
+    for (auto m = mask; m; m &= m - 1) ++kept;
+    job_cap::request(on(job_thread_cap) ? s.job_threads : kept);  // applied on the game thread at the next frame
     if (parsed->job_order) s.job_order = *parsed->job_order;
     if (parsed->order_us) s.order_us = *parsed->order_us;
     if (parsed->inline_us) s.inline_us = *parsed->inline_us;
@@ -326,6 +332,7 @@ DWORD WINAPI worker(void* parameter) noexcept {
     std::unique_ptr<State> owned(static_cast<State*>(parameter));
     auto& s = *owned;
     try {
+        s.ccd = cpu_limit::find_cache_ccd();
         system_info::LoaderInfo loader{"Astera Loader", host.api_version, host.game_version, host.exe_sha256};
         event_log.write(system_info::start_event(self_module, s.control_path, loader));
         poll_control(s, true);  // a run may start with switches already set
@@ -345,6 +352,7 @@ DWORD WINAPI worker(void* parameter) noexcept {
         event_log.write(prim_stores::discovery_event(host.prim, now_ms(), host.scanner));
         event_log.write(server_time::discovery_event(host.server, now_ms(), host.scanner));
         event_log.write(worker_spin::discovery_event(host.spin, now_ms(), host.scanner));
+        event_log.write(cpu_limit::ccd_event(s.ccd, now_ms()));
         event_log.write(unit_lines::discovery_event(host.units, now_ms(), host.scanner));
         event_log.write(steam_running::discovery_event(host.running, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
                                                        host.scanner));

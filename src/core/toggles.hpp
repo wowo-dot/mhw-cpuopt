@@ -28,8 +28,10 @@ enum Toggle : unsigned {
                                  // per-frame call sites (al.patch; steam_running.hpp)
     smaller_cpu = 1024U,      // research: the process confined to control.ini cpu_count logical
                               // processors and job rounds to as many threads (cpu_limit.hpp)
+    cache_ccd = 2048U,        // the process confined to the processors sharing the largest L3 (the
+                              // 3D V-Cache die), job rounds sized to match (cpu_limit.hpp)
 };
-inline constexpr unsigned toggle_mask = 2047U;  // every defined bit
+inline constexpr unsigned toggle_mask = 4095U;  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }

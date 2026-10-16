@@ -1030,7 +1030,11 @@ void cpu_limit_test() {
         std::printf("cpu_limit: only %u logical processors, skipped\n", bits);
         return;
     }
-    cl::set(2);
+    const auto ccd = cl::find_cache_ccd();
+    std::printf("cpu_limit: %s\n", cl::ccd_event(ccd, 0).c_str());
+    CHECK(!ccd.found || (ccd.count >= 2 && (ccd.mask & before) == ccd.mask && ccd.largest_kb > ccd.next_kb));
+    CHECK(cl::original() == before);
+    cl::set_mask(cl::first_bits(before, 2), 2);
     DWORD_PTR now{};
     GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
     unsigned kept = 0;
@@ -1040,10 +1044,10 @@ void cpu_limit_test() {
     cl::append(out);
     std::printf("cpu_limit: %s}\n", out.c_str());
     CHECK(out.find("\"limit\":2,\"applied\":true") != std::string::npos);
-    cl::set(0);
+    cl::set_mask(0, 0);
     GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
     CHECK(now == before);
-    cl::set(3);
+    cl::set_mask(cl::first_bits(before, 3), 3);
     cl::restore();
     GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
     CHECK(now == before);
