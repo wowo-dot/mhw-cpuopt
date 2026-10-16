@@ -103,6 +103,9 @@ void control() {
     CHECK(parse_control("cpu_count=12")->cpu_count == 12u);
     CHECK(!parse_control("cpu_count=1"));
     CHECK(!parse_control("cpu_count=65"));
+    CHECK(parse_control("sample_jobs=0")->sample_jobs == 0u);
+    CHECK(parse_control("sample_jobs=16")->sample_jobs == 16u);
+    CHECK(!parse_control("sample_jobs=33"));
     CHECK(parse_control("unit_us=20")->unit_us == 20u);
     CHECK(!parse_control("unit_us=0"));
     CHECK(!parse_control("unit_us=100001"));

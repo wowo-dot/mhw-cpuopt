@@ -1232,6 +1232,37 @@ void census_and_sampler_test() {
     std::snprintf(thread, sizeof(thread), "[%lu,", static_cast<unsigned long>(busy_id));
     CHECK(e.find(thread, e.find("\"threads\":[")) != std::string::npos);
     CHECK(cpuopt::sampler::take_event(2, 0, "").empty());  // drained, nothing new while off
+
+    // Job-thread focus: three threads sharing a start routine are the largest
+    // group, and each is sampled every tick when nothing is tracked.
+    stop.store(false);
+    HANDLE group[3];
+    for (auto& g : group) g = CreateThread(nullptr, 0, busy_thread, nullptr, 0, nullptr);
+    cpuopt::sampler::set_tracked({});
+    cpuopt::sampler::set_focus(3);
+    cpuopt::toggles.store(cpuopt::sample_profile);
+    Sleep(2300);  // past the sampler's 2 s thread refresh
+    cpuopt::sampler::take_event(3, 1, "focus");
+    Sleep(400);
+    cpuopt::toggles.store(0);
+    Sleep(60);
+    const auto f = cpuopt::sampler::take_event(4, 1, "focus");
+    stop.store(true);
+    WaitForMultipleObjects(3, group, TRUE, INFINITE);
+    bool all = true;
+    long long least = 1LL << 40;
+    for (auto g : group) {
+        char key[32];
+        std::snprintf(key, sizeof(key), "[%lu,", static_cast<unsigned long>(GetThreadId(g)));
+        const auto at = f.find(key, f.find("\"threads\":["));
+        const auto n = at == std::string::npos ? 0 : std::atoll(f.c_str() + at + std::strlen(key));
+        least = std::min(least, n);
+        all = all && n > 30;  // rotation alone gives each a few
+        CloseHandle(g);
+    }
+    std::printf("sampler focus: fewest samples of the three %lld\n", least);
+    CHECK(all);
+    cpuopt::sampler::set_focus(0);
 }
 
 void start_event_test() {

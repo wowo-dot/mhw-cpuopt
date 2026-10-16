@@ -227,6 +227,7 @@ void poll_control(State& s, bool initial) {
     if (parsed->window_ms) s.window_ms = *parsed->window_ms;
     if (parsed->job_threads) s.job_threads = *parsed->job_threads;
     if (parsed->cpu_count) s.cpu_count = *parsed->cpu_count;
+    if (parsed->sample_jobs) sampler::set_focus(*parsed->sample_jobs);
     // The processors the game keeps: the largest L3's (cache_ccd), the first
     // cpu_count of those or of all (smaller_cpu); job rounds sized to match.
     DWORD_PTR mask = on(cache_ccd) && s.ccd.found ? s.ccd.mask : 0;

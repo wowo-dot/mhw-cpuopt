@@ -66,6 +66,9 @@ std::optional<Control> parse_control(std::string_view text) {
         } else if (key == "cpu_count") {
             c.cpu_count = number(value);
             if (!c.cpu_count || *c.cpu_count < 2 || *c.cpu_count > 64) return std::nullopt;
+        } else if (key == "sample_jobs") {
+            c.sample_jobs = number(value);
+            if (!c.sample_jobs || *c.sample_jobs > 32) return std::nullopt;
         } else if (key == "marker") {
             if (value.size() > 64) return std::nullopt;
             for (const char ch : value)

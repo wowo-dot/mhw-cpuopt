@@ -29,6 +29,7 @@ struct Thread {
     DWORD id{};
     HANDLE handle{};
     std::uintptr_t teb{};
+    std::uintptr_t start{};  // Win32 start address
 };
 struct Stack {
     std::uint64_t hash{};
@@ -87,6 +88,10 @@ HANDLE run_thread{};
 // Set by the window thread, read by the sampler at each tick.
 std::array<std::atomic<DWORD>, tracked_capacity> tracked{};
 std::array<std::atomic<DWORD>, 8> excluded{};
+// Job-thread focus (set_focus): the shared start address, refreshed with the threads.
+std::atomic<unsigned> focus_per_tick{};
+std::uintptr_t focus_start{};
+unsigned next_focus{};
 
 using QueryThread = LONG(NTAPI*)(HANDLE, int, void*, ULONG, ULONG*);
 QueryThread query_thread{};
@@ -175,7 +180,21 @@ void refresh_threads() noexcept {
             CloseHandle(handle);
             continue;
         }
-        threads[thread_count++] = {live[i], handle, reinterpret_cast<std::uintptr_t>(info.teb)};
+        void* start{};
+        if (query_thread(handle, 9 /* ThreadQuerySetWin32StartAddress */, &start, sizeof(start), nullptr) < 0) start = nullptr;
+        threads[thread_count++] = {live[i], handle, reinterpret_cast<std::uintptr_t>(info.teb), reinterpret_cast<std::uintptr_t>(start)};
+    }
+    // The start address most threads share: the job threads'.
+    focus_start = 0;
+    unsigned best = 1;
+    for (unsigned i = 0; i < thread_count; ++i) {
+        if (!threads[i].start || threads[i].start == focus_start) continue;
+        unsigned same = 0;
+        for (unsigned j = 0; j < thread_count; ++j) same += threads[j].start == threads[i].start ? 1 : 0;
+        if (same > best) {
+            best = same;
+            focus_start = threads[i].start;
+        }
     }
 }
 const Module* find(std::uintptr_t pc) noexcept {
@@ -411,6 +430,13 @@ DWORD WINAPI run(void*) noexcept {
             sample(t, spinning);
             ++k;
         }
+        const auto focus = focus_per_tick.load(std::memory_order_relaxed);
+        for (unsigned k = 0, tries = 0; k < focus && focus_start && thread_count && tries < thread_count; ++tries) {
+            const auto& t = threads[next_focus++ % thread_count];
+            if (t.start != focus_start || is_tracked(t.id)) continue;
+            sample(t, spinning);
+            ++k;
+        }
         AcquireSRWLockExclusive(&lock);
         ++tables[active]->ticks;
         ReleaseSRWLockExclusive(&lock);
@@ -460,6 +486,8 @@ void set_spin_probe(std::uintptr_t begin, std::uintptr_t end, std::uintptr_t glo
     spin_end.store(end);
     spin_begin.store(begin);
 }
+
+void set_focus(unsigned per_tick) noexcept { focus_per_tick.store(per_tick); }
 
 void set_excluded(std::span<const DWORD> list) noexcept {
     for (unsigned i = 0; i < excluded.size(); ++i) excluded[i].store(i < list.size() ? list[i] : 0, std::memory_order_relaxed);

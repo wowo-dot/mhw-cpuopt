@@ -25,6 +25,10 @@ void set_excluded(std::span<const DWORD> threads) noexcept;
 // When a sampled thread is in [begin, end) (executeJob's spin), also read
 // sMain's job slots (spin_probe.hpp) through the sMain pointer at `global`.
 void set_spin_probe(std::uintptr_t begin, std::uintptr_t end, std::uintptr_t global) noexcept;
+// Job-thread focus: besides the tracked threads and the rotation, sample
+// `per_tick` threads each tick from the largest group of threads sharing a
+// start address (the game's 30 job threads), in turn; 0 = off. Any thread.
+void set_focus(unsigned per_tick) noexcept;
 // The "profile" event with the samples since the last call, or empty.
 std::string take_event(double t_ms, unsigned toggles, const std::string& marker);
 }  // namespace cpuopt::sampler

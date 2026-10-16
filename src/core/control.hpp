@@ -18,6 +18,7 @@ namespace cpuopt {
 //   spin_us=<10..5000>            toggle spin_workers: how long job threads spin after a round
 //   unit_us=<1..100000>           toggle unit_threshold: sMhUnit's line threshold
 //   cpu_count=<2..64>             toggle smaller_cpu: logical processors the game keeps
+//   sample_jobs=<0..32>           toggle sample_profile: job threads sampled per tick (0 off)
 // Blank lines, [sections] and lines starting with ';' or '#' are ignored. A
 // malformed line rejects the whole file, so a half-written file changes nothing.
 struct Control {
@@ -26,7 +27,7 @@ struct Control {
     std::optional<unsigned> window_ms;
     std::optional<unsigned> job_threads;
     std::optional<unsigned> job_order, order_us;
-    std::optional<unsigned> inline_us, time_ms, spin_us, unit_us, cpu_count;
+    std::optional<unsigned> inline_us, time_ms, spin_us, unit_us, cpu_count, sample_jobs;
     bool operator==(const Control&) const = default;
 };
 std::optional<Control> parse_control(std::string_view text);
