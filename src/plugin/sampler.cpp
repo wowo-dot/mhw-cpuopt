@@ -34,7 +34,7 @@ struct Thread {
 struct Stack {
     std::uint64_t hash{};
     std::uint32_t tid{}, count{};
-    std::uint16_t depth{}, flags{};  // flags: 1 cut short, 2 taken while the game thread spun
+    std::uint16_t depth{}, flags{};  // flags: 1 cut short, 2 taken while the game thread spun, 4 followed job
     std::array<std::uint64_t, depth_capacity> frames;  // module id << 32 | rva
 };
 struct ThreadStat {
@@ -61,6 +61,7 @@ struct Table {
     std::uint64_t samples{}, overflow{}, ticks{};
     std::int64_t opened{};  // qpc when the table started collecting
     std::uint64_t spin_samples{}, spin_unreadable{}, spin_overflow{};
+    std::uint64_t follow_samples{}, follow_dropped{}, follow_missing{};
     std::array<SpinRound, spin_round_capacity> spin_rounds{};
     std::array<Leaf, leaf_capacity> leaves{};
     unsigned leaves_used{};
@@ -88,6 +89,12 @@ HANDLE run_thread{};
 // Set by the window thread, read by the sampler at each tick.
 std::array<std::atomic<DWORD>, tracked_capacity> tracked{};
 std::array<std::atomic<DWORD>, 8> excluded{};
+// Follow mode (follow_begin): the thread running the followed job, 0 when
+// none; the event wakes the sampler thread.
+std::atomic<DWORD> follow_tid{};
+HANDLE follow_event{};
+std::atomic<unsigned> follow_gap_us{20};
+std::atomic<std::uint64_t> follow_jobs{};
 // Job-thread focus (set_focus): the shared start address, refreshed with the threads.
 std::atomic<unsigned> focus_per_tick{};
 std::uintptr_t focus_start{};
@@ -290,6 +297,7 @@ void record(DWORD tid, const std::uint64_t* frames, unsigned depth, std::uint16_
     auto& t = *tables[active];
     if (leaf) count_leaf(t, leaf - 1, game);
     ++t.samples;
+    if (flags & 4) ++t.follow_samples;
     if (auto* s = stat_of(t, tid)) ++s->samples;
     auto slot = static_cast<unsigned>(hash >> 32) & (stack_capacity - 1);
     bool stored = false;
@@ -355,7 +363,8 @@ void probe(std::uint64_t caller, std::uintptr_t rbx, std::uint32_t released) noe
     ReleaseSRWLockExclusive(&lock);
 }
 // Samples one thread; true if it was the game thread spinning in executeJob.
-bool sample(const Thread& t, bool during_spin) noexcept {
+// `followed`: only while it still runs the followed job (follow_tid).
+bool sample(const Thread& t, bool during_spin, bool followed = false) noexcept {
     std::array<std::uintptr_t, depth_capacity> pcs;
     CONTEXT c{};
     c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
@@ -367,7 +376,14 @@ bool sample(const Thread& t, bool during_spin) noexcept {
     unsigned n{};
     std::uintptr_t rip{}, rbx{};
     std::uint32_t rdi{};
-    if (GetThreadContext(t.handle, &c)) {
+    if (GetThreadContext(t.handle, &c)) {  // returns once the thread has stopped
+        if (followed && follow_tid.load(std::memory_order_acquire) != t.id) {
+            ResumeThread(t.handle);
+            AcquireSRWLockExclusive(&lock);
+            ++tables[active]->follow_dropped;
+            ReleaseSRWLockExclusive(&lock);
+            return false;
+        }
         rip = static_cast<std::uintptr_t>(c.Rip);  // before the unwind changes them
         rbx = static_cast<std::uintptr_t>(c.Rbx);
         rdi = static_cast<std::uint32_t>(c.Rdi);
@@ -381,11 +397,40 @@ bool sample(const Thread& t, bool during_spin) noexcept {
     std::array<std::uint64_t, depth_capacity> frames;
     for (unsigned i = 0; i < n; ++i) frames[i] = frame_of(pcs[i], i == 0);
     const bool in_game = pcs[0] >= game_base && pcs[0] < game_end;
-    record(t.id, frames.data(), n, static_cast<std::uint16_t>((cut ? 1 : 0) | (during_spin ? 2 : 0)),
+    record(t.id, frames.data(), n, static_cast<std::uint16_t>((cut ? 1 : 0) | (during_spin ? 2 : 0) | (followed ? 4 : 0)),
            in_game ? static_cast<std::uint32_t>(pcs[0] - game_base) + 1 : 0, t.id == tracked[0].load(std::memory_order_relaxed));
     const bool spinning = rip >= spin_begin.load(std::memory_order_relaxed) && rip < spin_end.load(std::memory_order_relaxed);
     if (spinning) probe(n > 1 ? frames[1] : 0, rbx, rdi);
     return spinning;
+}
+// The followed job's thread, every follow_gap_us until the job ends (at
+// most 20 ms; the sampling itself pauses the job, so it runs longer).
+void follow() noexcept {
+    const DWORD tid = follow_tid.load(std::memory_order_acquire);
+    if (!tid) return;
+    const Thread* t = nullptr;
+    for (unsigned i = 0; i < thread_count && !t; ++i)
+        if (threads[i].id == tid) t = &threads[i];
+    if (!t) {
+        AcquireSRWLockExclusive(&lock);
+        ++tables[active]->follow_missing;
+        ReleaseSRWLockExclusive(&lock);
+        return;
+    }
+    const auto f = qpc_frequency();
+    const auto gap = f * std::int64_t(follow_gap_us.load(std::memory_order_relaxed)) / 1000000;
+    const auto limit = qpc_now() + f / 50;
+    auto next = qpc_now();
+    while (follow_tid.load(std::memory_order_acquire) == tid) {
+        sample(*t, false, true);
+        next += gap;
+        auto now = qpc_now();
+        if (now >= limit) break;
+        while (now < next && follow_tid.load(std::memory_order_relaxed) == tid) {
+            _mm_pause();
+            now = qpc_now();
+        }
+    }
 }
 bool is_tracked(DWORD id) noexcept {
     for (const auto& t : tracked)
@@ -444,7 +489,15 @@ DWORD WINAPI run(void*) noexcept {
             LARGE_INTEGER due{};
             due.QuadPart = -10000;  // 1 ms
             SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
-            WaitForSingleObject(timer, 20);
+            if (follow_event) {
+                // Between ticks, follow the followed job each time it starts
+                // (the timer comes first when both are signalled).
+                const HANDLE waits[2] = {timer, follow_event};
+                while (WaitForMultipleObjects(2, waits, FALSE, 20) == WAIT_OBJECT_0 + 1)
+                    if (on(sample_profile)) follow();
+            } else {
+                WaitForSingleObject(timer, 20);
+            }
         } else {
             Sleep(1);
         }
@@ -468,6 +521,7 @@ void start() noexcept {
     game_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(game_base);
     game_end = game_base + reinterpret_cast<const IMAGE_NT_HEADERS64*>(game_base + static_cast<std::uintptr_t>(dos->e_lfanew))->OptionalHeader.SizeOfImage;
+    follow_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);  // auto-reset; null: no follow mode
     run_thread = CreateThread(nullptr, 0, run, nullptr, 0, nullptr);
 }
 
@@ -488,6 +542,16 @@ void set_spin_probe(std::uintptr_t begin, std::uintptr_t end, std::uintptr_t glo
 }
 
 void set_focus(unsigned per_tick) noexcept { focus_per_tick.store(per_tick); }
+void follow_begin(DWORD tid) noexcept {
+    follow_tid.store(tid, std::memory_order_release);
+    follow_jobs.fetch_add(1, std::memory_order_relaxed);
+    if (follow_event) SetEvent(follow_event);
+}
+void follow_end(DWORD tid) noexcept {
+    auto expected = tid;
+    follow_tid.compare_exchange_strong(expected, 0, std::memory_order_release);
+}
+void set_follow_gap(unsigned gap_us) noexcept { follow_gap_us.store(gap_us); }
 
 void set_excluded(std::span<const DWORD> list) noexcept {
     for (unsigned i = 0; i < excluded.size(); ++i) excluded[i].store(i < list.size() ? list[i] : 0, std::memory_order_relaxed);
@@ -531,6 +595,17 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
         json::number(out, t.spin_unreadable);
         json::key(out, "overflow");
         json::number(out, t.spin_overflow);
+        out += '}';
+        json::key(out, "follow");
+        out += '{';
+        json::key(out, "jobs");
+        json::number(out, follow_jobs.exchange(0));
+        json::key(out, "samples");
+        json::number(out, t.follow_samples);
+        json::key(out, "dropped");
+        json::number(out, t.follow_dropped);
+        json::key(out, "missing");
+        json::number(out, t.follow_missing);
         out += '}';
         json::key(out, "tracked");
         out += '[';
@@ -658,6 +733,7 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
     t.used = t.thread_count = 0;
     t.samples = t.overflow = t.ticks = 0;
     t.spin_samples = t.spin_unreadable = t.spin_overflow = 0;
+    t.follow_samples = t.follow_dropped = t.follow_missing = 0;
     for (auto& r : t.spin_rounds) r = {};
     for (auto& l : t.leaves) l = {};
     t.leaves_used = 0;

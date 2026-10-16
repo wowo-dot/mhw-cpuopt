@@ -21,6 +21,9 @@ namespace cpuopt {
 //   sample_jobs=<0..32>           toggle sample_profile: job threads sampled per tick (0 off)
 //   max_fps=<60..1000>            toggle uncap: the frame cap to set
 //   margin_us=<50..2000>          toggle sleep_limiter: the spin left before the limiter's deadline
+//   follow=<vtable RVA>           toggles time_jobs + sample_profile: sample the thread running a job
+//                                 of this class while it runs (0 off; hex with 0x)
+//   follow_us=<5..1000>           follow mode: the gap between its samples
 // Blank lines, [sections] and lines starting with ';' or '#' are ignored. A
 // malformed line rejects the whole file, so a half-written file changes nothing.
 struct Control {
@@ -29,7 +32,7 @@ struct Control {
     std::optional<unsigned> window_ms;
     std::optional<unsigned> job_threads;
     std::optional<unsigned> job_order, order_us;
-    std::optional<unsigned> inline_us, time_ms, spin_us, unit_us, cpu_count, sample_jobs, max_fps, margin_us;
+    std::optional<unsigned> inline_us, time_ms, spin_us, unit_us, cpu_count, sample_jobs, max_fps, margin_us, follow, follow_us;
     bool operator==(const Control&) const = default;
 };
 std::optional<Control> parse_control(std::string_view text);

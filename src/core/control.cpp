@@ -75,6 +75,12 @@ std::optional<Control> parse_control(std::string_view text) {
         } else if (key == "margin_us") {
             c.margin_us = number(value);
             if (!c.margin_us || *c.margin_us < 50 || *c.margin_us > 2000) return std::nullopt;
+        } else if (key == "follow") {
+            c.follow = number(value);
+            if (!c.follow) return std::nullopt;
+        } else if (key == "follow_us") {
+            c.follow_us = number(value);
+            if (!c.follow_us || *c.follow_us < 5 || *c.follow_us > 1000) return std::nullopt;
         } else if (key == "marker") {
             if (value.size() > 64) return std::nullopt;
             for (const char ch : value)

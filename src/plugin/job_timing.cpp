@@ -2,6 +2,7 @@
 #include "../core/json.hpp"
 #include "frame_budget.hpp"
 #include "log.hpp"
+#include "sampler.hpp"
 #include "worker_spin.hpp"
 #include <windows.h>
 #include <intrin.h>
@@ -19,13 +20,20 @@ std::atomic<bool> measuring{};
 // Game thread only: executeJob runs one round at a time, on the game thread.
 std::array<Record, capacity> records;
 
+std::atomic<std::uintptr_t> follow_vtable{};
+std::uintptr_t vtable_of(std::uintptr_t context) noexcept;
+
 using Job = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
 // Runs in place of every job of a timed round, on whichever thread claims it.
 std::uintptr_t job_thunk(Record* r, std::uintptr_t a2, std::uintptr_t a3, std::uintptr_t a4) {
     r->thread = GetCurrentThreadId();
+    const auto follow = follow_vtable.load(std::memory_order_relaxed);
+    const bool followed = follow && vtable_of(r->context) == follow;
+    if (followed) sampler::follow_begin(r->thread);
     r->start = __rdtsc();
     const auto result = reinterpret_cast<Job>(r->function)(r->context, a2, a3, a4);
     r->end = __rdtsc();
+    if (followed) sampler::follow_end(r->thread);
     return result;
 }
 
@@ -396,6 +404,7 @@ void merge(std::uintptr_t caller, const Round& r, std::uint32_t n) noexcept {
 
 ExecuteJob* next_slot() noexcept { return &next_fn; }
 void set_trace_every(std::uint32_t every) noexcept { trace_every.store(every); }
+void set_follow(std::uintptr_t vtable) noexcept { follow_vtable.store(vtable); }
 void set_measuring(bool on) noexcept {
     if (on && !traces) {
         try {

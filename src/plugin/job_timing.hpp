@@ -25,6 +25,10 @@ void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std:
 // Where al.hooks writes the function to continue with.
 ExecuteJob* next_slot() noexcept;
 void set_measuring(bool on) noexcept;
+// Follow mode for the sampler (sampler.hpp): while measuring, a job whose
+// object's vtable is `vtable` (an address; 0 = off) tells the sampler which
+// thread runs it, from its start to its return.
+void set_follow(std::uintptr_t vtable) noexcept;
 
 // One timed job.
 struct Record {

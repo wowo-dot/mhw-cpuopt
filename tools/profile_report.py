@@ -149,6 +149,7 @@ def main():
     p.add_argument('--top', type=int, default=30)
     p.add_argument('--folded', type=Path, help='write folded stacks (flame graph input) for the shown threads')
     p.add_argument('--leaves', type=int, default=0, help="list the game's N hottest instructions")
+    p.add_argument('--followed', action='store_true', help='only the follow mode\'s samples (flag 4), all threads as one')
     a = p.parse_args()
     run = run_folder(a.run)
     log = run / f'cpuopt-{a.pid}.jsonl' if a.pid else newest_log(run)
@@ -178,6 +179,14 @@ def main():
         ms += e['ms']
         names = e['modules']
         frames = [(names[m] if m != UNKNOWN and m < len(names) else None, r) for m, r in e['frames']]
+        if a.followed:
+            f = e.get('follow', {})
+            failed['FOLLOWED'] += f.get('dropped', 0)
+            for tid, count, flags, stack in e['stacks']:
+                if flags & 4:
+                    samples['FOLLOWED'] += count
+                    per_thread['FOLLOWED'][tuple(frames[i] for i in stack)] += count
+            continue
         for tid, n, bad in e['threads']:
             samples[tid] += n
             failed[tid] += bad
@@ -185,6 +194,12 @@ def main():
             per_thread[tid][tuple(frames[i] for i in stack)] += count
     print(f'{log.name}: {len(profiles)} profile windows, {ms / 1000:.1f} s, markers {sorted({e["marker"] for e in profiles})}, '
           f'toggles {sorted({e["toggles"] for e in profiles})}')
+    if a.followed:
+        jobs = sum(e.get('follow', {}).get('jobs', 0) for e in profiles)
+        print(f'followed: {jobs} jobs, {samples["FOLLOWED"]} samples ({samples["FOLLOWED"] / max(jobs, 1):.1f} a job), '
+              f'{failed["FOLLOWED"]} dropped (the job had ended), '
+              f'{sum(e.get("follow", {}).get("missing", 0) for e in profiles)} times its thread was unknown')
+        roles['FOLLOWED'] = 'FOLLOWED JOB'
     folded = []
     # The game and present threads first, then the most sampled.
     order = sorted(samples, key=lambda t: (t not in roles, roles.get(t, ""), -samples[t]))[:a.threads]

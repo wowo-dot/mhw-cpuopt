@@ -80,6 +80,8 @@ struct State {
     bool budget{};                        // the frame_budget detours are in
     unsigned max_fps{1000};               // toggle uncap: the cap to set
     unsigned margin_us{500};              // toggle sleep_limiter: the spin left before the deadline
+    unsigned follow{};                    // follow mode: the followed class's vtable RVA (0 off)
+    unsigned follow_us{20};               // follow mode: the gap between samples
     bool running{};                       // the steam_running change is in
     bool prim_buffer{};                   // the prim ring's memory has been reported
     unsigned window_ms{5000};
@@ -238,6 +240,10 @@ void poll_control(State& s, bool initial) {
     if (parsed->sample_jobs) sampler::set_focus(*parsed->sample_jobs);
     if (parsed->max_fps) s.max_fps = *parsed->max_fps;
     if (parsed->margin_us) s.margin_us = *parsed->margin_us;
+    if (parsed->follow) s.follow = *parsed->follow;
+    if (parsed->follow_us) s.follow_us = *parsed->follow_us;
+    sampler::set_follow_gap(s.follow_us);
+    job_timing::set_follow(s.follow ? reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) + s.follow : 0);
     frame_cap::request(on(uncap) ? s.max_fps : 0);  // applied on the game thread at the next frame
     // The frame budget: its two detours, and the round clock in the executeJob
     // detour. The timing detour also carries the sleep limiter's wait.
@@ -347,6 +353,10 @@ void poll_control(State& s, bool initial) {
     json::number(out, std::uint64_t(s.max_fps));
     json::key(out, "margin_us");
     json::number(out, std::uint64_t(s.margin_us));
+    json::key(out, "follow");
+    json::number(out, std::uint64_t(s.follow));
+    json::key(out, "follow_us");
+    json::number(out, std::uint64_t(s.follow_us));
     out += '}';
     event_log.write(out);
 }

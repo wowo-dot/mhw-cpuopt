@@ -104,6 +104,19 @@ std::uint32_t rva_of(const void* p) {
     return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(p) - reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)));
 }
 // Value after "key": in a JSON line (numbers only).
+// A stand-in job of the followed class: 1 ms of work announced to the
+// sampler's follow mode, then 2 ms idle.
+DWORD WINAPI followed_job_thread(void*) {
+    while (!stop.load()) {
+        cpuopt::sampler::follow_begin(GetCurrentThreadId());
+        const auto due = cpuopt::qpc_now() + cpuopt::qpc_frequency() / 1000;
+        while (cpuopt::qpc_now() < due) {}
+        cpuopt::sampler::follow_end(GetCurrentThreadId());
+        Sleep(2);
+    }
+    return 0;
+}
+
 long long number_after(const std::string& text, const std::string& key) {
     const auto at = text.find("\"" + key + "\":");
     return at == std::string::npos ? -1 : std::atoll(text.c_str() + at + key.size() + 3);
@@ -1459,6 +1472,36 @@ void census_and_sampler_test() {
     std::printf("sampler focus: fewest samples of the three %lld\n", least);
     CHECK(all);
     cpuopt::sampler::set_focus(0);
+
+    // Follow mode: the thread is sampled every 20 us while its job runs, and
+    // only then (flag 4 on its stacks).
+    stop.store(false);
+    const auto job = CreateThread(nullptr, 0, followed_job_thread, nullptr, 0, nullptr);
+    cpuopt::sampler::set_follow_gap(20);
+    cpuopt::toggles.store(cpuopt::sample_profile);
+    Sleep(2300);  // past the thread refresh
+    cpuopt::sampler::take_event(5, 1, "follow");
+    Sleep(500);
+    cpuopt::toggles.store(0);
+    Sleep(60);
+    const auto fo = cpuopt::sampler::take_event(6, 1, "follow");
+    stop.store(true);
+    WaitForSingleObject(job, INFINITE);
+    const auto block = fo.substr(fo.find("\"follow\":{"));
+    const auto jobs = number_after(block, "jobs"), followed = number_after(block, "samples");
+    std::printf("sampler follow: %lld jobs, %lld samples, %lld dropped, %lld missing\n", jobs, followed,
+                number_after(block, "dropped"), number_after(block, "missing"));
+    CHECK(jobs > 80 && followed > jobs * 3);
+    char flagged[48];
+    std::snprintf(flagged, sizeof(flagged), "[%lu,", static_cast<unsigned long>(GetThreadId(job)));
+    bool has_flag4 = false;
+    const auto stacks = fo.find("\"stacks\":[");
+    for (auto at = stacks; stacks != std::string::npos && (at = fo.find(flagged, at + 1)) != std::string::npos;) {
+        const auto comma = fo.find(',', at + std::strlen(flagged));  // past the count
+        if (comma != std::string::npos && (std::atoi(fo.c_str() + comma + 1) & 4)) has_flag4 = true;
+    }
+    CHECK(has_flag4);
+    CloseHandle(job);
 }
 
 void start_event_test() {

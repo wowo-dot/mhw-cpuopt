@@ -107,6 +107,10 @@ void control() {
     CHECK(parse_control("margin_us=500")->margin_us == 500u);
     CHECK(!parse_control("margin_us=49"));
     CHECK(!parse_control("margin_us=2001"));
+    CHECK(parse_control("follow=0x34a6d18")->follow == 0x34a6d18u);
+    CHECK(parse_control("follow=0")->follow == 0u);
+    CHECK(parse_control("follow_us=20")->follow_us == 20u);
+    CHECK(!parse_control("follow_us=4"));
     CHECK(parse_control("cpu_count=12")->cpu_count == 12u);
     CHECK(!parse_control("cpu_count=1"));
     CHECK(!parse_control("cpu_count=65"));
