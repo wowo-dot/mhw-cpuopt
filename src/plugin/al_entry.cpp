@@ -330,6 +330,41 @@ bool server_hooks(bool on, const char** reason) noexcept {
     return ok;
 }
 
+// Research: PIX's GPU capture layer (Microsoft PIX, installed by the user),
+// loaded at PRE_MAIN, before the game creates its D3D12 device, so PIX can
+// attach to the game launched through MO2 as always. Only while
+// <plugin folder>\load-pix-capturer.txt exists: the file is the per-session
+// switch, never part of a package. The newest PIX under Program Files.
+void load_pix_capturer(const std::wstring& folder) noexcept {
+    if (GetFileAttributesW((folder + L"\\load-pix-capturer.txt").c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    wchar_t program_files[MAX_PATH]{};
+    const auto n = GetEnvironmentVariableW(L"ProgramFiles", program_files, MAX_PATH);
+    std::wstring best;
+    if (n && n < MAX_PATH) {
+        const std::wstring root = std::wstring(program_files) + L"\\Microsoft PIX\\";
+        WIN32_FIND_DATAW found{};
+        const auto search = FindFirstFileW((root + L"*").c_str(), &found);
+        if (search != INVALID_HANDLE_VALUE) {
+            do {
+                const std::wstring name = found.cFileName;
+                if (!(found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || name == L"." || name == L"..") continue;
+                if (GetFileAttributesW((root + name + L"\\WinPixGpuCapturer.dll").c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+                // Version folders ("2509.25"): numbers compared as numbers.
+                if (best.empty() || CompareStringEx(LOCALE_NAME_INVARIANT, SORT_DIGITSASNUMBERS, name.c_str(), -1, best.c_str(), -1, nullptr,
+                                                    nullptr, 0) == CSTR_GREATER_THAN)
+                    best = name;
+            } while (FindNextFileW(search, &found));
+            FindClose(search);
+        }
+        if (!best.empty()) best = root + best + L"\\WinPixGpuCapturer.dll";
+    }
+    const auto module = best.empty() ? nullptr : LoadLibraryW(best.c_str());
+    cpuopt::runtime::note("pix_capturer", "loaded", module ? 1 : 0);
+    say(module ? AL_LOG_INFO : AL_LOG_WARNING, module ? "PIX GPU capturer loaded: " + cpuopt::utf8(best)
+                                                   : best.empty() ? std::string("load-pix-capturer.txt: no PIX under Program Files\\Microsoft PIX")
+                                                                  : "PIX GPU capturer could not be loaded: " + cpuopt::utf8(best));
+}
+
 // Player mode's hotkey: flips the master switch (runtime::flip_enabled). AL
 // calls it on the game's frame thread; add and remove work from any thread.
 void AL_CALL on_hotkey(al_plugin_t*, std::uint32_t, void*) { cpuopt::runtime::flip_enabled(); }
@@ -579,6 +614,7 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             return AL_OK;
         }
         say(AL_LOG_INFO, std::string("cpuopt ") + CPUOPT_VERSION + (cpuopt::runtime::player() ? ", " : ", research run, log ") + reason);
+        load_pix_capturer(host.folder);
         // Player mode: cpuopt's page in CMFM's Mods menu, when CMFM is there.
         if (cpuopt::runtime::player()) {
             namespace menu = cpuopt::menu;

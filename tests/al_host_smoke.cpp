@@ -498,6 +498,7 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     CHECK(log.find("\"event\":\"benchmark\"") != std::string::npos && log.find("\"what\":\"paused\"") != std::string::npos);
     CHECK(log.find("\"marker\":\"player\"", log.find("\"event\":\"benchmark\"")) != std::string::npos);  // its own settings back
     CHECK(log.find("\"event\":\"modules\"") != std::string::npos && log.find("al_d3d12_subscribed") == std::string::npos);
+    CHECK(log.find("\"event\":\"pix_capturer\"") != std::string::npos);
     CHECK(lines_with(log, "\"event\":\"bench_window\"").size() >= 16 + 4 + 4);
     CHECK(log.find("\"stopped\":\"a setting changed\"") != std::string::npos && log.find("\"stopped\":\"the game closed\"") != std::string::npos);
     CHECK(read_all(folder + L"\\cpuopt-benchmark.txt").find("Stopped early (the game closed): ") != std::string::npos);
@@ -517,6 +518,7 @@ int wmain(int argc, wchar_t** argv) {
     for (const auto& d : {root, plugins, folder, run}) CreateDirectoryW(d.c_str(), nullptr);
     const auto dll = folder + L"\\cpuopt.dll";
     CHECK(CopyFileW(source.c_str(), dll.c_str(), FALSE));
+    if (player) write_all(folder + L"\\load-pix-capturer.txt", "");  // the research switch: tried, logged either way
     if (!player) {
         write_all(dll + L".output-dir", utf8(run) + "\r\n");
         write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-a\n");
