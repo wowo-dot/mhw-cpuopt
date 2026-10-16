@@ -3,6 +3,7 @@
 #include "../core/json.hpp"
 #include "../core/toggles.hpp"
 #include "cpu_limit.hpp"
+#include "frame_cap.hpp"
 #include "frame_events.hpp"
 #include "job_timing.hpp"
 #include "log.hpp"
@@ -75,6 +76,8 @@ struct State {
     unsigned unit_us{40};                 // toggle unit_threshold: the threshold to set (al-15: 40-50 best)
     unsigned cpu_count{12};               // toggle smaller_cpu: logical processors kept
     cpu_limit::Ccd ccd;                   // toggle cache_ccd: the largest L3's processors
+    bool budget{};                        // the frame_budget detours are in
+    unsigned max_fps{1000};               // toggle uncap: the cap to set
     bool running{};                       // the steam_running change is in
     bool prim_buffer{};                   // the prim ring's memory has been reported
     unsigned window_ms{5000};
@@ -151,6 +154,8 @@ void write_window(State& s) {
     unit_lines::append(out);
     steam_running::append(out);
     cpu_limit::append(out);
+    frame_budget::append(out);
+    frame_cap::append(out);
     json::key(out, "prim_stores");
     out += s.prim ? "true" : "false";
     if (s.poller) append_poller(out, frame_clock::take(), ms);
@@ -228,6 +233,17 @@ void poll_control(State& s, bool initial) {
     if (parsed->job_threads) s.job_threads = *parsed->job_threads;
     if (parsed->cpu_count) s.cpu_count = *parsed->cpu_count;
     if (parsed->sample_jobs) sampler::set_focus(*parsed->sample_jobs);
+    if (parsed->max_fps) s.max_fps = *parsed->max_fps;
+    frame_cap::request(on(uncap) ? s.max_fps : 0);  // applied on the game thread at the next frame
+    // The frame budget: its two detours, and the round clock in the executeJob detour.
+    if (!on(budget)) frame_budget::set_active(false);
+    if (on(budget) != s.budget && host.budget_hooks) {
+        const char* why = "";
+        const bool ok = host.budget_hooks(on(budget), &why);
+        s.budget = on(budget) ? ok : !ok;
+        switched("budget_hooks", s.budget, why);
+    }
+    if (on(budget) && s.budget && s.hook) frame_budget::set_active(true);
     // The processors the game keeps: the largest L3's (cache_ccd), the first
     // cpu_count of those or of all (smaller_cpu); job rounds sized to match.
     DWORD_PTR mask = on(cache_ccd) && s.ccd.found ? s.ccd.mask : 0;
@@ -245,7 +261,7 @@ void poll_control(State& s, bool initial) {
     unit_lines::request(on(unit_threshold) ? s.unit_us : 0);
     // One detour serves job timing, job order, inline rounds and the spinning
     // job threads' round announcements.
-    const bool need = on(time_jobs) || on(order_jobs) || on(inline_rounds) || on(spin_workers);
+    const bool need = on(time_jobs) || on(order_jobs) || on(inline_rounds) || on(spin_workers) || on(budget);
     if (need != s.hook && host.job_hook) {
         const char* why = "";
         const bool ok = host.job_hook(need, &why);
@@ -319,6 +335,8 @@ void poll_control(State& s, bool initial) {
     json::number(out, std::uint64_t(s.unit_us));
     json::key(out, "cpu_count");
     json::number(out, std::uint64_t(s.cpu_count));
+    json::key(out, "max_fps");
+    json::number(out, std::uint64_t(s.max_fps));
     out += '}';
     event_log.write(out);
 }
@@ -354,6 +372,8 @@ DWORD WINAPI worker(void* parameter) noexcept {
         event_log.write(server_time::discovery_event(host.server, now_ms(), host.scanner));
         event_log.write(worker_spin::discovery_event(host.spin, now_ms(), host.scanner));
         event_log.write(cpu_limit::ccd_event(s.ccd, now_ms()));
+        event_log.write(frame_budget::discovery_event(host.budget, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
+                                                      host.scanner));
         event_log.write(unit_lines::discovery_event(host.units, now_ms(), host.scanner));
         event_log.write(steam_running::discovery_event(host.running, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
                                                        host.scanner));

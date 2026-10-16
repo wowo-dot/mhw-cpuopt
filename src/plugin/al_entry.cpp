@@ -7,6 +7,8 @@
 // count (frame_events.hpp). EXITING stops every thread of ours.
 #include "al/al_plugin.h"
 #include "cpu_limit.hpp"
+#include "frame_budget.hpp"
+#include "frame_cap.hpp"
 #include "frame_clock.hpp"
 #include "frame_events.hpp"
 #include "image_scan.hpp"
@@ -48,6 +50,8 @@ std::uint32_t spin_handle{};                 // al.patch handle, 0 until first s
 std::uintptr_t spin_stub{};                  // its jump stub, made at PRE_MAIN
 cpuopt::steam_running::Discovery running{};  // the IsSteamRunning sites and stub, found at PRE_MAIN
 std::uint32_t running_handles[2]{};          // al.patch handles, 0 until first switched on
+cpuopt::frame_budget::Discovery budget{};    // the limiter's function and cD3DRender::present
+std::uint32_t budget_handles[2]{};           // al.hooks handles, 0 until first switched on
 SRWLOCK switch_lock = SRWLOCK_INIT;
 std::uintptr_t validated_renderer{};  // game thread only
 
@@ -231,6 +235,48 @@ bool running_patch(bool on, const char** reason) noexcept {
     return ok;
 }
 
+// The frame budget's detours (frame_budget.hpp): both or neither.
+bool budget_hooks(bool on, const char** reason) noexcept {
+    AcquireSRWLockExclusive(&switch_lock);
+    bool ok = true;
+    if (!hooks) {
+        ok = false;
+        *reason = "no al.hooks";
+    } else if (!budget.found) {
+        ok = false;
+        *reason = "the limiter's function or cD3DRender::present not found";
+    } else if (!budget_handles[0] && !budget_handles[1]) {
+        if (on) {
+            static const std::string timing(cpuopt::frame_budget::timing_signature), present(cpuopt::frame_budget::present_signature);
+            al_hook_t h{};
+            h.size = sizeof(h);
+            h.name = "sMain frame timing and limiter (cpuopt frame_budget)";
+            h.pattern = timing.c_str();
+            h.address = reinterpret_cast<void*>(budget.timing);
+            h.detour = reinterpret_cast<void*>(&cpuopt::frame_budget::timing_detour);
+            h.next = reinterpret_cast<void**>(cpuopt::frame_budget::timing_next());
+            budget_handles[0] = hooks->hook(self, &h);
+            h.name = "cD3DRender::present (cpuopt frame_budget)";
+            h.pattern = present.c_str();
+            h.address = reinterpret_cast<void*>(budget.present);
+            h.detour = reinterpret_cast<void*>(&cpuopt::frame_budget::present_detour);
+            h.next = reinterpret_cast<void**>(cpuopt::frame_budget::present_next());
+            budget_handles[1] = budget_handles[0] ? hooks->hook(self, &h) : 0;
+            ok = budget_handles[0] && budget_handles[1];
+            if (!ok && budget_handles[0]) hooks->set_enabled(self, budget_handles[0], 0);
+            *reason = ok ? "hooks registered" : "al.hooks refused a hook (see the plugin log)";
+        }
+    } else if (!budget_handles[0] || !budget_handles[1]) {
+        ok = false;
+        *reason = "a hook was refused earlier";
+    } else {
+        ok = hooks->set_enabled(self, budget_handles[0], on ? 1 : 0) == AL_OK && hooks->set_enabled(self, budget_handles[1], on ? 1 : 0) == AL_OK;
+        *reason = ok ? (on ? "hooks enabled" : "hooks disabled") : "set_enabled failed";
+    }
+    ReleaseSRWLockExclusive(&switch_lock);
+    return ok;
+}
+
 // The server_time detours (server_time.hpp): both or neither.
 bool server_hooks(bool on, const char** reason) noexcept {
     AcquireSRWLockExclusive(&switch_lock);
@@ -277,11 +323,14 @@ void AL_CALL on_frame(al_plugin_t*, al_frame_event_t event, const al_frame_info_
     if (!info) return;
     if (event == AL_FRAME_BEGIN) {
         cpuopt::frame_events::on_begin(info->qpc, GetCurrentThreadId());
+        cpuopt::frame_budget::on_begin(info->qpc);
         cpuopt::job_cap::on_begin();  // before the update: no job round runs now
+        cpuopt::frame_cap::on_begin();  // nor frame timing
         std::uint64_t counter{};
         if (cpuopt::frame_clock::read(validated_renderer, counter)) cpuopt::frame_events::on_render_counter(counter);
     } else if (event == AL_FRAME_END) {
         cpuopt::frame_events::on_end(info->qpc);
+        cpuopt::frame_budget::on_end(info->qpc);
     }
 }
 
@@ -291,7 +340,9 @@ void AL_CALL on_d3d12(al_plugin_t*, al_d3d12_event_t event, const void* data, vo
     if (event == AL_D3D12_PRE_PRESENT) {
         cpuopt::frame_events::on_present(present->present_qpc, present->previous_qpc, GetCurrentThreadId());
     } else if (event == AL_D3D12_POST_PRESENT) {
-        cpuopt::frame_events::on_present_returned(present->present_qpc, cpuopt::qpc_now());
+        const auto now = cpuopt::qpc_now();
+        cpuopt::frame_events::on_present_returned(present->present_qpc, now);
+        cpuopt::frame_budget::add_swapchain(now - present->present_qpc);
     }
 }
 
@@ -304,6 +355,8 @@ void AL_CALL on_phase(al_plugin_t*, al_phase_t phase, const void* data) {
         cpuopt::job_timing::set_measuring(false);  // rounds from now on run untouched
         cpuopt::job_timing::set_order(0, 0);
         cpuopt::job_timing::set_inline(false, 1);
+        cpuopt::frame_budget::set_active(false);
+        cpuopt::frame_cap::restore();
         cpuopt::server_time::set_active(false, 0);
         cpuopt::worker_spin::set_active(false, 0);  // job threads block again for the game's teardown
         cpuopt::unit_lines::restore();
@@ -399,6 +452,7 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             else cpuopt::job_timing::set_camera_return(camera_site[0] + cpuopt::job_timing::camera_return);
         }
         cpuopt::job_cap::set_target(base, host.job);
+        if (host.job.found) cpuopt::frame_cap::set_target(base + host.job.global_rva);
         // The sampler reads the job slots when it catches the game thread in
         // the spin (the spin signature's 20 bytes hold the whole loop).
         if (host.job.found) cpuopt::sampler::set_spin_probe(spin_site[0], spin_site[0] + 20, base + host.job.global_rva);
@@ -431,6 +485,14 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             host.units = cpuopt::unit_lines::discover(counts);
             if (host.units.found && host.job.found) cpuopt::unit_lines::set_target(base + host.job.global_rva);
         }
+        // The frame budget's two functions.
+        {
+            std::uintptr_t timing[2]{}, present[2]{};
+            const auto timing_count = find(cpuopt::frame_budget::timing_signature, timing, 2);
+            const auto present_count = find(cpuopt::frame_budget::present_signature, present, 2);
+            budget = cpuopt::frame_budget::discover(timing, timing_count, present, present_count);
+            host.budget = budget;
+        }
         // IsSteamRunning: its two per-frame calls, and their stub now.
         {
             std::uintptr_t poll[2]{}, lobby[2]{};
@@ -452,6 +514,7 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         host.server_hooks = server_hooks;
         host.spin_patch = spin_patch;
         host.running_patch = running_patch;
+        host.budget_hooks = budget_hooks;
         if (!cpuopt::runtime::start(reinterpret_cast<HMODULE>(&__ImageBase), host, reason)) {
             // Not measuring: no subscriptions, so AL hooks nothing for us.
             frame = nullptr;

@@ -1,4 +1,5 @@
 #pragma once
+#include "frame_budget.hpp"
 #include "frame_clock.hpp"
 #include "job_cap.hpp"
 #include "prim_stores.hpp"
@@ -31,12 +32,14 @@ struct Host {
     worker_spin::Discovery spin;    // the job threads' wait, searched at PRE_MAIN
     unit_lines::Discovery units;    // sMhUnit's line threshold, searched at PRE_MAIN
     steam_running::Discovery running;  // the two IsSteamRunning calls, searched at PRE_MAIN
+    frame_budget::Discovery budget;    // the limiter's function and cD3DRender::present
     // Put the prim_stores change and the server_time detours in or out;
     // false with the reason when they cannot. Any thread.
     bool (*prim_patch)(bool on, const char** reason) noexcept {};
     bool (*server_hooks)(bool on, const char** reason) noexcept {};
     bool (*spin_patch)(bool on, const char** reason) noexcept {};
     bool (*running_patch)(bool on, const char** reason) noexcept {};
+    bool (*budget_hooks)(bool on, const char** reason) noexcept {};
 };
 
 // al_plugin_init: reads the run folder from <folder>\cpuopt.dll.output-dir,

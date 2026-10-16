@@ -355,9 +355,9 @@ int wmain(int argc, wchar_t** argv) {
     al_init_t start{sizeof(al_init_t), 0, self, folder.c_str(), folder.c_str(), nullptr};
     CHECK(init(&api, &start) == AL_OK);
     CHECK(last_status == AL_STATUS_ACTIVE);
-    CHECK(scans == 17);  // the frame counter, the four job_cap signatures, executeJob, the camera call site,
+    CHECK(scans == 19);  // the frame counter, the four job_cap signatures, executeJob, the camera call site,
                          // sPrimitive's loop, the two server time calls, the job threads' wait, the four
-                         // sMhUnit signatures and the two IsSteamRunning calls
+                         // sMhUnit signatures, the frame budget's two functions and the two IsSteamRunning calls
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && present_callback);
     CHECK(present_mask == (AL_D3D12_EVENT_BIT(AL_D3D12_PRE_PRESENT) | AL_D3D12_EVENT_BIT(AL_D3D12_POST_PRESENT)));
 
@@ -376,7 +376,7 @@ int wmain(int argc, wchar_t** argv) {
     const auto capped = smain_field(0xD0), capped_participants = smain_field(0xCC);
     // Every switch: no al.patch here and no sPrimitive or server time code in
     // this exe, so those two say why; inline rounds learn the host's round.
-    write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-c\ntoggles=1023\ninline_us=500\ntime_ms=500\nspin_us=300\nunit_us=20\n");
+    write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-c\ntoggles=8191\ninline_us=500\ntime_ms=500\nspin_us=300\nunit_us=20\n");
     Sleep(1600);
     const unsigned alone = alone_rounds.load();
     write_all(run + L"\\control.ini", "toggles=banana\n");  // rejected, nothing changes
@@ -442,6 +442,10 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(text.find("\"event\":\"unit_lines\",\"t_ms\"") != std::string::npos && text.find("\"units\":{\"state\":\"no target\",") != std::string::npos);
     CHECK(text.find("\"event\":\"steam_running\",") != std::string::npos);
     CHECK(text.find("\"event\":\"running_patch\",\"on\":false,\"reason\":\"no al.patch\"") != std::string::npos);
+    CHECK(text.find("\"event\":\"frame_budget\",") != std::string::npos);
+    CHECK(text.find("\"event\":\"budget_hooks\",\"on\":false,\"reason\":\"the limiter's function or cD3DRender::present not found\"") !=
+          std::string::npos);
+    CHECK(text.find("\"budget\":{\"active\":false,") != std::string::npos);
     CHECK(text.find("\"event\":\"worker_spin\",") != std::string::npos);
     CHECK(text.find("\"event\":\"spin_patch\",\"on\":false,\"reason\":\"no al.patch\"") != std::string::npos);
     CHECK(text.find("\"spin\":{\"active\":false,") != std::string::npos);

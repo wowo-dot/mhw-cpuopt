@@ -30,8 +30,12 @@ enum Toggle : unsigned {
                               // processors and job rounds to as many threads (cpu_limit.hpp)
     cache_ccd = 2048U,        // the process confined to the processors sharing the largest L3 (the
                               // 3D V-Cache die), job rounds sized to match (cpu_limit.hpp)
+    budget = 4096U,           // research: each frame of the game thread split into limiter, job
+                              // rounds, Present path, GPU wait and serial work (frame_budget.hpp)
+    uncap = 8192U,            // research: the engine's frame cap (sMain mMaxFps) raised to
+                              // control.ini max_fps, for measuring capped scenes (frame_cap.hpp)
 };
-inline constexpr unsigned toggle_mask = 4095U;  // every defined bit
+inline constexpr unsigned toggle_mask = 16383U;  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }

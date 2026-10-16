@@ -1,5 +1,6 @@
 #include "job_timing.hpp"
 #include "../core/json.hpp"
+#include "frame_budget.hpp"
 #include "log.hpp"
 #include "worker_spin.hpp"
 #include <windows.h>
@@ -432,7 +433,16 @@ Round analyse(const Record* recs, std::uint32_t count, std::uint64_t round_start
     return r;
 }
 
+// The game thread's time in executeJob, everything included, for frame_budget.
+struct RoundClock {
+    std::uint64_t t0 = frame_budget::active() ? __rdtsc() : 0;
+    ~RoundClock() {
+        if (t0) frame_budget::add_round(__rdtsc() - t0);
+    }
+};
+
 void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std::uint32_t count, std::uintptr_t extra) {
+    const RoundClock round_clock;
     const auto original = next_fn;
     const bool timing = measuring.load(std::memory_order_acquire);  // acquire: the trace ring exists
     const int order = order_mode.load(std::memory_order_relaxed);

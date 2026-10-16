@@ -12,6 +12,8 @@
 //   a stand-in job system, and its jump stub and patch bytes are sound.
 #include "../src/core/toggles.hpp"
 #include "../src/plugin/cpu_limit.hpp"
+#include "../src/plugin/frame_budget.hpp"
+#include "../src/plugin/frame_cap.hpp"
 #include "../src/plugin/frame_clock.hpp"
 #include "../src/plugin/image_scan.hpp"
 #include "../src/plugin/frame_events.hpp"
@@ -1053,6 +1055,127 @@ void cpu_limit_test() {
     CHECK(now == before);
 }
 
+// frame_budget: a stand-in frame with a 1 ms limiter, 0.5 ms of job rounds
+// and a 2 ms Present path whose swapchain call took 0.5 ms (so 1.5 ms of GPU
+// wait), then the parts back from the window's summary.
+void spin_for_us(std::int64_t us) {
+    const auto due = cpuopt::qpc_now() + cpuopt::qpc_frequency() * us / 1000000;
+    while (cpuopt::qpc_now() < due) {}
+}
+std::uint64_t __fastcall stand_in_timing(std::uintptr_t) {
+    spin_for_us(1000);
+    return 0;
+}
+std::uint64_t __fastcall stand_in_present(std::uintptr_t, std::uint32_t, std::uint8_t) {
+    spin_for_us(1500);
+    cpuopt::frame_budget::add_swapchain(cpuopt::qpc_frequency() / 2000);  // a 0.5 ms swapchain call
+    spin_for_us(500);
+    return 0;
+}
+double budget_part(const std::string& out, const char* part) {
+    const auto at = out.find(std::string("\"") + part + "\":{\"mean\":");
+    return at == std::string::npos ? -1 : std::atof(out.c_str() + at + std::strlen(part) + 11);
+}
+
+void frame_budget_test() {
+    namespace fb = cpuopt::frame_budget;
+    *fb::timing_next() = &stand_in_timing;
+    *fb::present_next() = &stand_in_present;
+    std::string out;
+    fb::append(out);  // reset
+    fb::set_active(true);
+    const auto rounds_cycles = [] {  // 0.5 ms in TSC cycles
+        const auto t0 = __rdtsc();
+        spin_for_us(500);
+        return __rdtsc() - t0;
+    };
+    for (int frame = 0; frame < 6; ++frame) {
+        fb::on_begin(cpuopt::qpc_now());
+        fb::timing_detour(0);
+        fb::add_round(rounds_cycles());
+        spin_for_us(300);  // serial work
+        fb::present_detour(0, 0, 0);
+        fb::on_end(cpuopt::qpc_now());
+        spin_for_us(200);  // between END and the next BEGIN
+    }
+    fb::on_begin(cpuopt::qpc_now());  // closes the sixth frame
+    out = "{";
+    fb::append(out);
+    out += '}';
+    fb::set_active(false);
+    std::printf("frame_budget: %s\n", out.substr(0, 260).c_str());
+    const auto close_to = [](double v, double want) { return v > want - 0.25 && v < want + 0.4; };
+    CHECK(out.find("\"frames\":6,") != std::string::npos);
+    CHECK(close_to(budget_part(out, "limiter"), 1.0));
+    CHECK(close_to(budget_part(out, "rounds"), 0.5));
+    CHECK(close_to(budget_part(out, "present_path"), 2.0));
+    CHECK(close_to(budget_part(out, "swapchain"), 0.5));
+    CHECK(close_to(budget_part(out, "gpu_wait"), 1.5));
+    CHECK(close_to(budget_part(out, "serial"), 0.3));
+    CHECK(close_to(budget_part(out, "update"), 3.8));
+    CHECK(close_to(budget_part(out, "interval"), 4.0));
+    CHECK(close_to(budget_part(out, "cpu_frame"), 1.5));  // 4.0 - 1.0 limiter - 1.5 GPU wait
+    // Off: the detours pass through and nothing is recorded.
+    fb::on_begin(cpuopt::qpc_now());
+    fb::timing_detour(0);
+    fb::on_end(cpuopt::qpc_now());
+    out = "{";
+    fb::append(out);
+    CHECK(out.find("\"frames\":0,") != std::string::npos);
+}
+
+// frame_cap against a stand-in sMain: the cap raised and put back, and hands
+// off when the field is not an fps or the options change it.
+std::uintptr_t fake_cap_smain;
+
+void frame_cap_test() {
+    namespace fc = cpuopt::frame_cap;
+    auto smain = std::make_unique<std::uint8_t[]>(0x100);
+    std::memset(smain.get(), 0, 0x100);
+    auto& cap = *reinterpret_cast<float*>(smain.get() + fc::max_fps_offset);
+    const auto state = [] {
+        std::string out = "{";
+        fc::append(out);
+        const auto at = out.find("\"state\":\"") + 9;
+        return out.substr(at, out.find('"', at) - at);
+    };
+    fc::set_target(reinterpret_cast<std::uintptr_t>(&fake_cap_smain));
+    fc::request(1000);
+    fc::on_begin();
+    CHECK(state() == "waiting");
+    fake_cap_smain = reinterpret_cast<std::uintptr_t>(smain.get());
+    cap = 300.0f;
+    fc::on_begin();
+    CHECK(state() == "raised" && cap == 1000.0f);
+    fc::request(500);
+    fc::on_begin();
+    CHECK(cap == 500.0f);
+    fc::request(0);
+    fc::on_begin();
+    CHECK(state() == "native" && cap == 300.0f);
+    fc::request(1000);
+    fc::on_begin();
+    CHECK(cap == 1000.0f);
+    cap = 60.0f;  // the player picked 60 in the options: hands off
+    fc::on_begin();
+    CHECK(state() == "drift" && cap == 60.0f);
+    // Not an fps: never written.
+    fc::set_target(reinterpret_cast<std::uintptr_t>(&fake_cap_smain));
+    cap = 0.0f;
+    fc::request(1000);
+    fc::on_begin();
+    CHECK(state() == "layout mismatch" && cap == 0.0f);
+    // Restore at exit.
+    fc::set_target(reinterpret_cast<std::uintptr_t>(&fake_cap_smain));
+    cap = 144.0f;
+    fc::request(1000);
+    fc::on_begin();
+    fc::restore();
+    CHECK(state() == "restored" && cap == 144.0f);
+    fc::set_target(0);
+    fake_cap_smain = 0;
+}
+
 void spin_probe_test() {
     namespace sp = cpuopt::spin_probe;
     auto object = std::make_unique<std::uint8_t[]>(sp::done_offset + 8);
@@ -1294,6 +1417,8 @@ int main() {
     unit_lines_test();
     steam_running_test();
     cpu_limit_test();
+    frame_budget_test();
+    frame_cap_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);

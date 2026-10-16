@@ -94,6 +94,9 @@ def main():
             c = ws[-1].get('cpus', {})
             what = ('cache CCD' if toggles & 2048 else '') + (f' limit {c.get("limit")}' if toggles & 1024 else '')
             state += f', {what.strip()} ({"applied " + str(c.get("mask")) if c.get("applied") else "NOT APPLIED"})'
+        if toggles & 8192:
+            c = ws[-1].get('cap', {})
+            state += f', frame cap {c.get("applied")} ({c.get("state")}; the game\'s {c.get("game")})'
         if toggles & 64:
             il = [w.get('inline', {}) for w in ws]
             sites = il[-1].get('sites', [])
@@ -111,6 +114,17 @@ def main():
               f'inside Present {weighted_mean(ws, ("present", "call")):.3f} ms mean (median p95 {med(lambda w: w["present"]["call"]["p95"]):.2f})  '
               f'sRender frames {sum(w["render"]["frames"] for w in ws)}')
         print(f'  process CPU {sum(w["process_cpu_ms"] for w in ws) / frames:.2f} ms/frame; threads {med(lambda w: w["thread_count"])}')
+        # Frame budget (toggle 4096): the game thread's frame split up, and the
+        # CPU frame (no cap, an infinitely fast GPU).
+        bw = [w for w in ws if w.get('budget', {}).get('frames')]
+        if bw:
+            n = sum(w['budget']['frames'] for w in bw)
+            mean = lambda part: sum(w['budget'][part]['mean'] * w['budget']['frames'] for w in bw) / n
+            cpu = mean('cpu_frame')
+            print(f'  budget per frame ({n} frames): CPU frame {cpu:.3f} ms (= {1000 / cpu if cpu else 0:.1f} fps CPU-bound, '
+                  f'median p95 {statistics.median(w["budget"]["cpu_frame"]["p95"] for w in bw):.2f}) | update {mean("update"):.3f}: '
+                  f'limiter {mean("limiter"):.3f}, rounds {mean("rounds"):.3f}, present {mean("present_path"):.3f} '
+                  f'(GPU wait {mean("gpu_wait"):.3f}, swapchain {mean("swapchain"):.3f}), serial {mean("serial"):.3f}')
         per_thread, label = collections.defaultdict(float), {}
         for w in ws:
             roles = {w['present']['thread']: 'PRESENT'}
