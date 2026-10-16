@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mhw_cpuopt VERSION 0.7.1 LANGUAGES CXX)
+project(mhw_cpuopt VERSION 0.7.2 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "64-bit Windows only")
@@ -59,11 +59,15 @@ set(CPUOPT_PLUGIN_SOURCES
     src/plugin/server_time.cpp
     src/plugin/server_time.hpp
     src/plugin/spin_probe.cpp
+    src/plugin/steam_running.cpp
+    src/plugin/steam_running.hpp
     src/plugin/spin_probe.hpp
     src/plugin/system_info.cpp
     src/plugin/system_info.hpp
     src/plugin/thread_census.cpp
     src/plugin/thread_census.hpp
+    src/plugin/unit_lines.cpp
+    src/plugin/unit_lines.hpp
     src/plugin/worker_spin.cpp
     src/plugin/worker_spin.hpp
 )

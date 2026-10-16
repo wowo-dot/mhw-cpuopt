@@ -21,6 +21,8 @@
 #include "../src/plugin/prim_stores.hpp"
 #include "../src/plugin/sampler.hpp"
 #include "../src/plugin/server_time.hpp"
+#include "../src/plugin/steam_running.hpp"
+#include "../src/plugin/unit_lines.hpp"
 #include "../src/plugin/system_info.hpp"
 #include "../src/plugin/thread_census.hpp"
 #include "../src/plugin/worker_spin.hpp"
@@ -883,6 +885,122 @@ void worker_spin_test() {
     CloseHandle(j.semaphore);
 }
 
+// unit_lines against a stand-in sMain and sMhUnit: the threshold set and put
+// back, and hands off when the layout or the field is not what it expects.
+std::uintptr_t fake_unit_smain;
+
+void unit_lines_test() {
+    namespace ul = cpuopt::unit_lines;
+    const unsigned all[4] = {1, 1, 1, 1}, missing[4] = {1, 0, 1, 1}, twice[4] = {1, 1, 2, 1};
+    CHECK(ul::discover(all).found);
+    CHECK(std::string(ul::discover(missing).reason) == "signature not found");
+    CHECK(std::string(ul::discover(twice).reason) == "signature not unique");
+    auto smain = std::make_unique<std::uint8_t[]>(ul::unit_offset + 8);
+    auto unit = std::make_unique<std::uint8_t[]>(ul::threshold_offset + 16);
+    std::memset(smain.get(), 0, ul::unit_offset + 8);
+    std::memset(unit.get(), 0, ul::threshold_offset + 16);
+    auto& field = *reinterpret_cast<std::uint64_t*>(unit.get() + ul::threshold_offset);
+    const auto state = [] {
+        std::string out = "{";
+        ul::append(out);
+        const auto at = out.find("\"state\":\"") + 9;
+        return out.substr(at, out.find('"', at) - at);
+    };
+    ul::set_target(reinterpret_cast<std::uintptr_t>(&fake_unit_smain));
+    ul::request(20);
+    CHECK(state() == "waiting");  // no sMain yet
+    fake_unit_smain = reinterpret_cast<std::uintptr_t>(smain.get());
+    ul::apply();
+    CHECK(state() == "waiting");  // no sMhUnit yet
+    *reinterpret_cast<std::uintptr_t*>(smain.get() + ul::unit_offset) = reinterpret_cast<std::uintptr_t>(unit.get());
+    field = 60;
+    ul::apply();
+    CHECK(state() == "set" && field == 20);
+    ul::request(150);
+    CHECK(field == 150);
+    ul::request(0);
+    CHECK(state() == "native" && field == 60);
+    ul::request(30);
+    ul::restore();
+    CHECK(state() == "restored" && field == 60);
+    ul::request(10);
+    CHECK(field == 60);  // restored is final
+    // The field written by someone else: hands off for good.
+    ul::set_target(reinterpret_cast<std::uintptr_t>(&fake_unit_smain));
+    ul::request(20);
+    CHECK(field == 20);
+    field = 45;
+    ul::request(25);
+    CHECK(state() == "drift" && field == 45);
+    // Not the constructor's 60: never written.
+    ul::set_target(reinterpret_cast<std::uintptr_t>(&fake_unit_smain));
+    field = 61;
+    ul::request(20);
+    CHECK(state() == "layout mismatch" && field == 61);
+    ul::set_target(0);
+    fake_unit_smain = 0;
+}
+
+// steam_running: the patch bytes, discovery on planted copies, and the cache.
+unsigned real_running_calls;
+bool real_running_answer = true;
+__declspec(noinline) bool stand_in_is_running() {
+    ++real_running_calls;
+    return real_running_answer;
+}
+unsigned char planted_poll[64], planted_lobby[64];
+std::uintptr_t running_slot, other_running_slot;
+
+void steam_running_test() {
+    namespace sr = cpuopt::steam_running;
+    std::array<std::uint8_t, sr::call_length> bytes{};
+    const std::uintptr_t site = 0x142209D01;
+    CHECK(sr::build_replacement(site, 0x140010000, bytes));
+    std::int32_t rel{};
+    std::memcpy(&rel, bytes.data() + 2, 4);
+    CHECK(bytes[0] == 0x90 && bytes[1] == 0xE8 && site + sr::call_length + rel == 0x140010000);
+    CHECK(!sr::build_replacement(site, 0x7FF000000000ULL, bytes));
+
+    const auto plant = [](unsigned char* code, std::string_view text, unsigned call, const std::uintptr_t* slot) {
+        const auto sig = signature_bytes(text);
+        for (std::size_t i = 0; i < sig.size(); ++i) code[i] = static_cast<unsigned char>(sig[i] < 0 ? 0 : sig[i]);
+        const auto at = reinterpret_cast<std::uintptr_t>(code) + call;
+        const auto d = static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(slot) - static_cast<std::intptr_t>(at + 6));
+        std::memcpy(code + call + 2, &d, 4);
+    };
+    const auto function = reinterpret_cast<std::uintptr_t>(&stand_in_is_running);
+    running_slot = function;
+    other_running_slot = function;
+    plant(planted_poll, sr::poll_signature, sr::poll_call, &running_slot);
+    plant(planted_lobby, sr::lobby_signature, sr::lobby_call, &running_slot);
+    const std::uintptr_t poll[1] = {reinterpret_cast<std::uintptr_t>(planted_poll)}, lobby[1] = {reinterpret_cast<std::uintptr_t>(planted_lobby)};
+    auto d = sr::discover(poll, 1, lobby, 1, function);
+    CHECK(d.found && d.real == function && d.sites[0] == poll[0] + sr::poll_call && d.sites[1] == lobby[0] + sr::lobby_call);
+    CHECK(std::string(sr::discover(poll, 1, lobby, 1, function + 16).reason) == "import is not SteamAPI_IsSteamRunning");
+    CHECK(std::string(sr::discover(poll, 0, lobby, 1, function).reason) == "signature not found");
+    plant(planted_lobby, sr::lobby_signature, sr::lobby_call, &other_running_slot);
+    CHECK(std::string(sr::discover(poll, 1, lobby, 1, function).reason) == "different imports");
+
+    sr::set_real(function);
+    real_running_calls = 0;
+    sr::set_active(false, 1000);
+    CHECK(sr::is_running() && sr::is_running() && real_running_calls == 2);  // off: every call is Steam's
+    sr::set_active(true, 1000);
+    CHECK(sr::is_running() && real_running_calls == 3);
+    real_running_answer = false;  // Steam quits; the kept answer holds for time_ms
+    CHECK(sr::is_running() && sr::is_running() && real_running_calls == 3);
+    sr::set_active(true, 20);
+    Sleep(40);
+    CHECK(!sr::is_running() && real_running_calls == 4);  // asked again after time_ms
+    CHECK(!sr::is_running() && real_running_calls == 4);
+    std::string out = "{";
+    sr::append(out);
+    std::printf("steam_running: %s}\n", out.c_str());
+    CHECK(out.find("\"active\":true,\"calls\":4,\"reused\":3") != std::string::npos);
+    sr::set_active(false, 0);
+    real_running_answer = true;
+}
+
 void spin_probe_test() {
     namespace sp = cpuopt::spin_probe;
     auto object = std::make_unique<std::uint8_t[]>(sp::done_offset + 8);
@@ -1090,6 +1208,8 @@ int main() {
     prim_stores_test();
     server_time_test();
     worker_spin_test();
+    unit_lines_test();
+    steam_running_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);

@@ -53,7 +53,7 @@ def main():
     last_key, settled = None, 0
     for w in (e for e in events if e.get('event') == 'window'):
         order = w.get('order', {}).get('mode', 0)
-        key = (w['marker'], w['toggles'] | (order << 8), w.get('job', {}).get('applied'))
+        key = (w['marker'], w['toggles'] | (order << 16), w.get('job', {}).get('applied'))
         settled = settled + 1 if key == last_key else 0
         last_key = key
         if settled < a.skip or not w['update']['frames']:
@@ -65,8 +65,8 @@ def main():
         med = lambda f: statistics.median(f(w) for w in ws)
         iv = lambda k: med(lambda w: w['update']['interval'][k])
         state = ws[-1].get('job', {}).get('state', '-')
-        order = toggles >> 8
-        toggles &= 0xFF
+        order = toggles >> 16
+        toggles &= 0xFFFF
         if order:
             o = ws[-1]['order']
             state += (f', job order {("reversed", "learned")[order - 1]}: {sum(w["order"]["rounds"] for w in ws)} rounds reordered, '
@@ -79,6 +79,17 @@ def main():
             st = [w.get('server_time', {}) for w in ws]
             state += (f', server time {"active" if all(x.get("active") for x in st) else "NOT ACTIVE"} '
                       f'({sum(x.get("reads", 0) for x in st)} reads, {sum(x.get("reused", 0) for x in st)} reused)')
+        if toggles & 128:
+            sp = [w.get('spin', {}) for w in ws]
+            state += (f', spin {sp[-1].get("spin_us")} us: {sum(x.get("claimed", 0) for x in sp) / max(frames, 1):.1f} permits '
+                      f'taken spinning, {sum(x.get("blocked", 0) for x in sp) / max(frames, 1):.1f} blocking waits per frame')
+        if toggles & 256:
+            u = ws[-1].get('units', {})
+            state += f', unit threshold {u.get("applied")} us ({u.get("state")})'
+        if toggles & 512:
+            r = [w.get('steam_running', {}) for w in ws]
+            state += (f', IsSteamRunning {"cached" if all(x.get("active") for x in r) else "NOT CACHED"} '
+                      f'({sum(x.get("calls", 0) for x in r)} calls, {sum(x.get("reused", 0) for x in r)} reused)')
         if toggles & 64:
             il = [w.get('inline', {}) for w in ws]
             sites = il[-1].get('sites', [])

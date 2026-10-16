@@ -371,3 +371,43 @@ four pairs each (first window of each step left out):
   "gain" (round minus its bound) is 362 us a frame in the camera round and
   254 us in the unit round. Most job threads wake after the round's jobs are
   taken: the target of v0.7's spin_workers.
+
+### Spinning job threads: slower (al-13, v0.7.1)
+
+spin_workers (128) on top of v0.6's switches, Ancient Forest at a camp,
+30 s steps, each window pair against 120 next to it:
+
+| spin_us | with spinning | 120 beside it | CPU per frame (with) |
+|---|---|---|---|
+| 300 | 174.6 fps | 222.0, 217.4 fps | 104.0 ms |
+| 100 | 205.0, 202.6 | 217.1, 215.1 | 70 ms |
+| 50 | 213.1, 208.0 | 221.4, 217.4 | 58 ms |
+| 20 | 205.8, 204.4 | 219.8, 218.7 | 45-46 ms |
+
+The change worked as built (at 300 us, about 474 permits a frame were taken
+by spinning threads and 134 waits blocked; no round hung), and every setting
+was slower: -4% to -21%. Spinning threads cost far more CPU (23 ms a frame
+without, 45-104 ms with) than the late wake costs the rounds. Hypothesis
+(late-waking threads hold rounds back) rejected for this machine; the
+switch stays as research, off. v0.7.0's first try (al-12) never applied:
+the jump stub was made when the switch went on, when no page within 2 GB of
+the exe was free any more; v0.7.1 makes it at PRE_MAIN (al-13: 2,047 MB
+below the wait site).
+
+### The game thread outside the job rounds (al-11, Ancient Forest, v0.6 on)
+
+51% of the game thread's samples are outside executeJob:
+
+- Present (cD3DRender::present) 8.9%, cD3DRender::endFrame 3.9%;
+- sMhUnit's passes walking lines alone: the move pass (sub_14221ACE0)
+  8.4%, the second pass (sub_14221B400, its serial loop at +0x1AF) 5.0%, the
+  third (sub_14221C120) 2.1%. A line flagged parallel goes to the job
+  threads only if it took more than sMhUnit +0x4A58 last frame, which the
+  constructor sets to 60 us (v0.7.2's unit_threshold sets it);
+- sCamera::draw outside its rounds 5.4%; collision (sCollision::Collider::move)
+  4.3%;
+- the session poll (sub_1422ADAE0) 3.8%, in which
+  SteamAPI_IsSteamRunning's registry work (open, query, close through MO2's
+  usvfs NtClose hook) is about 1.5% (v0.7.2's cache_steam_running); the
+  Steam overlay's ClipCursor hook 0.4%; our own detour's VirtualQuery on
+  timed rounds 0.3%.

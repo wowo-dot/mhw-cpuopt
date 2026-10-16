@@ -22,8 +22,12 @@ enum Toggle : unsigned {
                               // run on the game thread alone, learned per call site (job_timing.hpp)
     spin_workers = 128U,      // job threads spin for control.ini spin_us after a round and take the
                               // next round's places without being woken (worker_spin.hpp)
+    unit_threshold = 256U,    // sMhUnit's line threshold (run alone or on the job threads) set to
+                              // control.ini unit_us instead of the game's 60 us (unit_lines.hpp)
+    cache_steam_running = 512U,  // SteamAPI_IsSteamRunning answered once per time_ms at its two
+                                 // per-frame call sites (al.patch; steam_running.hpp)
 };
-inline constexpr unsigned toggle_mask = 255U;  // every defined bit
+inline constexpr unsigned toggle_mask = 1023U;  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }
