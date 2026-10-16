@@ -173,6 +173,23 @@ bool writable(std::uintptr_t address, std::size_t bytes) noexcept {
     }
     return true;
 }
+// Lists checked writable recently (game thread only): the game reuses the
+// same job lists frame after frame, and VirtualQuery is a system call on the
+// game thread (al-15: about 0.3% of it). A check is trusted for a second.
+struct Checked {
+    std::uintptr_t base{};
+    std::size_t bytes{};
+    std::uint64_t at_ms{};
+};
+std::array<Checked, 64> checked{};
+bool writable_list(std::uintptr_t list, std::size_t bytes) noexcept {
+    auto& c = checked[(list >> 5) & (checked.size() - 1)];
+    const auto now = GetTickCount64();
+    if (c.base == list && c.bytes >= bytes && now - c.at_ms < 1000) return true;
+    if (!writable(list, bytes)) return false;
+    c = {list, bytes, now};
+    return true;
+}
 bool read_u32(std::uintptr_t at, std::uint32_t& value) noexcept {
     __try {
         value = *reinterpret_cast<volatile const std::uint32_t*>(at);
@@ -445,7 +462,7 @@ void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std:
         if (!read_u32(smain + job_count_offset, n)) n = 0;
     }
     if (!read_u32(smain + participants_offset, participants)) participants = 1;
-    if (n == 0 || n > capacity || !writable(list, 32ULL * n)) {
+    if (n == 0 || n > capacity || !writable_list(list, 32ULL * n)) {
         AcquireSRWLockExclusive(&lock);
         ++skipped;
         ReleaseSRWLockExclusive(&lock);
