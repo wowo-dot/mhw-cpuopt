@@ -442,3 +442,27 @@ time of day), so each variant is compared with its two neighbours.
   SpeedTree draws (uBindSpeedTree, 294 a frame, 1.8 ms of work), base model
   instances (733 a frame, 1.6 ms) and effects (0.8 ms). No single hot spot
   stands out in the profile any more.
+
+### Smaller CPUs, the cache die, and where the rounds wait (al-17, al-19; v0.8)
+
+- **smaller_cpu (al-17, Ancient Forest):** the best set (376) against no
+  switch, four pairs each: six cores (12 logical, CCD0) 176.4 to 236.9 fps
+  (+34%), four cores (8) 160.2 to 212.8 (+33%). Even on 12 logical
+  processors the game thread is the limit (95% busy; the 12 processors
+  35-74% busy).
+- **cache_ccd (al-17, al-19):** the same session, all switches of the best
+  set on: CCD0's 16 (the 96 MB L3) against all 32 logical processors: al-17
+  241.4 against 230.2 fps (three rounds), al-19 +4.1%, +3.8%, +3.0%, +3.4%
+  (four pairs). Process CPU per frame 21.2 ms against 24.8.
+- **Stock against everything (al-19, Ancient Forest camp):** 181.8 and
+  180.0 fps against 245.2 and 242.6 (+35%); mean frame 5.53 to 4.10 ms.
+- **What the rounds wait for (al-19 job timing, everything on):** the
+  player's move (uPlayer, cUnit::genericMove) takes 192 us once a frame and
+  ended its unit round in 10,494 of about 10,500 frames; monsters 104-121 us
+  (uEm100, uEm109, uEm100_01). The unit pass runs each line as its own round
+  (11.7 a frame), so the player's line holds the game thread about 190 us
+  while the other job threads are idle.
+- **Job-thread focus (sample_jobs 16, 60 s):** about 1,000 busy job-thread
+  samples: unit moves 39% (uMhEffect::move 11%, the character update
+  sub_141FBCCD0 12%), SpeedTree draws 12%, model draws 9%, effect draws 7.5%.
+  On this CPU the job threads are idle about 88% of the time.

@@ -12,7 +12,14 @@ Measured at the hub, each on and off in one session:
   them back from GPU upload memory: +10.1% (260.9 to 287.3 fps), and 20%
   less CPU time per frame for the whole game;
 - reusing Steam's server time instead of asking Steam several times a frame:
-  +3.0%.
+  +3.0%;
+- sMhUnit's threshold between running a unit line alone and on the job
+  threads at 40 us instead of 60: +2.8% (Ancient Forest);
+- on a dual-die X3D CPU, the game kept on the 3D V-Cache die: +3.6%.
+
+All together in the Ancient Forest: 181 to 244 fps (+35%); in Elder's
+Recess 160 to 265 (+66%); one title screen 115 to 296 (2.6x). On a CPU
+limited to six or four cores the gain is the same (+33-34%).
 
 With these on, the hub reaches the engine's 300 fps cap; heavier scenes come
 next.
