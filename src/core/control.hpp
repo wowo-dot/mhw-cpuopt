@@ -10,7 +10,7 @@ namespace cpuopt {
 //   window_ms=<1000..60000>       statistics window length
 //   job_threads=<1..64>           threads per sMain job round while toggle job_cap
 //                                 is on, the game thread included
-//   job_order=<1|2>               toggle order_jobs: 1 reversed, 2 learned
+//   job_order=<1|2|3>             toggle order_jobs: 1 reversed, 2 learned, 3 sorted
 //   order_us=<1..10000>           learned order: job types at least this slow go first
 //   inline_us=<1..1000>           toggle inline_rounds: call sites whose rounds take less
 //                                 work than this run on the game thread alone

@@ -82,7 +82,15 @@ std::array<std::pair<std::uint64_t, std::uint32_t>, capacity> front;  // (mean, 
 std::array<ClassCost, class_capacity> class_costs{};
 std::uint64_t camera_rounds{};
 std::atomic<std::uint32_t> classes_known{};
-std::atomic<std::uint64_t> order_rounds{}, order_moved{}, order_timed{};
+std::atomic<std::uint64_t> order_rounds{}, order_moved{}, order_timed{}, order_cycles{};
+// Mode 3's buckets (game thread only): a class per job, and per class (the
+// index into class_costs, or `unknown` for classes not learned yet) its count
+// and its next free place, valid while its stamp is this round's.
+constexpr std::uint32_t unknown_class = class_capacity;
+std::array<std::uint16_t, capacity> job_class{};
+std::array<std::uint32_t, class_capacity + 1> bucket_stamp{}, bucket_next{};
+std::array<std::uint16_t, class_capacity + 1> touched{};
+std::uint32_t round_stamp{};
 // TSC rate, from the TSC and QPC at start and when a threshold is set.
 const std::uint64_t calibration_tsc = __rdtsc();
 const std::int64_t calibration_qpc = qpc_now();
@@ -257,6 +265,42 @@ std::uint32_t reorder(std::uintptr_t list, std::uint32_t n, int mode) noexcept {
         for (std::uint32_t i = 0; i < n; ++i) entries[i] = backup[n - 1 - i];
         return n;
     }
+    if (mode == 3) {
+        if (++round_stamp == 0) {  // wrapped: every stamp is stale again
+            bucket_stamp.fill(0);
+            round_stamp = 1;
+        }
+        std::uint32_t classes = 0;
+        for (std::uint32_t i = 0; i < n; ++i) {
+            const auto vtable = vtable_of(backup[i].q[0]);
+            const auto* c = vtable ? class_slot(vtable, false) : nullptr;
+            const auto k = c && c->samples >= 4 ? static_cast<std::uint32_t>(c - class_costs.data()) : unknown_class;
+            job_class[i] = static_cast<std::uint16_t>(k);
+            if (bucket_stamp[k] != round_stamp) {
+                bucket_stamp[k] = round_stamp;
+                bucket_next[k] = 0;
+                touched[classes++] = static_cast<std::uint16_t>(k);
+            }
+            ++bucket_next[k];  // the count, for now
+        }
+        // Classes slowest first, unknown last; then each class's first place.
+        const auto mean = [](std::uint32_t k) { return k == unknown_class ? 0 : class_costs[k].mean + 1; };
+        for (std::uint32_t a = 1; a < classes; ++a)
+            for (std::uint32_t b = a; b > 0 && mean(touched[b - 1]) < mean(touched[b]); --b) std::swap(touched[b - 1], touched[b]);
+        std::uint32_t at = 0;
+        for (std::uint32_t j = 0; j < classes; ++j) {
+            const auto count = bucket_next[touched[j]];
+            bucket_next[touched[j]] = at;
+            at += count;
+        }
+        std::uint32_t moved = 0;
+        for (std::uint32_t i = 0; i < n; ++i) {
+            const auto to = bucket_next[job_class[i]]++;
+            entries[to] = backup[i];
+            moved += to != i ? 1 : 0;
+        }
+        return moved;
+    }
     const auto threshold = order_threshold.load(std::memory_order_relaxed);
     std::uint32_t k = 0;
     for (std::uint32_t i = 0; i < n; ++i) {
@@ -410,12 +454,15 @@ void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std:
     }
     // Reorder first: timing then wraps the entries in their round order.
     std::uint32_t moved = 0;
+    std::uint64_t spent = 0;
     if (camera && n >= 2) {
+        const auto r0 = __rdtsc();
         moved = reorder(list, n, order);
+        spent = __rdtsc() - r0;
         order_rounds.fetch_add(1, std::memory_order_relaxed);
         order_moved.fetch_add(moved, std::memory_order_relaxed);
     }
-    const bool learn_round = camera && order == 2 && (timing || ++camera_rounds % learn_every == 0);
+    const bool learn_round = camera && order >= 2 && (timing || ++camera_rounds % learn_every == 0);
     const bool wrapped = timing || learn_round || site_round;
     if (wrapped) wrap(list, n);
     const auto t0 = __rdtsc();
@@ -426,7 +473,12 @@ void __fastcall detour(std::uintptr_t smain, int mode, std::uintptr_t jobs, std:
         learn(n);
         order_timed.fetch_add(1, std::memory_order_relaxed);
     }
-    if (moved) restore_order(list, n);
+    if (moved) {
+        const auto r0 = __rdtsc();
+        restore_order(list, n);
+        spent += __rdtsc() - r0;
+    }
+    if (spent) order_cycles.fetch_add(spent, std::memory_order_relaxed);
     if (site_round || timing) {
         const auto r = analyse(records.data(), n, t0, t1, alone ? 1 : participants);
         if (site_round) {
@@ -462,8 +514,11 @@ void append_order(std::string& out) {
     out += camera_return_address.load(std::memory_order_relaxed) ? "true" : "false";
     json::key(out, "threshold_us");
     json::number(out, std::uint64_t(order_threshold_us.load(std::memory_order_relaxed)));
+    const auto rounds = order_rounds.exchange(0, std::memory_order_relaxed);
     json::key(out, "rounds");
-    json::number(out, order_rounds.exchange(0, std::memory_order_relaxed));
+    json::number(out, rounds);
+    json::key(out, "reorder_us");  // per reordered round, reorder and restore
+    json::fixed(out, rounds ? double(order_cycles.exchange(0, std::memory_order_relaxed)) / tsc_per_us() / double(rounds) : 0.0, 2);
     json::key(out, "moved");
     json::number(out, order_moved.exchange(0, std::memory_order_relaxed));
     json::key(out, "timed");

@@ -326,7 +326,7 @@ void job_timing_test() {
 // Job order on a stand-in executeJob that runs the list in order on this
 // thread: reversed, learned (the slow class first), restored after each round,
 // and only for the camera round's caller.
-const std::uintptr_t slow_class[2] = {}, fast_class[2] = {};
+const std::uintptr_t slow_class[2] = {}, fast_class[2] = {}, medium_class[2] = {};
 std::uintptr_t ran_order[16];
 unsigned ran_count;
 __declspec(noinline) std::uintptr_t order_job(std::uintptr_t context, std::uintptr_t, std::uintptr_t, std::uintptr_t) {
@@ -334,6 +334,9 @@ __declspec(noinline) std::uintptr_t order_job(std::uintptr_t context, std::uintp
     if (ran_count < 16) ran_order[ran_count++] = object[1];
     if (object[0] == reinterpret_cast<std::uintptr_t>(slow_class)) {
         const auto due = cpuopt::qpc_now() + cpuopt::qpc_frequency() * 3 / 10000;  // 0.3 ms
+        while (cpuopt::qpc_now() < due) {}
+    } else if (object[0] == reinterpret_cast<std::uintptr_t>(medium_class)) {
+        const auto due = cpuopt::qpc_now() + cpuopt::qpc_frequency() / 20000;  // 0.05 ms
         while (cpuopt::qpc_now() < due) {}
     }
     return 0;
@@ -355,10 +358,10 @@ void job_order_test() {
     std::memset(smain.get(), 0, 0x200);
     *reinterpret_cast<std::uint32_t*>(smain.get() + jt::participants_offset) = 2;
     const auto s = reinterpret_cast<std::uintptr_t>(smain.get());
-    // Five jobs: ids 0..4, job 3 of the slow class.
+    // Five jobs: ids 0..4, job 3 of the slow class, job 1 of the medium one.
     std::uintptr_t objects[5][2], list[5][4];
     for (std::uintptr_t i = 0; i < 5; ++i) {
-        objects[i][0] = reinterpret_cast<std::uintptr_t>(i == 3 ? slow_class : fast_class);
+        objects[i][0] = reinterpret_cast<std::uintptr_t>(i == 3 ? slow_class : i == 1 ? medium_class : fast_class);
         objects[i][1] = i;
         list[i][0] = reinterpret_cast<std::uintptr_t>(objects[i]);
         list[i][1] = reinterpret_cast<std::uintptr_t>(&order_job);
@@ -395,11 +398,16 @@ void job_order_test() {
     CHECK(run(camera_round) == "30124");  // the slow class first, the rest in order
     CHECK(std::memcmp(before, list, sizeof(list)) == 0);
     CHECK(run(other_round) == "01234");
+    CHECK(jt::set_order(3, 100));
+    CHECK(run(camera_round) == "31024");  // sorted: slow, medium, then the fast class in order
+    CHECK(std::memcmp(before, list, sizeof(list)) == 0);
+    CHECK(jt::set_order(2, 100));
     std::string out = "{";
     jt::append_order(out);
     std::printf("job_order: %s}\n", out.c_str());
     CHECK(out.find("\"mode\":2,\"available\":true,\"threshold_us\":100,") != std::string::npos);
-    CHECK(out.find("\"timed\":5,") != std::string::npos && out.find("\"classes\":2") != std::string::npos);
+    CHECK(out.find("\"timed\":5,") != std::string::npos && out.find("\"classes\":3") != std::string::npos);
+    CHECK(out.find("\"reorder_us\":") != std::string::npos);
     jt::set_order(0, 20);
     CHECK(run(camera_round) == "01234");
     jt::set_trace_every(499);

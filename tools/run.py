@@ -264,7 +264,7 @@ def main():
     s.add_argument('--marker')
     s.add_argument('--window-ms', type=int)
     s.add_argument('--job-threads', type=int)
-    s.add_argument('--job-order', type=int, choices=(1, 2))
+    s.add_argument('--job-order', type=int, choices=(1, 2, 3))
     s.add_argument('--order-us', type=int)
     s.add_argument('--inline-us', type=int)
     s.add_argument('--time-ms', type=int)

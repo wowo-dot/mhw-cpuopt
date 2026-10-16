@@ -90,7 +90,8 @@ void control() {
     CHECK(!parse_control("job_threads=65"));
     CHECK(parse_control("job_order=2\norder_us=20")->job_order == 2u);
     CHECK(parse_control("order_us=20")->order_us == 20u);
-    CHECK(!parse_control("job_order=3"));
+    CHECK(parse_control("job_order=3")->job_order == 3u);
+    CHECK(!parse_control("job_order=4"));
     CHECK(!parse_control("order_us=0"));
     CHECK(parse_control("inline_us=25")->inline_us == 25u);
     CHECK(!parse_control("inline_us=0"));

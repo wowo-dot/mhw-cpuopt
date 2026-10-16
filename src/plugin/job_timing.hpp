@@ -71,6 +71,12 @@ std::string take_traces(std::uintptr_t image_base);
 //   and each object class keeps a running mean of its job's duration; job
 //   types whose mean is at least the threshold go first, slowest first, the
 //   rest in the game's order. Predicted 239-256 us per frame back at 20 us.
+// - mode 3: sorted: every job by its class's mean, slowest first (classes
+//   with fewer than 4 samples last, in the game's order), placed class by
+//   class in linear time. al-15's replay (Ancient Forest, mode 2 on):
+//   184 us a round against mode 2's 202, 72 us a frame.
+// The time the game thread spends reordering and restoring is counted
+// ("order": reorder_us per reordered round).
 // Jobs are independent, and which thread draws which object already varies
 // from round to round, so the order changes nothing but timing.
 inline constexpr std::string_view camera_signature =
@@ -79,7 +85,7 @@ inline constexpr unsigned camera_call = 19, camera_return = 24;  // offsets of t
 inline constexpr unsigned learn_every = 16;
 // The camera round's return address; 0 leaves ordering unavailable.
 void set_camera_return(std::uintptr_t address) noexcept;
-// 0 off, 1 reversed, 2 learned with this threshold. False if unavailable.
+// 0 off, 1 reversed, 2 learned with this threshold, 3 sorted. False if unavailable.
 bool set_order(int mode, unsigned threshold_us) noexcept;
 // "order": the switch's state and counts into an open JSON object.
 void append_order(std::string& out);

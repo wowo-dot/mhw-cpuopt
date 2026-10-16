@@ -69,7 +69,7 @@ def main():
         toggles &= 0xFFFF
         if order:
             o = ws[-1]['order']
-            state += (f', job order {("reversed", "learned")[order - 1]}: {sum(w["order"]["rounds"] for w in ws)} rounds reordered, '
+            state += (f', job order {("reversed", "learned", "sorted")[order - 1]}: {sum(w["order"]["rounds"] for w in ws)} rounds reordered, '
                       f'{sum(w["order"]["moved"] for w in ws)} jobs moved, {o["classes"]} classes known')
             if not sum(w['order']['rounds'] for w in ws):
                 state += ' (NOTHING REORDERED)'
