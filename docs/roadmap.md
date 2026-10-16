@@ -1,6 +1,6 @@
 # Where cpuopt stands and what comes next
 
-Updated 2026-10-16 (after al-26). Numbers and methods: `research/engine-notes.md`;
+Updated 2026-10-16 (after al-29). Numbers and methods: `research/engine-notes.md`;
 how a run is done: `runtime-protocol.md`.
 
 ## Kept: switches that help (measured on and off in one session)
@@ -79,11 +79,18 @@ Both measuring switches stay on in both halves of every A/B.
 3. **The DLSS mod together with cpuopt (al-25, al-26):** no conflicts; the
    forest stays CPU-bound with DLSS quality (GPU 58% busy stock, 79% with
    cpuopt); stock against the kept set +41% (Game Mode parking) to +80%
-   (clean setup, no pin). Left: a fight with DLSS, frame generation, and the
-   Process Lasso rule's effect with v0.12.1 (al-27).
-4. **Player mode** (when the research settles): the kept switches on without
-   a run folder, no logs, and a short guide.
-5. **Parked** (engine restructuring with real risk): overlapping camera
+   (clean setup, no pin). The Velkhana fight with DLSS +63%, GPU-bound
+   (al-27); with cpuopt the Lasso rule changes nothing. Left: frame
+   generation.
+4. **Player mode (done, al-28, al-29; v0.13.1):** without a run folder the
+   kept switches are on from cpuopt.ini, with a CMFM page (a switch and a
+   line of help per optimization, everything on/off with a hotkey, a live
+   status line, the experimental 300 fps cap removal) and a small log.
+5. **Release:** a player guide and tester notes, an in-game A/B benchmark
+   that testers can run and send back, a closed beta on other CPUs (Intel,
+   single-die Ryzen, fewer cores), then the public release (fresh repo
+   history, noreply author, licence check).
+6. **Parked** (engine restructuring with real risk): overlapping camera
    rounds with the next camera's setup, Present and frame submission off
    the game thread, overlapping unit lines.
 

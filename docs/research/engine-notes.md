@@ -726,3 +726,22 @@ in the stock steps, where cpuopt holds no mask).
   busy, 345 W), the kept set 285.6 fps (+63%, every pair +54% to +76%; GPU
   97% busy, 482 W). CPU frame 5.704 to 3.154 ms (317 fps CPU-bound); with
   cpuopt the fight is GPU-bound at 1440p with DLSS quality on an RTX 5090.
+
+### Player mode in game (al-28 v0.13.0, al-29 v0.13.1)
+
+No run folder: cpuopt.ini next to the DLL, cpuopt.log (1 MB limit), CMFM
+0.1.0's Mods page, DLSS 0.28.5 quality, the same setup as al-27.
+
+- al-28 (12 min): the page showed next to the DLSS mod's; the hotkey set on
+  the page (Ctrl+P) flipped everything about five times; remove_fps_cap
+  raised the cap to 1000 (385 fps in Seliana) and set it back to 300 when
+  switched off. 13 changes, 13 saves of the ini, 0 failed switches in 11
+  status checks. The status line counted only 3 of 7 optimizations: in
+  menu.cpp the page's row names (an enum in the same namespace) shadowed
+  four switches' toggle values, so the count loop read 4, 5, 6 and 7 as
+  toggles. v0.13.1 names the rows row_*, qualifies the toggles and checks
+  the table with a static_assert and the smoke test.
+- al-29 (8.5 min): the status line reads all 7 on. Every switch was
+  turned off and on one by one from the page, and everything with the
+  hotkey: 55 changes, 54 saves, 0 failed in 13 status checks, the cap held
+  at 1000 throughout.
