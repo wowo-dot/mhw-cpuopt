@@ -710,3 +710,19 @@ die, no Process Lasso rule for MHW; four pairs of 30 s each.
 - v0.12.1: cpu_limit's switch-off path set the mask read at startup, which
   would undo a Process Lasso rule applied after it; it now restores only an
   affinity it set itself.
+
+### With a Process Lasso rule, and the fight with DLSS (al-27, v0.12.1)
+
+DLSS quality, Game Mode off, BIOS preferring the frequency die, and the
+user's Process Lasso rule pinning MHW to CCD0 (the game stayed on 0xFFFF
+in the stock steps, where cpuopt holds no mask).
+
+- Ancient Forest, four pairs of 30 s: stock 181.9 fps (p99 16.68 ms: the
+  effect loop's spikes), CPU frame 5.242 ms; the kept set 268.6 fps (+48%),
+  3.694 ms, p99 4.40 ms. With cpuopt the Lasso rule makes no difference
+  (al-26 without it: 264.5); without cpuopt it is worth +24% (146.6 to
+  181.9).
+- Arch-Tempered Velkhana, eight pairs of 15 s: stock 175.2 fps (GPU 62%
+  busy, 345 W), the kept set 285.6 fps (+63%, every pair +54% to +76%; GPU
+  97% busy, 482 W). CPU frame 5.704 to 3.154 ms (317 fps CPU-bound); with
+  cpuopt the fight is GPU-bound at 1440p with DLSS quality on an RTX 5090.
