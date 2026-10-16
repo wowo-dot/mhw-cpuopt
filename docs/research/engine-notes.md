@@ -745,3 +745,21 @@ No run folder: cpuopt.ini next to the DLL, cpuopt.log (1 MB limit), CMFM
   turned off and on one by one from the page, and everything with the
   hotkey: 55 changes, 54 saves, 0 failed in 13 status checks, the cap held
   at 1000 throughout.
+
+### The Mods page's benchmark in game (al-30 v0.14.0, al-31 v0.14.1)
+
+Ancient Forest camp, DLSS quality, the Lasso rule, a Discord stream running
+alongside (al-27's setup otherwise). One benchmark, 8 pairs of 15 s:
+171.7 to 270.5 fps (+58%, every pair +55% to +60%), game thread CPU time
+per frame 5.03 to 3.44 ms (-32%), p99 16.65 to 4.30 ms, all threads' CPU
+per frame 28.3 to 21.1 ms. The "on" side matches al-27's manual A/B (269
+fps, 3.69 ms); the "off" side is 10 fps lower, likely the stream (stock MHW
+is the more CPU-starved). The page's result line was squeezed into its
+value box (about 30 characters fit); v0.14.1 splits it into two rows, and
+al-31 showed every benchmark line fitting. This build is the closed beta's
+package (cpuopt-0.14.1-beta.zip, DLL f553bad4).
+
+The logs of al-29 to al-31 end without stopping/stopped/shutdown/exit: the
+user ends the game with the taskbar's End task, which terminates the
+process without EXITING or DLL detach. Nothing is lost: the changes live in
+the process's memory, and cpuopt.ini is saved within a second of a change.
