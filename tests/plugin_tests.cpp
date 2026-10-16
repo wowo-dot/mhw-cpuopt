@@ -1073,6 +1073,35 @@ void cpu_limit_test() {
     cl::restore();
     GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
     CHECK(now == before);
+    // Someone else (a Process Lasso rule) changes the mask after ours: it is
+    // theirs, and switching off leaves it.
+    cl::set_mask(cl::first_bits(before, 2), 2);
+    SetProcessAffinityMask(GetCurrentProcess(), cl::first_bits(before, 4));
+    cl::set_mask(0, 0);
+    GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
+    CHECK(now == cl::first_bits(before, 4));
+    cl::restore();
+    GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
+    CHECK(now == cl::first_bits(before, 4));
+    // A rule that already pins the process where the switch wants it: no
+    // change, counted as applied, and nothing undone when off.
+    SetProcessAffinityMask(GetCurrentProcess(), cl::first_bits(before, 2));
+    cl::set_mask(cl::first_bits(before, 2), 0);
+    out = "{";
+    cl::append(out);
+    CHECK(out.find("\"applied\":true") != std::string::npos);
+    cl::set_mask(0, 0);
+    GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
+    CHECK(now == cl::first_bits(before, 2));
+    // A rule narrower than the switch's mask bounds it: the switch keeps the rule's processors.
+    cl::set_mask(cl::first_bits(before, 3), 0);
+    GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
+    CHECK(now == cl::first_bits(before, 2));
+    // Both switches off with nothing of ours standing: the mask is not touched.
+    cl::set_mask(0, 0);
+    GetProcessAffinityMask(GetCurrentProcess(), &now, &system);
+    CHECK(now == cl::first_bits(before, 2));
+    SetProcessAffinityMask(GetCurrentProcess(), before);
 }
 
 // frame_budget: a stand-in frame with a 1 ms limiter, 0.5 ms of job rounds

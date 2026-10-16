@@ -7,7 +7,9 @@
 namespace cpuopt::cpu_limit {
 namespace {
 SRWLOCK lock = SRWLOCK_INIT;
-DWORD_PTR own{};  // the process's affinity before the first change; 0 = not read yet
+DWORD_PTR own{};     // the process's affinity when first read; 0 = not read yet
+DWORD_PTR ours{};    // the affinity this module set, while it stands; 0 = none
+DWORD_PTR before{};  // what was in effect right before that change
 std::atomic<unsigned> limit{};
 std::atomic<std::uint64_t> applied_mask{};
 std::atomic<bool> applied{};
@@ -124,10 +126,20 @@ void set_mask(DWORD_PTR mask, unsigned cpu_limit) noexcept {
     const auto base = own_locked();
     DWORD_PTR process{}, system{};
     if (base && GetProcessAffinityMask(GetCurrentProcess(), &process, &system)) {
-        const auto target = mask ? (mask & base) : base;
-        if (target && target != process && SetProcessAffinityMask(GetCurrentProcess(), target)) process = target;
+        if (ours && process != ours) ours = before = 0;  // changed by someone else since: theirs now
+        if (mask) {
+            const auto from = ours ? before : process;  // ours replaced, theirs kept as the bound
+            const auto target = mask & from;
+            if (target && target != process && SetProcessAffinityMask(GetCurrentProcess(), target)) {
+                if (!ours) before = process;
+                ours = process = target;
+            }
+        } else if (ours) {
+            if (SetProcessAffinityMask(GetCurrentProcess(), before)) process = before;
+            ours = before = 0;
+        }
         applied_mask.store(process);
-        applied.store(process != base);
+        applied.store(mask && (process & ~mask) == 0);  // on the wanted processors, by us or by a rule
     }
     limit.store(cpu_limit);
     ReleaseSRWLockExclusive(&lock);
@@ -135,7 +147,10 @@ void set_mask(DWORD_PTR mask, unsigned cpu_limit) noexcept {
 
 void restore() noexcept {
     AcquireSRWLockExclusive(&lock);
-    if (own) SetProcessAffinityMask(GetCurrentProcess(), own);
+    DWORD_PTR process{}, system{};
+    if (ours && GetProcessAffinityMask(GetCurrentProcess(), &process, &system) && process == ours)
+        SetProcessAffinityMask(GetCurrentProcess(), before);
+    ours = before = 0;
     applied.store(false);
     limit.store(0);
     ReleaseSRWLockExclusive(&lock);
