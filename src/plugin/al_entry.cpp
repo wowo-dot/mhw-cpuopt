@@ -10,6 +10,7 @@
 #include "frame_budget.hpp"
 #include "frame_cap.hpp"
 #include "limiter.hpp"
+#include "contacts.hpp"
 #include "frame_clock.hpp"
 #include "frame_events.hpp"
 #include "image_scan.hpp"
@@ -327,6 +328,7 @@ void AL_CALL on_frame(al_plugin_t*, al_frame_event_t event, const al_frame_info_
         cpuopt::frame_budget::on_begin(info->qpc);
         cpuopt::job_cap::on_begin();  // before the update: no job round runs now
         cpuopt::frame_cap::on_begin();  // nor frame timing
+        cpuopt::contacts::on_begin();   // nor collision
         std::uint64_t counter{};
         if (cpuopt::frame_clock::read(validated_renderer, counter)) cpuopt::frame_events::on_render_counter(counter);
     } else if (event == AL_FRAME_END) {
@@ -358,7 +360,8 @@ void AL_CALL on_phase(al_plugin_t*, al_phase_t phase, const void* data) {
         cpuopt::job_timing::set_inline(false, 1);
         cpuopt::frame_budget::set_active(false);
         cpuopt::frame_cap::restore();
-        cpuopt::limiter::set_active(false, 500);  // the game's own spin for its teardown
+        cpuopt::limiter::set_active(false, 1000);  // the game's own spin for its teardown
+        cpuopt::contacts::restore();
         cpuopt::server_time::set_active(false, 0);
         cpuopt::worker_spin::set_active(false, 0);  // job threads block again for the game's teardown
         cpuopt::unit_lines::restore();
@@ -486,6 +489,19 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
                                         find(cpuopt::unit_lines::ctor_signature, unused2, 2), find(cpuopt::unit_lines::owner_signature, unused2, 2)};
             host.units = cpuopt::unit_lines::discover(counts);
             if (host.units.found && host.job.found) cpuopt::unit_lines::set_target(base + host.job.global_rva);
+        }
+        // sCollision's parallel flags: four signatures, and sMain's global from job_cap.
+        {
+            std::uintptr_t sites[4]{}, unused2[2]{};
+            unsigned counts[4]{};
+            const std::string_view patterns[4] = {cpuopt::contacts::setup_signature, cpuopt::contacts::move_signature,
+                                                  cpuopt::contacts::owner_signature, cpuopt::contacts::vtable_signature};
+            for (unsigned i = 0; i < 4; ++i) {
+                counts[i] = find(patterns[i], unused2, 2);
+                sites[i] = unused2[0];
+            }
+            host.contacts = cpuopt::contacts::discover(sites, counts, host.job.found ? base + host.job.global_rva : 0);
+            cpuopt::contacts::set_target(host.contacts);
         }
         // The frame budget's two functions.
         {

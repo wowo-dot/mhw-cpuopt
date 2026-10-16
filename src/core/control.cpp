@@ -81,6 +81,9 @@ std::optional<Control> parse_control(std::string_view text) {
         } else if (key == "follow_us") {
             c.follow_us = number(value);
             if (!c.follow_us || *c.follow_us < 5 || *c.follow_us > 1000) return std::nullopt;
+        } else if (key == "contacts") {
+            c.contacts = number(value);
+            if (!c.contacts || *c.contacts < 1 || *c.contacts > 3) return std::nullopt;
         } else if (key == "marker") {
             if (value.size() > 64) return std::nullopt;
             for (const char ch : value)

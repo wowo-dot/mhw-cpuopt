@@ -36,8 +36,10 @@ enum Toggle : unsigned {
                               // control.ini max_fps, for measuring capped scenes (frame_cap.hpp)
     sleep_limiter = 16384U,   // the engine's frame limiter waits on a high-resolution timer until
                               // control.ini margin_us before its deadline instead of spinning (limiter.hpp)
+    parallel_contacts = 32768U,  // sCollision's contact and setup passes as job rounds, the flags the
+                                 // engine sets with more than one job thread (contacts.hpp)
 };
-inline constexpr unsigned toggle_mask = 32767U;  // every defined bit
+inline constexpr unsigned toggle_mask = 65535U;  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }

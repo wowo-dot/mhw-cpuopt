@@ -6,6 +6,7 @@
 #include "server_time.hpp"
 #include "steam_running.hpp"
 #include "unit_lines.hpp"
+#include "contacts.hpp"
 #include "worker_spin.hpp"
 #include <windows.h>
 #include <cstdint>
@@ -32,6 +33,7 @@ struct Host {
     worker_spin::Discovery spin;    // the job threads' wait, searched at PRE_MAIN
     unit_lines::Discovery units;    // sMhUnit's line threshold, searched at PRE_MAIN
     steam_running::Discovery running;  // the two IsSteamRunning calls, searched at PRE_MAIN
+    contacts::Discovery contacts;      // sCollision's parallel flags, searched at PRE_MAIN
     frame_budget::Discovery budget;    // the limiter's function and cD3DRender::present
     // Put the prim_stores change and the server_time detours in or out;
     // false with the reason when they cannot. Any thread.

@@ -79,7 +79,8 @@ struct State {
     cpu_limit::Ccd ccd;                   // toggle cache_ccd: the largest L3's processors
     bool budget{};                        // the frame_budget detours are in
     unsigned max_fps{1000};               // toggle uncap: the cap to set
-    unsigned margin_us{500};              // toggle sleep_limiter: the spin left before the deadline
+    unsigned margin_us{1000};             // toggle sleep_limiter: the spin left before the deadline (al-22)
+    unsigned contacts_mode{3};            // toggle parallel_contacts: bit 0 contact pass, bit 1 setup pass
     unsigned follow{};                    // follow mode: the followed class's vtable RVA (0 off)
     unsigned follow_us{20};               // follow mode: the gap between samples
     bool running{};                       // the steam_running change is in
@@ -161,6 +162,7 @@ void write_window(State& s) {
     frame_budget::append(out);
     frame_cap::append(out);
     limiter::append(out);
+    contacts::append(out);
     json::key(out, "prim_stores");
     out += s.prim ? "true" : "false";
     if (s.poller) append_poller(out, frame_clock::take(), ms);
@@ -240,6 +242,8 @@ void poll_control(State& s, bool initial) {
     if (parsed->sample_jobs) sampler::set_focus(*parsed->sample_jobs);
     if (parsed->max_fps) s.max_fps = *parsed->max_fps;
     if (parsed->margin_us) s.margin_us = *parsed->margin_us;
+    if (parsed->contacts) s.contacts_mode = *parsed->contacts;
+    contacts::request(on(parallel_contacts) ? s.contacts_mode : 0);  // applied on the game thread at the next frame
     if (parsed->follow) s.follow = *parsed->follow;
     if (parsed->follow_us) s.follow_us = *parsed->follow_us;
     sampler::set_follow_gap(s.follow_us);
@@ -353,6 +357,8 @@ void poll_control(State& s, bool initial) {
     json::number(out, std::uint64_t(s.max_fps));
     json::key(out, "margin_us");
     json::number(out, std::uint64_t(s.margin_us));
+    json::key(out, "contacts");
+    json::number(out, std::uint64_t(s.contacts_mode));
     json::key(out, "follow");
     json::number(out, std::uint64_t(s.follow));
     json::key(out, "follow_us");
@@ -395,6 +401,8 @@ DWORD WINAPI worker(void* parameter) noexcept {
         event_log.write(frame_budget::discovery_event(host.budget, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
                                                       host.scanner));
         event_log.write(unit_lines::discovery_event(host.units, now_ms(), host.scanner));
+        event_log.write(contacts::discovery_event(host.contacts, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
+                                                  host.scanner));
         event_log.write(steam_running::discovery_event(host.running, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
                                                        host.scanner));
 

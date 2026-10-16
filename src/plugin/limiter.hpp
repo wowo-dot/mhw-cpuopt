@@ -12,7 +12,8 @@ namespace cpuopt::limiter {
 // cap with the kept switches about 1.9 ms remain per frame, all of it spun.
 // The switch waits on a high-resolution waitable timer in the detour, before
 // the game's function runs, until control.ini margin_us before the deadline
-// the function computes; the function then finds that little left and spins
+// the function computes (1000 by default: in game the timer woke up to about
+// 0.85 ms late, al-22); the function then finds that little left and spins
 // it. Nothing of the game's own timing is changed or skipped: its entry
 // comes later, as if the frame's work had taken longer.
 //

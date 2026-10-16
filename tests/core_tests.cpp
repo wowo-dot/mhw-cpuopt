@@ -111,6 +111,10 @@ void control() {
     CHECK(parse_control("follow=0")->follow == 0u);
     CHECK(parse_control("follow_us=20")->follow_us == 20u);
     CHECK(!parse_control("follow_us=4"));
+    CHECK(parse_control("toggles=65535")->toggles == 65535u);
+    CHECK(parse_control("contacts=3")->contacts == 3u);
+    CHECK(!parse_control("contacts=0"));
+    CHECK(!parse_control("contacts=4"));
     CHECK(parse_control("cpu_count=12")->cpu_count == 12u);
     CHECK(!parse_control("cpu_count=1"));
     CHECK(!parse_control("cpu_count=65"));

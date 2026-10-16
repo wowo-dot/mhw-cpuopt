@@ -97,6 +97,10 @@ def main():
         if toggles & 8192:
             c = ws[-1].get('cap', {})
             state += f', frame cap {c.get("applied")} ({c.get("state")}; the game\'s {c.get("game")})'
+        if toggles & 32768:
+            ct = [w.get('contacts', {}) for w in ws]
+            state += (f', parallel contacts ({ct[-1].get("state")}, mode {ct[-1].get("mode")}: contact {ct[-1].get("contact")}, '
+                      f'setup {ct[-1].get("setup")}, {sum(x.get("writes", 0) for x in ct)} writes)')
         if toggles & 16384:
             lm = [w.get('limiter', {}) for w in ws]
             waits = sum(x.get('waits', 0) for x in lm)

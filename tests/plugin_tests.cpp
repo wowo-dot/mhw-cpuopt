@@ -15,6 +15,7 @@
 #include "../src/plugin/frame_budget.hpp"
 #include "../src/plugin/frame_cap.hpp"
 #include "../src/plugin/limiter.hpp"
+#include "../src/plugin/contacts.hpp"
 #include "../src/plugin/frame_clock.hpp"
 #include "../src/plugin/image_scan.hpp"
 #include "../src/plugin/frame_events.hpp"
@@ -1262,6 +1263,92 @@ void limiter_test() {
     CHECK(double(cpuopt::qpc_now() - t0) / double(f) < 0.5e-3);
 }
 
+// contacts against a stand-in sMain and sCollision: the collider's flags set
+// and put back, set again after the engine's setup clears one, left to the
+// engine when it set them itself, and never written into another object.
+std::uintptr_t fake_contacts_smain;
+
+void contacts_test() {
+    namespace ct = cpuopt::contacts;
+    auto smain = std::make_unique<std::uint8_t[]>(ct::collision_offset + 8);
+    auto collision = std::make_unique<std::uint8_t[]>(ct::active_offset + 8);
+    std::memset(smain.get(), 0, ct::collision_offset + 8);
+    std::memset(collision.get(), 0, ct::active_offset + 8);
+    static const std::uintptr_t fake_vtable[4]{};
+    const auto vt = reinterpret_cast<std::uintptr_t>(&fake_vtable);
+    *reinterpret_cast<std::uintptr_t*>(collision.get()) = vt;
+    collision[ct::active_offset] = 1;
+    auto& contact = collision[ct::collider_offset + ct::contact_flag];
+    auto& setup = collision[ct::collider_offset + ct::setup_flag];
+    const auto state = [] {
+        std::string out = "{";
+        ct::append(out);
+        const auto at = out.find("\"state\":\"") + 9;
+        return out.substr(at, out.find('"', at) - at);
+    };
+    // Discovery: the setup's global must be sMain's.
+    static std::uint8_t code[64]{};
+    std::uintptr_t sites[4]{};
+    for (auto& s : sites) s = reinterpret_cast<std::uintptr_t>(code);
+    const unsigned once[4]{1, 1, 1, 1};
+    const auto global = reinterpret_cast<std::uintptr_t>(&fake_contacts_smain);
+    const std::int32_t to_global = static_cast<std::int32_t>(global - (sites[0] + ct::global_next));
+    std::memcpy(code + ct::global_rel, &to_global, 4);
+    CHECK(!ct::discover(sites, once, global + 8).found);
+    const std::int32_t to_vtable = static_cast<std::int32_t>(vt - (sites[3] + ct::vtable_next));
+    std::memcpy(code + ct::vtable_rel, &to_vtable, 4);
+    const unsigned twice[4]{1, 2, 1, 1};
+    CHECK(!ct::discover(sites, twice, global).found);
+    // The test's rel32 only reaches if code, the global and the vtable are within 2 GB (one image).
+    const auto d = ct::discover(sites, once, global);
+    CHECK(d.found && d.global == global && d.vtable == vt);
+    ct::set_target(d);
+    ct::request(3);
+    ct::on_begin();
+    CHECK(state() == "waiting");  // no sMain yet
+    fake_contacts_smain = reinterpret_cast<std::uintptr_t>(smain.get());
+    *reinterpret_cast<std::uintptr_t*>(smain.get() + ct::collision_offset) = reinterpret_cast<std::uintptr_t>(collision.get());
+    ct::on_begin();
+    CHECK(state() == "applied" && contact == 1 && setup == 1);
+    ct::request(ct::contact_pass);
+    ct::on_begin();
+    CHECK(contact == 1 && setup == 0);
+    contact = 0;  // the engine's setup again, with one participant
+    ct::on_begin();
+    CHECK(contact == 1);
+    std::string out = "{";
+    ct::append(out);
+    CHECK(out.find("\"writes\":1") != std::string::npos);  // the contact flag again (state() reads reset the count)
+    ct::request(0);
+    ct::on_begin();
+    CHECK(state() == "off" && contact == 0 && setup == 0);
+    setup = 1;  // the engine's own: left alone, on and off
+    ct::request(3);
+    ct::on_begin();
+    CHECK(contact == 1 && setup == 1);
+    ct::request(0);
+    ct::on_begin();
+    CHECK(contact == 0 && setup == 1);
+    setup = 0;
+    // Another object: nothing written, what was set is put back.
+    ct::request(3);
+    ct::on_begin();
+    *reinterpret_cast<std::uintptr_t*>(collision.get()) = vt + 8;
+    ct::on_begin();
+    CHECK(state() == "layout mismatch" && contact == 0 && setup == 0);
+    // Restore at exit.
+    *reinterpret_cast<std::uintptr_t*>(collision.get()) = vt;
+    ct::set_target(d);
+    ct::on_begin();
+    CHECK(contact == 1 && setup == 1);
+    ct::restore();
+    CHECK(state() == "restored" && contact == 0 && setup == 0);
+    ct::on_begin();
+    CHECK(contact == 0);
+    fake_contacts_smain = 0;
+    ct::set_target(ct::Discovery{});
+}
+
 void spin_probe_test() {
     namespace sp = cpuopt::spin_probe;
     auto object = std::make_unique<std::uint8_t[]>(sp::done_offset + 8);
@@ -1536,6 +1623,7 @@ int main() {
     frame_budget_test();
     frame_cap_test();
     limiter_test();
+    contacts_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);
