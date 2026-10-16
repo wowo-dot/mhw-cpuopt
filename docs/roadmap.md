@@ -1,6 +1,6 @@
 # Where cpuopt stands and what comes next
 
-Updated 2026-10-16 (after al-29). Numbers and methods: `research/engine-notes.md`;
+Updated 2026-10-17 (after al-32 and the first beta reports). Numbers and methods: `research/engine-notes.md`;
 how a run is done: `runtime-protocol.md`.
 
 ## Kept: switches that help (measured on and off in one session)
@@ -86,11 +86,30 @@ Both measuring switches stay on in both halves of every A/B.
    kept switches are on from cpuopt.ini, with a CMFM page (a switch and a
    line of help per optimization, everything on/off with a hotkey, a live
    status line, the experimental 300 fps cap removal) and a small log.
-5. **Release:** a player guide and tester notes, an in-game A/B benchmark
-   that testers can run and send back, a closed beta on other CPUs (Intel,
-   single-die Ryzen, fewer cores), then the public release (fresh repo
-   history, noreply author, licence check).
-6. **Parked** (engine restructuring with real risk): overlapping camera
+5. **Release (closed beta running, v0.14.3):** the player guide, tester
+   notes, the Mods page's benchmark (8 off/on pairs, a report testers send
+   back) and `tools/package.py` are done. Two testers so far, both Intel and
+   GPU-limited (engine notes, "Closed beta, first results"). Wanted: a
+   non-X3D Ryzen, a CPU-limited Intel run. Then the public release (fresh
+   repo history, noreply author, licence check).
+   - Proposed: a live "Limited by" line on the Mods page (CPU, graphics
+     card or frame rate limit, from the game thread's cycle count against
+     the frame time), and the benchmark's page line saying "GPU-limited"
+     when it was; the cutoff needs a CPU-limited reading with the cycle
+     count from the test PC.
+   - Ideas from the testers: "Stay on the performance cores" for Intel
+     hybrid CPUs (the cache_ccd pattern by efficiency class), and job rounds
+     sized to an affinity set outside cpuopt (the 12600KF's 6 of 16); both
+     need measuring first.
+6. **The GPU side (starting):** most players are GPU-limited. Measuring
+   first, on the test PC with the GPU clock locked by the user (nvidia-smi
+   -lgc) and no DLSS mod: the cpuopt benchmark as the GPU-limited baseline
+   (fps then measures the GPU), each graphics option's cost, then per-pass
+   GPU timings from PIX captures (v0.14.4 loads PIX's capture layer for
+   that; `AGENTS.md`). Candidates come from what the captures show: passes
+   done twice, effects at a resolution nobody would miss, off-screen work.
+   Also open: whether the game thread's wait for the GPU in Present spins.
+7. **Parked** (engine restructuring with real risk): overlapping camera
    rounds with the next camera's setup, Present and frame submission off
    the game thread, overlapping unit lines.
 

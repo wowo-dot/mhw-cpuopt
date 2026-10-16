@@ -122,8 +122,8 @@ rules come first.
     matched once, at `0x23922C2`, on the clean image on 2026-10-11.
   - `make <image> <VA>` and `scan <image> "<pattern>"` find and check patterns
     for new sites.
-- **x64dbg and Frida on the running game** are the only exception to the
-  read-only rule in the Runtime Testing Protocol:
+- **x64dbg and Frida on the running game** are, with PIX below, the only
+  exceptions to the read-only rule in the Runtime Testing Protocol:
   - the user launches through MO2 as always and says OK in the session before
     each attach; never attach during startup (SteamStub);
   - offline only, as for experimental builds;
@@ -136,6 +136,16 @@ rules come first.
     attached windows into a profile;
   - detach when done (x64dbg `detach`, never `terminate_session`) and note
     what was attached, when and why in the run folder.
+- **PIX GPU captures** (Microsoft PIX, installed by the user; from v0.14.4):
+  - cpuopt loads PIX's capture layer (`WinPixGpuCapturer.dll`) at startup
+    only while `<plugin folder>\load-pix-capturer.txt` exists. Make that file
+    only after the user's OK for the session, and remove it afterwards; it
+    never goes into a package;
+  - the user launches through MO2 as always and PIX attaches to the running
+    game; never launch the game from PIX. Offline only;
+  - captures hold the game's shaders, textures and meshes: they stay under
+    `local/` and are never committed, shared or sent anywhere;
+  - the layer changes timing: benchmark and measure without it loaded.
 - Point the tools at the game's code only, never at NVIDIA binaries or other
   mods' DLLs.
 

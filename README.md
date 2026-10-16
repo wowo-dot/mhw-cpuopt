@@ -21,6 +21,18 @@ with the Lasso rule). These are one PC's numbers. An earlier version gained
 as much with the same CPU limited to six or four cores (+33-34%), but other
 CPUs have not been measured yet: that is what the beta is for.
 
+### Will my frame rate go up?
+
+Only where the CPU is what holds it back: a fast graphics card (an RTX
+4090, 5080 or 5090 at 1440p, for example) or a lower resolution, heavy
+scenes and fights, high refresh rates. If the graphics card is
+already fully busy, cpuopt cannot raise the frame rate; it still lowers the
+CPU time every frame needs, which keeps frames steadier where effects pile
+up and leaves room for a faster graphics card later. With the DLSS mod's
+Reflex on, a shorter CPU frame most likely means lower input latency too.
+The benchmark (below) measures both and says which one held your frame
+rate.
+
 **Status:** closed beta (0.14). Tested with MHW 421810, the final version.
 
 ## What it changes

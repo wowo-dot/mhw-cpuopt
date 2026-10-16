@@ -763,3 +763,40 @@ The logs of al-29 to al-31 end without stopping/stopped/shutdown/exit: the
 user ends the game with the taskbar's End task, which terminates the
 process without EXITING or DLL detach. Nothing is lost: the changes live in
 the process's memory, and cpuopt.ini is saved within a second of a change.
+
+### Closed beta, first results (2026-10-16/17, v0.14.1 and v0.14.3)
+
+Logs and reports in `local/beta/`. Both testers ran the game build cpuopt
+was made on; every signature matched once and every switch applied, with
+many other mods loaded (Stracker plugins through Astera Loader's
+compatibility layer, an old CRC bypass, HunterPie, the Discord overlay, the
+DLSS mod with Streamline). No crash or conflict was reported.
+
+- **i7-13700K (8 P + 8 E cores), RTX 3080 Ti, 1440p, DLSS performance,
+  Reflex off, all 24 threads, normal priority (v0.14.3, Ancient Forest
+  camp):** GPU-limited at 159 fps in both states (GPU 99%). The game
+  thread's CPU time per frame 5.68 to 5.15 ms (-9.4%; busy 90% to 82%); job
+  rounds 3.01 to 2.77 ms, its own work 2.23 to 1.91 ms, Present (the GPU
+  wait) 1.02 to 1.58 ms; all threads' CPU per frame 31.8 to 32.3 ms (the
+  windows vary about 5%). The off windows had no frame-time spikes (p99
+  8.4 ms) though the effect ring is write-combined there too.
+- **i5-12600KF, RTX 3060 Ti, 1440p, Reflex on (v0.14.1, Elder's
+  Recess):** 116 fps in both states, GPU 99% even at DLSS performance.
+  Something on the PC limited MHW to logical processors 0, 2, 4, 6, 8 and
+  10 (one thread per P-core) at High priority from the start, while the
+  engine still starts 15 job threads. frame_budget's "CPU" came out at 7.7
+  of 8.6 ms: Reflex's wait sits outside Present and the limiter, so that
+  measure counts it. v0.14.3 adds the game thread's cycle count (no sleep
+  inflates it), frame_budget's parts, the DLSS mod's settings and the
+  affinity and priority set outside cpuopt to the report.
+- Against the 9950X3D (al-26: the kept set without cache_ccd cut the CPU
+  frame 22%, with it 45%; al-30: off p99 16.65 ms, on 4.30 ms), the
+  13700K's gain is a third of that and its off windows show none of the
+  effect loop's spikes. Hypothesis, not shown: reading write-combined memory
+  costs far less on these Intel CPUs than on Zen, so plain_prim_stores,
+  the biggest switch, is mostly a Ryzen fix. Wanted: a non-X3D Ryzen, and
+  the 13700K CPU-limited (the game's resolution scaling low) and in an
+  effect-heavy spot.
+- Most players with mid-range graphics cards at 1440p are GPU-limited, so
+  their fps cannot rise. The README now says who gains fps; a live "Limited
+  by" line on the Mods page is proposed (roadmap).

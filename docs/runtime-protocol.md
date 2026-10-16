@@ -144,3 +144,28 @@ Toggles add up: 8 + 16 + 32 + 64 = 120 is every optimization switch of
 v0.6; 376 adds unit_threshold, the best measured set (al-15). A
 switch whose code is not found, or that Astera Loader refuses, stays off and
 says why in the log; the rest still apply.
+
+## Player mode (v0.13 and later)
+
+Without the sidecar the plugin runs as players get it:
+
+- `cpuopt.ini` next to the DLL holds the settings (made with the defaults
+  when missing; edits are picked up within a second), `cpuopt-session.log`
+  the log (`cpuopt.log` before v0.14.2; new each launch, at most 1 MB),
+  `cpuopt-benchmark.txt` every benchmark's report (appended).
+- `run.py prepare <name> --player` installs the DLL without a sidecar and
+  keeps the slot's `cpuopt.ini` as `cpuopt.ini.before`; after the game has
+  closed, `run.py collect <name>` copies the log, the ini and the benchmark
+  report into the run folder, then `seal`.
+- The log: `start` (as in research mode), the discoveries, `control` for
+  every change (marker `player`, `benchmark-on`, `benchmark-off`),
+  `settings_saved`/`settings_read`, `status` 10 s after a change and every
+  5 minutes (switch states, failures), `modules` with it when they changed.
+- The benchmark (Mods page, from v0.14.0): `bench` (armed, start, paused,
+  resumed, stopped), `bench_window` for every window as it ends (from
+  v0.14.3: frames, frame times, the game thread's CPU time from its cycle
+  count and busy share, frame_budget's parts, all threads' CPU time) and
+  `benchmark` with the result (`stopped` names why a run ended early; its
+  complete pairs are reported from two on).
+- With `load-pix-capturer.txt` in the plugin folder (v0.14.4, research
+  only, see `AGENTS.md`): `pix_capturer` with `loaded` 1 or 0.
