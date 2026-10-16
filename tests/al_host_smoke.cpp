@@ -9,7 +9,13 @@
 // phase: the ones this exe has no code for say so, inline rounds run the
 // host's small round alone), then sends EXITING and SHUTDOWN and checks the
 // run log.
+//   al_host_smoke <cpuopt.dll> <scratch folder> player
+// Player mode instead: no run folder; the host also serves al.input and a
+// stand-in CMFM (cmfm.menu), and the test checks cpuopt.ini (made with the
+// defaults), the Mods page's switches and hotkey, a hand edit of the file,
+// and cpuopt.log.
 #include "al/al_plugin.h"
+#include "cmfm/cmfm.h"
 #include "../src/core/signature.hpp"
 #include <windows.h>
 #include <atomic>
@@ -94,6 +100,46 @@ void AL_CALL host_status(al_plugin_t*, al_status_t status, const char* reason) {
 
 const al_game_t game = {sizeof(al_game_t), AL_GAME_VERSION, "c2ebbbd2c49f216d484e31a5219bed419eb1e5e7d206d02cba040a3ab79d90ea", "421810",
                         L"host.exe", L".", 0, AL_GRAPHICS_DX12};
+
+// al.input: the hotkeys the plugin holds.
+std::mutex input_lock;
+std::uint32_t hotkey_key{}, hotkey_mods{}, hotkey_next{1}, hotkey_live{};
+al_hotkey_fn hotkey_fn{};
+void* hotkey_user{};
+uint32_t AL_CALL input_add_hotkey(al_plugin_t*, const al_hotkey_t* h, al_hotkey_fn fn, void* user) {
+    std::lock_guard<std::mutex> hold(input_lock);
+    hotkey_key = h->key;
+    hotkey_mods = h->modifiers;
+    hotkey_fn = fn;
+    hotkey_user = user;
+    return hotkey_live = hotkey_next++;
+}
+al_result_t AL_CALL input_remove_hotkey(al_plugin_t*, uint32_t handle) {
+    std::lock_guard<std::mutex> hold(input_lock);
+    if (handle != hotkey_live) return AL_ERROR;
+    hotkey_live = 0;
+    return AL_OK;
+}
+al_input_t make_input() {
+    al_input_t in{};
+    in.size = sizeof(in);
+    in.version = AL_INPUT_VERSION;
+    in.add_hotkey = input_add_hotkey;
+    in.remove_hotkey = input_remove_hotkey;
+    return in;
+}
+const al_input_t input = make_input();
+// cmfm.menu: the page the plugin adds (its callbacks stay valid; its rows are counted).
+cmfm_page_t added_page{};
+std::string added_title;
+std::uint32_t added_rows{};
+uint32_t CMFM_CALL cmfm_add_page(const cmfm_page_t* page, char*, uint32_t) {
+    added_page = *page;
+    added_title = page->title ? page->title : "";
+    added_rows = page->setting_count;
+    return 1;
+}
+const cmfm_menu_t cmfm = {sizeof(cmfm_menu_t), CMFM_MENU_VERSION, cmfm_add_page};
 
 std::uint32_t scans{};
 uint32_t AL_CALL host_find(al_plugin_t*, const char* pattern, uint32_t where, void** matches, uint32_t capacity) {
@@ -186,6 +232,8 @@ const void* AL_CALL host_interface(al_plugin_t*, const char* name, uint32_t) {
     if (n == AL_FRAME_INTERFACE) return &frame;
     if (n == AL_D3D12_INTERFACE) return &d3d12;
     if (n == AL_HOOKS_INTERFACE) return &hooks;
+    if (n == AL_INPUT_INTERFACE) return &input;
+    if (n == CMFM_MENU_INTERFACE) return &cmfm;
     return nullptr;
 }
 al_result_t AL_CALL host_publish(al_plugin_t*, const char*, uint32_t, const void*) { return AL_ERROR; }
@@ -300,8 +348,82 @@ double number_in(const std::string& line, const std::string& object, const std::
 }
 }  // namespace
 
+std::string replaced(std::string text, const std::string& from, const std::string& to) {
+    const auto at = text.find(from);
+    if (at != std::string::npos) text.replace(at, from.size(), to);
+    return text;
+}
+
+// Player mode: no run folder. The frames run as in the research flow.
+int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
+    CHECK(last_status == AL_STATUS_ACTIVE);
+    CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && !present_callback);  // no Present timing
+    CHECK(added_title == "CPU optimizations" && added_rows == 13 && added_page.get && added_page.set && added_page.get_text);
+    const HANDLE jobs = CreateThread(nullptr, 0, job_thread, nullptr, 0, nullptr);
+    const HANDLE threads[] = {CreateThread(nullptr, 0, game_thread, nullptr, 0, nullptr),
+                              CreateThread(nullptr, 0, present_thread, nullptr, 0, nullptr)};
+    Sleep(1500);
+    const auto ini = folder + L"\\cpuopt.ini";
+    auto text = read_all(ini);
+    CHECK(text.find("enabled = on") != std::string::npos && text.find("remove_fps_cap = off") != std::string::npos);
+    CHECK(text.find("toggle_key = None") != std::string::npos && hotkey_live == 0);
+    // The Mods page: All optimizations off, Ctrl+F9 as the hotkey.
+    cmfm_value_t v{};
+    CHECK(added_page.get(added_page.user, 1, &v) == CMFM_OK && v.i == 1);
+    v.i = 0;
+    CHECK(added_page.set(added_page.user, 1, &v) == CMFM_OK);
+    v.i = 0x100 | 0x78;
+    CHECK(added_page.set(added_page.user, 2, &v) == CMFM_OK);
+    v.i = 0x1B;  // plain Esc: refused
+    char why[200] = "";
+    CHECK(added_page.validate && added_page.validate(added_page.user, 2, &v, why, sizeof(why)) == CMFM_ERROR && why[0]);
+    Sleep(1500);
+    text = read_all(ini);
+    CHECK(text.find("enabled = off") != std::string::npos && text.find("toggle_key = Ctrl+F9") != std::string::npos);
+    CHECK(hotkey_live != 0 && hotkey_key == 0x78 && hotkey_mods == 1);
+    char status[128] = "";
+    added_page.get_text(added_page.user, 3, status, sizeof(status));
+    std::printf("  status: %s\n", status);
+    CHECK(std::string(status).find("optimizations off") != std::string::npos);
+    // The hotkey turns them on again.
+    CHECK(hotkey_fn != nullptr);
+    if (hotkey_fn) hotkey_fn(self, hotkey_live, hotkey_user);
+    Sleep(1500);
+    CHECK(read_all(ini).find("enabled = on") != std::string::npos);
+    // A hand edit while the game runs.
+    write_all(ini, replaced(read_all(ini), "unit_us = 40", "unit_us = 50"));
+    Sleep(2000);
+
+    const auto t_exit = qpc();
+    info->on_phase(self, AL_PHASE_EXITING, nullptr);
+    const double exiting_ms = double(qpc() - t_exit) * 1000.0 / double(frequency());
+    frames_stop = true;
+    WaitForMultipleObjects(2, threads, TRUE, 2000);
+    jobs_stop = true;
+    WaitForSingleObject(jobs, 2000);
+    const al_phase_shutdown_t shutdown{sizeof(al_phase_shutdown_t), 0};
+    info->on_phase(self, AL_PHASE_SHUTDOWN, &shutdown);
+
+    const auto log = read_all(folder + L"\\cpuopt.log");
+    std::printf("al_host_smoke (player): %zu bytes of cpuopt.log, EXITING took %.1f ms\n", log.size(), exiting_ms);
+    CHECK(log.find("{\"event\":\"start\"") == 0 || log.find("\n{\"event\":\"start\"") != std::string::npos);
+    CHECK(log.find("\"toggles\":51512,\"requested_toggles\":51512,\"marker\":\"player\"") != std::string::npos);
+    CHECK(log.find("\"toggles\":0,\"requested_toggles\":0,\"marker\":\"player\"") != std::string::npos);
+    CHECK(log.find("\"unit_us\":50") != std::string::npos);  // the hand edit
+    CHECK(log.find("\"event\":\"settings_saved\"") != std::string::npos && log.find("\"event\":\"settings_read\"") != std::string::npos);
+    CHECK(log.find("\"event\":\"cmfm_page\",") != std::string::npos && log.find("\"added\":1") != std::string::npos);
+    CHECK(log.find("\"event\":\"status\"") != std::string::npos && log.find("\"event\":\"stopped\"}") != std::string::npos);
+    CHECK(log.find("\"event\":\"window\"") == std::string::npos && log.find("\"event\":\"profile\"") == std::string::npos);
+    CHECK(read_all(ini).find("unit_us = 50") != std::string::npos);
+    CHECK(exiting_ms < 2500);
+    std::printf(failures ? "al_host_smoke (player): %d failure(s)\n" : "al_host_smoke (player): ok\n", failures);
+    std::fflush(stdout);
+    ExitProcess(failures ? 1 : 0);
+}
+
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 3) return 2;
+    const bool player = argc == 4 && std::wstring(argv[3]) == L"player";
+    if (argc != 3 && !player) return 2;
     const std::wstring source = argv[1], scratch = argv[2];
     CreateDirectoryW(scratch.c_str(), nullptr);
     const auto root = scratch + L"\\host-" + std::to_wstring(GetCurrentProcessId());
@@ -309,8 +431,10 @@ int wmain(int argc, wchar_t** argv) {
     for (const auto& d : {root, plugins, folder, run}) CreateDirectoryW(d.c_str(), nullptr);
     const auto dll = folder + L"\\cpuopt.dll";
     CHECK(CopyFileW(source.c_str(), dll.c_str(), FALSE));
-    write_all(dll + L".output-dir", utf8(run) + "\r\n");
-    write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-a\n");
+    if (!player) {
+        write_all(dll + L".output-dir", utf8(run) + "\r\n");
+        write_all(run + L"\\control.ini", "window_ms=1000\nmarker=smoke-a\n");
+    }
 
     // The planted signature points at fake_srender, which points at the object.
     const auto site = reinterpret_cast<std::uintptr_t>(planted);
@@ -359,6 +483,7 @@ int wmain(int argc, wchar_t** argv) {
                          // sPrimitive's loop, the two server time calls, the job threads' wait, the four
                          // sMhUnit signatures, the four sCollision ones, the frame budget's two functions
                          // and the three IsSteamRunning calls
+    if (player) return player_flow(info, folder);
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && present_callback);
     CHECK(present_mask == (AL_D3D12_EVENT_BIT(AL_D3D12_PRE_PRESENT) | AL_D3D12_EVENT_BIT(AL_D3D12_POST_PRESENT)));
 
@@ -530,7 +655,7 @@ int wmain(int argc, wchar_t** argv) {
     {
         std::lock_guard<std::mutex> hold(log_lock);
         bool told = false;
-        for (const auto& line : plugin_log) told = told || line.find("logging to") != std::string::npos;
+        for (const auto& line : plugin_log) told = told || line.find("research run, log ") != std::string::npos;
         CHECK(told);
     }
     std::printf(failures ? "al_host_smoke: %d failure(s)\n" : "al_host_smoke: ok\n", failures);

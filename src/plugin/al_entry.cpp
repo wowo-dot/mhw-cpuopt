@@ -10,6 +10,8 @@
 #include "frame_budget.hpp"
 #include "frame_cap.hpp"
 #include "limiter.hpp"
+#include "menu.hpp"
+#include "cmfm/cmfm.h"
 #include "contacts.hpp"
 #include "frame_clock.hpp"
 #include "frame_events.hpp"
@@ -39,6 +41,9 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 namespace {
 const al_api_t* api{};
 al_plugin_t* self{};
+const al_input_t* input{};       // al.input: player mode's on/off hotkey
+std::uint32_t hotkey_handle{};
+SRWLOCK hotkey_lock = SRWLOCK_INIT;
 const al_frame_t* frame{};
 const al_hooks_t* hooks{};
 std::atomic<std::uint32_t> timing_hook{};  // al.hooks handle, 0 until first switched on
@@ -325,10 +330,32 @@ bool server_hooks(bool on, const char** reason) noexcept {
     return ok;
 }
 
+// Player mode's hotkey: flips the master switch (runtime::flip_enabled). AL
+// calls it on the game's frame thread; add and remove work from any thread.
+void AL_CALL on_hotkey(al_plugin_t*, std::uint32_t, void*) { cpuopt::runtime::flip_enabled(); }
+void set_hotkey(std::uint32_t key) noexcept {
+    if (!input) return;
+    AcquireSRWLockExclusive(&hotkey_lock);
+    if (hotkey_handle) {
+        input->remove_hotkey(self, hotkey_handle);
+        hotkey_handle = 0;
+    }
+    if (key & 0xFFU) {
+        al_hotkey_t h{};
+        h.size = sizeof(h);
+        h.key = key & 0xFFU;
+        h.modifiers = CMFM_KEY_MODS(key);
+        h.name = "cpuopt: all optimizations on/off";
+        hotkey_handle = input->add_hotkey(self, &h, on_hotkey, nullptr);
+    }
+    ReleaseSRWLockExclusive(&hotkey_lock);
+}
+
 void AL_CALL on_frame(al_plugin_t*, al_frame_event_t event, const al_frame_info_t* info, void*) {
     if (!info) return;
     if (event == AL_FRAME_BEGIN) {
         cpuopt::frame_events::on_begin(info->qpc, GetCurrentThreadId());
+        cpuopt::menu::on_frame(info->qpc);
         cpuopt::frame_budget::on_begin(info->qpc);
         cpuopt::job_cap::on_begin();  // before the update: no job round runs now
         cpuopt::frame_cap::on_begin();  // nor frame timing
@@ -387,7 +414,7 @@ const al_plugin_info_t info = {
     sizeof(al_plugin_info_t),
     AL_API_VERSION,
     "cpuopt",
-    "cpuopt (MHW CPU cost research)",
+    "cpuopt (MHW CPU optimizations)",
     CPUOPT_VERSION,
     AL_PHASE_BIT(AL_PHASE_GAME_READY) | AL_PHASE_BIT(AL_PHASE_EXITING) | AL_PHASE_BIT(AL_PHASE_SHUTDOWN),
     0,        // order
@@ -542,6 +569,8 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         host.spin_patch = spin_patch;
         host.running_patch = running_patch;
         host.budget_hooks = budget_hooks;
+        input = service<al_input_t>(AL_INPUT_INTERFACE, AL_INPUT_VERSION);  // now, so AL installs its input layer
+        host.hotkey = set_hotkey;
         if (!cpuopt::runtime::start(reinterpret_cast<HMODULE>(&__ImageBase), host, reason)) {
             // Not measuring: no subscriptions, so AL hooks nothing for us.
             frame = nullptr;
@@ -549,14 +578,33 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             api->set_status(self, AL_STATUS_DEGRADED, reason.c_str());
             return AL_OK;
         }
-        say(AL_LOG_INFO, std::string("cpuopt ") + CPUOPT_VERSION + " logging to " + reason);
+        say(AL_LOG_INFO, std::string("cpuopt ") + CPUOPT_VERSION + (cpuopt::runtime::player() ? ", " : ", research run, log ") + reason);
+        // Player mode: cpuopt's page in CMFM's Mods menu, when CMFM is there.
+        if (cpuopt::runtime::player()) {
+            namespace menu = cpuopt::menu;
+            menu::Availability a;
+            const char* not_found = "Not found in this game version: stays off.";
+            if (!host.prim.found) a.why[menu::effect_stores] = not_found;
+            if (!host.job.found || host.order_site != "ok") a.why[menu::job_order] = not_found;
+            if (!host.server.found) a.why[menu::server_time] = not_found;
+            if (!host.job.found || !host.units.found) a.why[menu::unit_threshold] = not_found;
+            if (!cpuopt::cpu_limit::find_cache_ccd().found) a.why[menu::cache_ccd] = "This CPU has no separate cache die: nothing to do here.";
+            if (!host.contacts.found) a.why[menu::parallel_contacts] = not_found;
+            if (!host.budget.found) a.why[menu::sleep_limiter] = not_found;
+            if (!host.job.found) a.why[menu::remove_fps_cap] = not_found;
+            std::string why;
+            const bool added = menu::add(service<cmfm_menu_t>(CMFM_MENU_INTERFACE, CMFM_MENU_VERSION), a, CPUOPT_VERSION, why);
+            cpuopt::runtime::note("cmfm_page", "added", added ? 1 : 0);
+            say(AL_LOG_INFO, "Mods menu: " + why);
+        }
 
         // Per-frame timing: the game thread's frames and the game's Presents.
         if (frame) {
             host.frame_events = frame->subscribe(self, AL_FRAME_BEGIN, on_frame, nullptr) != 0 &&
                                 frame->subscribe(self, AL_FRAME_END, on_frame, nullptr) != 0;
         }
-        if (const auto* d3d12 = service<al_d3d12_t>(AL_D3D12_INTERFACE, AL_D3D12_VERSION)) {
+        const auto* d3d12 = cpuopt::runtime::player() ? nullptr : service<al_d3d12_t>(AL_D3D12_INTERFACE, AL_D3D12_VERSION);
+        if (d3d12) {  // research only: Present timing
             host.present_events = d3d12->subscribe(self, AL_D3D12_EVENT_BIT(AL_D3D12_PRE_PRESENT) | AL_D3D12_EVENT_BIT(AL_D3D12_POST_PRESENT),
                                                    0, on_d3d12, nullptr) == AL_OK;
         }

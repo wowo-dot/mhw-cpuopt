@@ -8,6 +8,7 @@
 #include "unit_lines.hpp"
 #include "contacts.hpp"
 #include "worker_spin.hpp"
+#include "../core/settings.hpp"
 #include <windows.h>
 #include <cstdint>
 #include <string>
@@ -42,15 +43,29 @@ struct Host {
     bool (*spin_patch)(bool on, const char** reason) noexcept {};
     bool (*running_patch)(bool on, const char** reason) noexcept {};
     bool (*budget_hooks)(bool on, const char** reason) noexcept {};
+    // Player mode: the hotkey for the master switch changed (0: none). Any thread.
+    void (*hotkey)(std::uint32_t key) noexcept {};
 };
 
-// al_plugin_init: reads the run folder from <folder>\cpuopt.dll.output-dir,
-// opens the log there and starts the window thread. False, with the reason,
-// when there is no run folder: the plugin then stays idle.
+// al_plugin_init. With <folder>\cpuopt.dll.output-dir (a research run):
+// opens the run log there and starts the window thread. Without it, player
+// mode: settings from <folder>\cpuopt.ini (made with the defaults if
+// missing), the log <folder>\cpuopt.log (new each launch, at most 1 MB), the
+// switches applied on the runtime's own thread, no sampler and no window
+// statistics. False, with the reason, when neither log can be opened: the
+// plugin then stays idle.
 bool start(HMODULE self, const Host& host, std::string& reason) noexcept;
 // EXITING: the last window, the sampler and poller stopped, the window
 // thread joined (at most about 2 s). Safe to call more than once.
 void stop(const char* why) noexcept;
+// Player mode.
+bool player() noexcept;
+Settings settings() noexcept;             // any thread
+void change(const Settings& s) noexcept;  // any thread; applied and saved by the runtime's thread
+void flip_enabled() noexcept;             // the master switch's hotkey; any thread
+// Toggle bits of switches that are on but could not be applied.
+unsigned failed_toggles() noexcept;
+
 // One line into the run log from a phase callback (GAME_READY, SHUTDOWN).
 void note(const char* event, const char* key, long long value) noexcept;
 // DllMain at process exit: a last line if the log is free.

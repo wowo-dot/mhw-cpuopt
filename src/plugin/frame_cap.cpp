@@ -5,11 +5,13 @@
 
 namespace cpuopt::frame_cap {
 namespace {
-enum State : int { no_target, waiting, native, raised, layout_mismatch, drift, restored };
-constexpr const char* state_names[] = {"no target", "waiting", "native", "raised", "layout mismatch", "drift", "restored"};
+enum State : int { no_target, waiting, native, raised, layout_mismatch, drift, restored, kept };
+constexpr const char* state_names[] = {"no target", "waiting", "native", "raised", "layout mismatch", "drift", "restored",
+                                       "the game's own limit kept"};
 std::atomic<std::uintptr_t> global{};
 std::atomic<int> state{no_target};
 std::atomic<unsigned> requested{};
+std::atomic<bool> only_from_unlimited{};
 std::atomic<float> game_value{}, applied{};
 float written{};  // game thread only: what we last wrote (0: nothing)
 
@@ -59,7 +61,19 @@ void apply(unsigned want) noexcept {
             applied.store(current);
             return;
         }
+        if (only_from_unlimited.load() && current != unlimited_fps) {  // a limit the player picked
+            state.store(kept);
+            applied.store(current);
+            return;
+        }
     } else if (current != written) {  // someone else (the options) changed it
+        if (only_from_unlimited.load()) {  // theirs now; looked at again next frame
+            written = 0.0f;
+            game_value.store(current);
+            applied.store(current);
+            state.store(kept);
+            return;
+        }
         state.store(drift);
         return;
     }
@@ -80,10 +94,14 @@ void set_target(std::uintptr_t smain_global) noexcept {
     global.store(smain_global);
     state.store(smain_global ? waiting : no_target);
 }
-void request(unsigned max_fps) noexcept { requested.store(max_fps); }
+void request(unsigned max_fps, bool only_unlimited) noexcept {
+    only_from_unlimited.store(only_unlimited);
+    requested.store(max_fps);
+}
 void on_begin() noexcept {
     const auto want = requested.load(std::memory_order_relaxed);
     if (!want && written == 0.0f && state.load(std::memory_order_relaxed) != waiting) return;  // nothing to do
+    if (state.load(std::memory_order_relaxed) == kept) state.store(waiting);  // look at the options' value again
     apply(want);
 }
 void restore() noexcept {

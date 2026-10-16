@@ -2,6 +2,7 @@
 #include "../src/core/control.hpp"
 #include "../src/core/histogram.hpp"
 #include "../src/core/json.hpp"
+#include "../src/core/settings.hpp"
 #include "../src/core/signature.hpp"
 #include <cstdio>
 #include <vector>
@@ -143,6 +144,52 @@ void json_text() {
     out += '}';
     CHECK(out == "{\"a\":\"q\\\"b\\\\c\\u000a\\u0001\",\"n\":42,\"f\":1.23}");
 }
+
+void settings() {
+    using cpuopt::Settings;
+    const Settings defaults;
+    CHECK(cpuopt::parse_settings("") == defaults);
+    // The default file reads back as the defaults, with every key once.
+    const auto file = cpuopt::write_settings("", defaults);
+    CHECK(cpuopt::parse_settings(file) == defaults);
+    CHECK(file.find("enabled = on") != std::string::npos && file.find("remove_fps_cap = off") != std::string::npos);
+    CHECK(file.find("toggle_key = None") != std::string::npos && file.find("# Experimental") != std::string::npos);
+    // Changed values go into the lines they came from; comments and other lines stay.
+    Settings changed = defaults;
+    changed.enabled = false;
+    changed.toggle_key = 0x100 | 0x78;  // Ctrl+F9
+    changed.parallel_contacts = false;
+    changed.unit_us = 50;
+    const auto text = "# mine\nenabled = on    ; keep this comment\nunit_us=40\nfoo = bar\n";
+    const auto written = cpuopt::write_settings(text, changed);
+    CHECK(written.find("# mine\nenabled = off    ; keep this comment\nunit_us=50\nfoo = bar\n") == 0);
+    CHECK(written.find("toggle_key = Ctrl+F9") != std::string::npos);  // missing keys appended
+    CHECK(cpuopt::parse_settings(written) == changed);
+    // CRLF files stay CRLF.
+    const auto crlf = cpuopt::write_settings("enabled = on\r\n", changed);
+    CHECK(crlf.find("enabled = off\r\n") == 0 && crlf.find("\nunit_us") != std::string::npos &&
+          crlf.find("\r\n", crlf.find("unit_us")) != std::string::npos);
+    // Bad lines are named and skipped.
+    std::string problems;
+    const auto odd = cpuopt::parse_settings("enabled = maybe\nunit_us = 5\nnope = on\ncache_ccd = OFF\n", &problems);
+    CHECK(odd.enabled && odd.unit_us == 40 && !odd.cache_ccd);
+    CHECK(problems == "line 1: bad value for enabled\nline 2: bad value for unit_us\nline 3: unknown key nope\n");
+    // The switches.
+    CHECK(cpuopt::toggles_of(defaults) == (16u | 8u | 32u | 256u | 2048u | 32768u | 16384u));
+    Settings off = defaults;
+    off.enabled = false;
+    CHECK(cpuopt::toggles_of(off) == 0u);
+    off.remove_fps_cap = true;
+    CHECK(cpuopt::toggles_of(off) == 8192u);  // the cap switch is not under the master
+    // Key names.
+    CHECK(cpuopt::key_name(0) == "None" && cpuopt::key_name(0x100 | 0x78) == "Ctrl+F9");
+    CHECK(cpuopt::key_name(0x600 | 'K') == "Shift+Alt+K" && cpuopt::key_name(0x05) == "Mouse4");
+    CHECK(cpuopt::key_name(0x65) == "Numpad5" && cpuopt::key_name(0xBA) == "VK 0xBA");
+    for (const std::uint32_t k : {0u, 0x178u, 0x64Bu, 0x05u, 0x65u, 0xBAu, 0x2Du, 0x187u, 0x330u})
+        CHECK(cpuopt::parse_key(cpuopt::key_name(k)) == k);
+    CHECK(cpuopt::parse_key("ctrl + shift + k") == 0x300u + 'K');
+    CHECK(!cpuopt::parse_key("Hyper+F1") && !cpuopt::parse_key("F25") && !cpuopt::parse_key("Ctrl+"));
+}
 }  // namespace
 
 int main() {
@@ -150,6 +197,7 @@ int main() {
     histogram();
     control();
     json_text();
+    settings();
     std::printf(failures ? "core_tests: %d failure(s)\n" : "core_tests: ok\n", failures);
     return failures ? 1 : 0;
 }

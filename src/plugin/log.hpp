@@ -10,8 +10,11 @@ namespace cpuopt {
 // was logged. The file stops growing at `limit` bytes and records why.
 class EventLog {
 public:
-    static constexpr std::uint64_t limit = 1ULL << 30;
+    static constexpr std::uint64_t run_limit = 1ULL << 30;
+    // Research: <folder>\cpuopt-<pid>.jsonl, appended, at most 1 GB.
     bool open(const std::wstring& folder);
+    // Player mode: `path`, started anew, at most `limit` bytes.
+    bool open_file(const std::wstring& path, std::uint64_t limit);
     bool is_open() const noexcept { return file_ != INVALID_HANDLE_VALUE; }
     const std::wstring& path() const noexcept { return path_; }
     // `line` is a complete JSON object without the newline.
@@ -24,7 +27,7 @@ private:
     HANDLE file_{INVALID_HANDLE_VALUE};
     std::wstring path_;
     SRWLOCK lock_ = SRWLOCK_INIT;
-    std::uint64_t written_{};
+    std::uint64_t written_{}, limit_{run_limit};
     bool full_{};
 };
 

@@ -27,6 +27,13 @@ std::string utf8(std::wstring_view text) {
     return out;
 }
 
+bool EventLog::open_file(const std::wstring& path, std::uint64_t limit) {
+    path_ = path;
+    limit_ = limit;
+    file_ = CreateFileW(path_.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    return is_open();
+}
+
 bool EventLog::open(const std::wstring& folder) {
     path_ = folder + L"\\cpuopt-" + std::to_wstring(GetCurrentProcessId()) + L".jsonl";
     file_ = CreateFileW(path_.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -35,7 +42,7 @@ bool EventLog::open(const std::wstring& folder) {
 
 void EventLog::append(std::string_view line) noexcept {
     if (full_) return;
-    if (written_ + line.size() + 1 > limit) {
+    if (written_ + line.size() + 1 > limit_) {
         constexpr std::string_view stop = "{\"event\":\"log_full\"}\n";
         DWORD n{};
         WriteFile(file_, stop.data(), static_cast<DWORD>(stop.size()), &n, nullptr);

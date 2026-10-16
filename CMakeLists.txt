@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mhw_cpuopt VERSION 0.12.1 LANGUAGES CXX)
+project(mhw_cpuopt VERSION 0.13.0 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "64-bit Windows only")
@@ -30,6 +30,8 @@ add_library(cpuopt_core STATIC
     src/core/control.hpp
     src/core/histogram.hpp
     src/core/json.hpp
+    src/core/settings.cpp
+    src/core/settings.hpp
     src/core/signature.cpp
     src/core/signature.hpp
     src/core/toggles.hpp
@@ -48,6 +50,8 @@ set(CPUOPT_PLUGIN_SOURCES
     src/plugin/frame_cap.hpp
     src/plugin/limiter.cpp
     src/plugin/limiter.hpp
+    src/plugin/menu.cpp
+    src/plugin/menu.hpp
     src/plugin/frame_clock.cpp
     src/plugin/frame_clock.hpp
     src/plugin/frame_events.cpp
@@ -86,7 +90,7 @@ set(CPUOPT_PLUGIN_SOURCES
 # mod folder). The plugin API header is vendored (third_party/astera_loader).
 add_library(mhw_cpuopt SHARED src/plugin/dllmain.cpp src/plugin/al_entry.cpp ${CPUOPT_PLUGIN_SOURCES})
 target_compile_features(mhw_cpuopt PRIVATE cxx_std_20)
-target_include_directories(mhw_cpuopt PRIVATE third_party/astera_loader/include)
+target_include_directories(mhw_cpuopt PRIVATE third_party/astera_loader/include third_party/cmfm/include)
 target_compile_definitions(mhw_cpuopt PRIVATE ${CPUOPT_DEFINES}
     CPUOPT_VERSION="${PROJECT_VERSION}" CPUOPT_COMMIT="${CPUOPT_COMMIT}")
 target_compile_options(mhw_cpuopt PRIVATE ${CPUOPT_WARNINGS} /guard:cf)
@@ -108,6 +112,7 @@ add_test(NAME core_tests COMMAND core_tests)
 add_executable(plugin_tests tests/plugin_tests.cpp ${CPUOPT_PLUGIN_SOURCES})
 target_compile_definitions(plugin_tests PRIVATE ${CPUOPT_DEFINES})
 target_compile_options(plugin_tests PRIVATE ${CPUOPT_WARNINGS})
+target_include_directories(plugin_tests PRIVATE third_party/cmfm/include)
 target_link_libraries(plugin_tests PRIVATE cpuopt_core bcrypt)
 set_target_properties(plugin_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_test(NAME plugin_tests COMMAND plugin_tests)
@@ -117,11 +122,12 @@ add_test(NAME plugin_tests COMMAND plugin_tests)
 add_executable(al_host_smoke tests/al_host_smoke.cpp)
 target_compile_definitions(al_host_smoke PRIVATE ${CPUOPT_DEFINES})
 target_compile_options(al_host_smoke PRIVATE ${CPUOPT_WARNINGS})
-target_include_directories(al_host_smoke PRIVATE third_party/astera_loader/include)
+target_include_directories(al_host_smoke PRIVATE third_party/astera_loader/include third_party/cmfm/include)
 target_link_libraries(al_host_smoke PRIVATE cpuopt_core)
 set_target_properties(al_host_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_dependencies(al_host_smoke mhw_cpuopt)
 add_test(NAME al_host_smoke COMMAND al_host_smoke $<TARGET_FILE:mhw_cpuopt> "${CMAKE_BINARY_DIR}/smoke")
+add_test(NAME al_host_player COMMAND al_host_smoke $<TARGET_FILE:mhw_cpuopt> "${CMAKE_BINARY_DIR}/smoke" player)
 
 # The Python tools' pure logic (job round simulator), when Python 3 is there.
 find_package(Python3 COMPONENTS Interpreter QUIET)

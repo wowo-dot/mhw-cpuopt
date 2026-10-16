@@ -1,6 +1,7 @@
 #include "runtime.hpp"
 #include "../core/control.hpp"
 #include "../core/json.hpp"
+#include "../core/settings.hpp"
 #include "../core/toggles.hpp"
 #include "cpu_limit.hpp"
 #include "frame_cap.hpp"
@@ -27,6 +28,18 @@ Host host;
 HANDLE stop_event{}, worker_thread{};
 std::atomic<bool> started{}, stopped{};
 std::atomic<std::uint64_t> windows_written{};
+// Player mode: the settings (under settings_lock), the event that wakes the
+// runtime's thread for a change, and switches that could not be applied.
+std::atomic<bool> player_mode{};
+SRWLOCK settings_lock = SRWLOCK_INIT;
+Settings current_settings;
+bool settings_dirty{};  // changed through `change`, not yet saved
+HANDLE change_event{};
+std::atomic<unsigned> failed{};
+void mark(unsigned toggle, bool failed_now) noexcept {
+    if (failed_now) failed.fetch_or(toggle);
+    else failed.fetch_and(~toggle);
+}
 constexpr unsigned tracked_max = 6;
 
 std::wstring trim(std::wstring s) {
@@ -63,6 +76,9 @@ std::uint64_t write_time(const std::wstring& path) {
 }
 
 struct State {
+    bool player{};                 // player mode: cpuopt.ini, no windows
+    std::wstring settings_path;    // player mode's cpuopt.ini
+    std::uint64_t settings_stamp{};
     std::wstring control_path;
     std::uint64_t control_stamp{};
     std::string marker;
@@ -213,42 +229,25 @@ void switched(const char* event, bool on, const char* why) {
     event_log.write(note);
 }
 
-// Applies control.ini if it changed. The window so far is closed first, so
-// no window mixes two switch states or markers.
-void poll_control(State& s, bool initial) {
-    const auto stamp = write_time(s.control_path);
-    if (stamp == s.control_stamp) return;
-    s.control_stamp = stamp;
-    std::string text;
-    if (!stamp || !read_small(s.control_path, text)) return;
-    const auto parsed = parse_control(text);
-    std::string out = "{";
-    json::key(out, "event");
-    json::string(out, "control");
-    if (!parsed) {
-        json::key(out, "t_ms");
-        json::fixed(out, now_ms(), 3);
-        json::key(out, "rejected");
-        out += "true}";
-        event_log.write(out);
-        return;
-    }
-    if (!initial) write_window(s);
-    if (parsed->toggles) toggles.store(*parsed->toggles & toggle_mask);
-    if (parsed->marker) s.marker = *parsed->marker;
-    if (parsed->window_ms) s.window_ms = *parsed->window_ms;
-    if (parsed->job_threads) s.job_threads = *parsed->job_threads;
-    if (parsed->cpu_count) s.cpu_count = *parsed->cpu_count;
-    if (parsed->sample_jobs) sampler::set_focus(*parsed->sample_jobs);
-    if (parsed->max_fps) s.max_fps = *parsed->max_fps;
-    if (parsed->margin_us) s.margin_us = *parsed->margin_us;
-    if (parsed->contacts) s.contacts_mode = *parsed->contacts;
+// Applies one set of switches and parameters. `out` is the "control" event
+// begun by the caller; it is finished and written here.
+void apply_control(State& s, const Control& c, bool initial, std::string out) {
+    if (!initial && !s.player) write_window(s);
+    if (c.toggles) toggles.store(*c.toggles & toggle_mask);
+    if (c.marker) s.marker = *c.marker;
+    if (c.window_ms) s.window_ms = *c.window_ms;
+    if (c.job_threads) s.job_threads = *c.job_threads;
+    if (c.cpu_count) s.cpu_count = *c.cpu_count;
+    if (c.sample_jobs) sampler::set_focus(*c.sample_jobs);
+    if (c.max_fps) s.max_fps = *c.max_fps;
+    if (c.margin_us) s.margin_us = *c.margin_us;
+    if (c.contacts) s.contacts_mode = *c.contacts;
     contacts::request(on(parallel_contacts) ? s.contacts_mode : 0);  // applied on the game thread at the next frame
-    if (parsed->follow) s.follow = *parsed->follow;
-    if (parsed->follow_us) s.follow_us = *parsed->follow_us;
+    if (c.follow) s.follow = *c.follow;
+    if (c.follow_us) s.follow_us = *c.follow_us;
     sampler::set_follow_gap(s.follow_us);
     job_timing::set_follow(s.follow ? reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) + s.follow : 0);
-    frame_cap::request(on(uncap) ? s.max_fps : 0);  // applied on the game thread at the next frame
+    frame_cap::request(on(uncap) ? s.max_fps : 0, s.player);  // applied on the game thread at the next frame
     // The frame budget: its two detours, and the round clock in the executeJob
     // detour. The timing detour also carries the sleep limiter's wait.
     const bool timing_hooks = on(budget) || on(sleep_limiter);
@@ -262,6 +261,7 @@ void poll_control(State& s, bool initial) {
     }
     if (on(budget) && s.budget && s.hook) frame_budget::set_active(true);
     if (on(sleep_limiter) && s.budget) limiter::set_active(true, s.margin_us);
+    mark(sleep_limiter, on(sleep_limiter) && !s.budget);
     // The processors the game keeps: the largest L3's (cache_ccd), the first
     // cpu_count of those or of all (smaller_cpu); job rounds sized to match.
     DWORD_PTR mask = on(cache_ccd) && s.ccd.found ? s.ccd.mask : 0;
@@ -270,12 +270,12 @@ void poll_control(State& s, bool initial) {
     unsigned kept = 0;
     for (auto m = mask; m; m &= m - 1) ++kept;
     job_cap::request(on(job_thread_cap) ? s.job_threads : kept);  // applied on the game thread at the next frame
-    if (parsed->job_order) s.job_order = *parsed->job_order;
-    if (parsed->order_us) s.order_us = *parsed->order_us;
-    if (parsed->inline_us) s.inline_us = *parsed->inline_us;
-    if (parsed->time_ms) s.time_ms = *parsed->time_ms;
-    if (parsed->spin_us) s.spin_us = *parsed->spin_us;
-    if (parsed->unit_us) s.unit_us = *parsed->unit_us;
+    if (c.job_order) s.job_order = *c.job_order;
+    if (c.order_us) s.order_us = *c.order_us;
+    if (c.inline_us) s.inline_us = *c.inline_us;
+    if (c.time_ms) s.time_ms = *c.time_ms;
+    if (c.spin_us) s.spin_us = *c.spin_us;
+    if (c.unit_us) s.unit_us = *c.unit_us;
     unit_lines::request(on(unit_threshold) ? s.unit_us : 0);
     // One detour serves job timing, job order, inline rounds and the spinning
     // job threads' round announcements.
@@ -287,6 +287,7 @@ void poll_control(State& s, bool initial) {
         switched("job_hook", s.hook, why);
     }
     job_timing::set_measuring(on(time_jobs) && s.hook);
+    mark(order_jobs, on(order_jobs) && !s.hook);
     job_timing::set_order(on(order_jobs) && s.hook ? static_cast<int>(s.job_order) : 0, s.order_us);
     job_timing::set_inline(on(inline_rounds) && s.hook, s.inline_us);
     // sPrimitive's record loop: a code change through al.patch.
@@ -296,6 +297,7 @@ void poll_control(State& s, bool initial) {
         s.prim = on(plain_prim_stores) ? ok : !ok;
         switched("prim_patch", s.prim, why);
     }
+    mark(plain_prim_stores, on(plain_prim_stores) && !s.prim);
     // Server time: the detours go in before the cache is used, and the cache
     // stops before they go out.
     if (!on(reuse_server_time)) server_time::set_active(false, s.time_ms);
@@ -306,6 +308,7 @@ void poll_control(State& s, bool initial) {
         switched("server_hooks", s.server, why);
     }
     if (on(reuse_server_time) && s.server) server_time::set_active(true, s.time_ms);
+    mark(reuse_server_time, on(reuse_server_time) && !s.server);
     // Spinning job threads: the wait is ready before the change sends threads
     // to it, and the change is out before the wait stops spinning.
     const bool spin = on(spin_workers) && s.hook;
@@ -332,7 +335,7 @@ void poll_control(State& s, bool initial) {
     json::key(out, "toggles");
     json::number(out, std::uint64_t(toggles.load()));
     json::key(out, "requested_toggles");
-    json::number(out, std::uint64_t(parsed->toggles.value_or(toggles.load())));
+    json::number(out, std::uint64_t(c.toggles.value_or(toggles.load())));
     json::key(out, "marker");
     json::string(out, s.marker);
     json::key(out, "window_ms");
@@ -367,22 +370,37 @@ void poll_control(State& s, bool initial) {
     event_log.write(out);
 }
 
+// Applies control.ini if it changed. The window so far is closed first, so
+// no window mixes two switch states or markers.
+void poll_control(State& s, bool initial) {
+    const auto stamp = write_time(s.control_path);
+    if (stamp == s.control_stamp) return;
+    s.control_stamp = stamp;
+    std::string text;
+    if (!stamp || !read_small(s.control_path, text)) return;
+    const auto parsed = parse_control(text);
+    std::string out = "{";
+    json::key(out, "event");
+    json::string(out, "control");
+    if (!parsed) {
+        json::key(out, "t_ms");
+        json::fixed(out, now_ms(), 3);
+        json::key(out, "rejected");
+        out += "true}";
+        event_log.write(out);
+        return;
+    }
+    apply_control(s, *parsed, initial, std::move(out));
+}
+
 void own_threads(State& s) {
     s.own = {GetCurrentThreadId(), sampler::thread_id()};
     if (frame_clock::poller_thread()) s.own.push_back(frame_clock::poller_thread());
     sampler::set_excluded(s.own);
 }
 
-DWORD WINAPI worker(void* parameter) noexcept {
-    std::unique_ptr<State> owned(static_cast<State*>(parameter));
-    auto& s = *owned;
-    try {
-        s.ccd = cpu_limit::find_cache_ccd();
-        system_info::LoaderInfo loader{"Astera Loader", host.api_version, host.game_version, host.exe_sha256};
-        event_log.write(system_info::start_event(self_module, s.control_path, loader));
-        poll_control(s, true);  // a run may start with switches already set
-        system_info::ModuleCensus modules;
-        if (auto e = modules.changed_event(now_ms()); !e.empty()) event_log.write(e);
+// What was found at PRE_MAIN, one event each.
+void log_discoveries(const State& s) {
         event_log.write(frame_clock::discovery_event(host.discovery, now_ms(), host.scanner));
         event_log.write(job_cap::discovery_event(host.job, now_ms(), host.scanner));
         {
@@ -405,6 +423,19 @@ DWORD WINAPI worker(void* parameter) noexcept {
                                                   host.scanner));
         event_log.write(steam_running::discovery_event(host.running, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
                                                        host.scanner));
+}
+
+DWORD WINAPI worker(void* parameter) noexcept {
+    std::unique_ptr<State> owned(static_cast<State*>(parameter));
+    auto& s = *owned;
+    try {
+        s.ccd = cpu_limit::find_cache_ccd();
+        system_info::LoaderInfo loader{"Astera Loader", host.api_version, host.game_version, host.exe_sha256};
+        event_log.write(system_info::start_event(self_module, s.control_path, loader));
+        poll_control(s, true);  // a run may start with switches already set
+        system_info::ModuleCensus modules;
+        if (auto e = modules.changed_event(now_ms()); !e.empty()) event_log.write(e);
+        log_discoveries(s);
 
         sampler::start();
         for (int i = 0; i < 100 && !sampler::thread_id(); ++i) Sleep(10);
@@ -447,7 +478,150 @@ DWORD WINAPI worker(void* parameter) noexcept {
     }
     return 0;
 }
+
+// Player mode ---------------------------------------------------------------
+Control control_of(const Settings& st) {
+    Control c;
+    c.toggles = toggles_of(st);
+    c.marker = std::string("player");
+    c.unit_us = st.unit_us;
+    c.margin_us = st.limiter_margin_us;
+    c.max_fps = 1000;  // remove_fps_cap: raised from the engine's 300 only
+    c.contacts = 1;    // the contact pass (al-23)
+    c.job_order = 2;
+    c.order_us = 20;
+    c.time_ms = 1000;
+    return c;
+}
+void settings_event(const char* what, const std::string& detail) {
+    std::string out = "{";
+    json::key(out, "event");
+    json::string(out, what);
+    json::key(out, "t_ms");
+    json::fixed(out, now_ms(), 3);
+    json::key(out, "detail");
+    json::string(out, detail);
+    out += '}';
+    event_log.write(out);
+}
+// cpuopt.ini edited by hand while the game runs: read again.
+void reload_if_edited(State& s) {
+    const auto stamp = write_time(s.settings_path);
+    if (!stamp || stamp == s.settings_stamp) return;
+    s.settings_stamp = stamp;
+    std::string text, problems;
+    if (!read_small(s.settings_path, text)) return;
+    const auto read = parse_settings(text, &problems);
+    AcquireSRWLockExclusive(&settings_lock);
+    if (!settings_dirty) current_settings = read;  // an unsaved change in game wins
+    ReleaseSRWLockExclusive(&settings_lock);
+    settings_event("settings_read", problems);
+}
+// Changes from the Mods page or the hotkey into cpuopt.ini, comments kept.
+void save_if_dirty(State& s) {
+    AcquireSRWLockExclusive(&settings_lock);
+    const bool dirty = settings_dirty;
+    const auto now = current_settings;
+    settings_dirty = false;
+    ReleaseSRWLockExclusive(&settings_lock);
+    if (!dirty) return;
+    std::string text;
+    read_small(s.settings_path, text);
+    const auto out = write_settings(text, now);
+    const auto temp = s.settings_path + L".tmp";
+    const auto file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    bool ok = file != INVALID_HANDLE_VALUE;
+    if (ok) {
+        DWORD n{};
+        ok = WriteFile(file, out.data(), static_cast<DWORD>(out.size()), &n, nullptr) && n == out.size();
+        CloseHandle(file);
+        ok = ok && MoveFileExW(temp.c_str(), s.settings_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+    }
+    if (ok) s.settings_stamp = write_time(s.settings_path);
+    settings_event(ok ? "settings_saved" : "settings_not_saved", ok ? "" : "cpuopt.ini could not be written");
+}
+// The switches' states as the modules see them, for the log.
+void status_event() {
+    std::string out = "{";
+    json::key(out, "event");
+    json::string(out, "status");
+    json::key(out, "t_ms");
+    json::fixed(out, now_ms(), 3);
+    json::key(out, "toggles");
+    json::number(out, std::uint64_t(toggles.load()));
+    json::key(out, "failed");
+    json::number(out, std::uint64_t(failed.load()));
+    unit_lines::append(out);
+    contacts::append(out);
+    limiter::append(out);
+    frame_cap::append(out);
+    cpu_limit::append(out);
+    out += '}';
+    event_log.write(out);
+}
+
+DWORD WINAPI player_worker(void* parameter) noexcept {
+    std::unique_ptr<State> owned(static_cast<State*>(parameter));
+    auto& s = *owned;
+    try {
+        s.ccd = cpu_limit::find_cache_ccd();
+        system_info::LoaderInfo loader{"Astera Loader", host.api_version, host.game_version, host.exe_sha256};
+        event_log.write(system_info::start_event(self_module, s.settings_path, loader));
+        log_discoveries(s);
+        auto applied = settings();
+        auto key = applied.toggle_key;
+        apply_control(s, control_of(applied), true, "{\"event\":\"control\"");
+        if (host.hotkey) host.hotkey(key);
+        double status_due = now_ms() + 10000.0;  // the switches settle within a few frames
+        for (;;) {
+            const HANDLE waits[2] = {stop_event, change_event};
+            if (WaitForMultipleObjects(2, waits, FALSE, 1000) == WAIT_OBJECT_0) break;
+            reload_if_edited(s);
+            save_if_dirty(s);
+            const auto now = settings();
+            if (!(now == applied)) {
+                apply_control(s, control_of(now), false, "{\"event\":\"control\"");
+                if (now.toggle_key != key && host.hotkey) host.hotkey(key = now.toggle_key);
+                applied = now;
+                status_due = now_ms() + 10000.0;
+            }
+            if (now_ms() >= status_due) {
+                status_event();
+                status_due = now_ms() + 300000.0;
+            }
+        }
+        save_if_dirty(s);
+        status_event();
+        event_log.write("{\"event\":\"stopped\"}");
+    } catch (...) {
+        event_log.write("{\"event\":\"stopped\",\"reason\":\"exception\"}");
+    }
+    return 0;
+}
 }  // namespace
+
+bool player() noexcept { return player_mode.load(); }
+Settings settings() noexcept {
+    AcquireSRWLockShared(&settings_lock);
+    const auto copy = current_settings;
+    ReleaseSRWLockShared(&settings_lock);
+    return copy;
+}
+void change(const Settings& s) noexcept {
+    AcquireSRWLockExclusive(&settings_lock);
+    current_settings = s;
+    settings_dirty = true;
+    ReleaseSRWLockExclusive(&settings_lock);
+    if (change_event) SetEvent(change_event);
+}
+void flip_enabled() noexcept {
+    AcquireSRWLockExclusive(&settings_lock);
+    current_settings.enabled = !current_settings.enabled;
+    settings_dirty = true;
+    ReleaseSRWLockExclusive(&settings_lock);
+    if (change_event) SetEvent(change_event);
+}
+unsigned failed_toggles() noexcept { return failed.load(); }
 
 bool start(HMODULE self, const Host& h, std::string& reason) noexcept {
     try {
@@ -460,8 +634,35 @@ bool start(HMODULE self, const Host& h, std::string& reason) noexcept {
         std::string sidecar;
         const auto sidecar_path = host.folder + L"\\cpuopt.dll.output-dir";
         if (!read_small(sidecar_path, sidecar)) {
-            reason = "no run folder (cpuopt.dll.output-dir): idle";
-            return false;
+            // Player mode.
+            const auto log_path = host.folder + L"\\cpuopt.log";
+            if (!event_log.open_file(log_path, 1ULL << 20)) {
+                reason = "cpuopt.log cannot be written: idle";
+                return false;
+            }
+            auto state = std::make_unique<State>();
+            state->player = true;
+            state->settings_path = host.folder + L"\\cpuopt.ini";
+            std::string text, problems;
+            if (read_small(state->settings_path, text)) {
+                current_settings = parse_settings(text, &problems);
+            } else {
+                current_settings = Settings{};
+                settings_dirty = true;  // the default file, written by the runtime's thread
+            }
+            if (!problems.empty()) settings_event("settings_read", problems);
+            state->settings_stamp = write_time(state->settings_path);
+            player_mode = true;
+            stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            change_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            worker_thread = CreateThread(nullptr, 0, player_worker, state.get(), 0, nullptr);
+            if (!worker_thread) {
+                reason = "could not start its thread";
+                return false;
+            }
+            state.release();
+            reason = "player mode, log " + utf8(log_path);
+            return true;
         }
         const auto folder = trim(widen(sidecar));
         if (folder.empty() || !event_log.open(folder)) {

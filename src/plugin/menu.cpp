@@ -1,0 +1,202 @@
+#include "menu.hpp"
+#include "../core/settings.hpp"
+#include "../core/toggles.hpp"
+#include "cmfm/cmfm.h"
+#include "log.hpp"
+#include "runtime.hpp"
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+
+namespace cpuopt::menu {
+namespace {
+enum Id : std::uint32_t {
+    id_enabled = 1,
+    id_key,
+    id_status,
+    id_optimizations = 10,
+    id_effect_stores,
+    id_job_order,
+    id_server_time,
+    id_unit_threshold,
+    id_cache_ccd,
+    id_parallel_contacts,
+    id_sleep_limiter,
+    id_experimental = 20,
+    id_remove_fps_cap,
+};
+Availability available;
+std::atomic<double> interval_ms{};  // smoothed time between frame starts
+std::atomic<std::int64_t> last_begin{};
+
+int row_of(std::uint32_t id) {
+    if (id >= id_effect_stores && id <= id_sleep_limiter) return static_cast<int>(id - id_effect_stores);
+    if (id == id_remove_fps_cap) return remove_fps_cap;
+    return -1;
+}
+bool* flag_of(Settings& s, std::uint32_t id) {
+    switch (id) {
+    case id_enabled: return &s.enabled;
+    case id_effect_stores: return &s.effect_stores;
+    case id_job_order: return &s.job_order;
+    case id_server_time: return &s.server_time;
+    case id_unit_threshold: return &s.unit_threshold;
+    case id_cache_ccd: return &s.cache_ccd;
+    case id_parallel_contacts: return &s.parallel_contacts;
+    case id_sleep_limiter: return &s.sleep_limiter;
+    case id_remove_fps_cap: return &s.remove_fps_cap;
+    default: return nullptr;
+    }
+}
+constexpr unsigned toggle_of_row[row_count] = {plain_prim_stores, order_jobs, reuse_server_time, unit_threshold,
+                                              cache_ccd, parallel_contacts, sleep_limiter, uncap};
+
+cmfm_result_t CMFM_CALL get(void*, std::uint32_t id, cmfm_value_t* value) {
+    auto s = runtime::settings();
+    if (id == id_key) {
+        value->i = static_cast<std::int32_t>(s.toggle_key);
+        return CMFM_OK;
+    }
+    if (auto* flag = flag_of(s, id)) {
+        value->i = *flag ? 1 : 0;
+        return CMFM_OK;
+    }
+    return CMFM_ERROR;
+}
+cmfm_result_t CMFM_CALL set(void*, std::uint32_t id, const cmfm_value_t* value) {
+    auto s = runtime::settings();
+    if (id == id_key) {
+        s.toggle_key = static_cast<std::uint32_t>(value->i);
+    } else if (auto* flag = flag_of(s, id)) {
+        *flag = value->i != 0;
+    } else {
+        return CMFM_ERROR;
+    }
+    runtime::change(s);
+    return CMFM_OK;
+}
+cmfm_result_t CMFM_CALL validate(void*, std::uint32_t id, const cmfm_value_t* value, char* why, std::uint32_t size) {
+    const auto key = static_cast<std::uint32_t>(value->i);
+    if (id == id_key && (key == 0x1B || key == 0x0D)) {  // plain Esc or Enter
+        std::snprintf(why, size, "Esc and Enter are the game's; pick another key or add Ctrl, Shift or Alt.");
+        return CMFM_ERROR;
+    }
+    return CMFM_OK;
+}
+void CMFM_CALL get_text(void*, std::uint32_t id, char* text, std::uint32_t size) {
+    if (id == id_status) std::snprintf(text, size, "%s", status_text().c_str());
+}
+std::uint32_t CMFM_CALL locked(void*, std::uint32_t id, char* why, std::uint32_t size) {
+    const int row = row_of(id);
+    if (row < 0 || !available.why[row]) return 0;
+    std::snprintf(why, size, "%s", available.why[row]);
+    return 1;
+}
+
+cmfm_setting_t row(std::uint32_t id, cmfm_type_t type, const char* label, const char* help, std::int32_t default_value = 0,
+                   cmfm_flags_t flags = 0) {
+    cmfm_setting_t s;
+    std::memset(&s, 0, sizeof(s));
+    s.size = sizeof(s);
+    s.id = id;
+    s.type = type;
+    s.flags = flags;
+    s.label = label;
+    s.help = help;
+    s.default_value.i = default_value;
+    return s;
+}
+}  // namespace
+
+std::string status_text() {
+    const auto s = runtime::settings();
+    const auto requested = toggles_of(s);
+    const auto failed = runtime::failed_toggles();
+    unsigned on = 0, usable = 0, broken = 0;
+    for (unsigned r = 0; r < remove_fps_cap; ++r) {  // the optimizations, not the cap switch
+        if (available.why[r]) continue;
+        ++usable;
+        if (!(requested & toggle_of_row[r])) continue;
+        ++on;
+        if (failed & toggle_of_row[r]) ++broken;
+    }
+    char fps[32] = "";
+    const double ms = interval_ms.load(std::memory_order_relaxed);
+    if (ms > 0.1) std::snprintf(fps, sizeof(fps), "%.0f fps, ", 1000.0 / ms);
+    char line[128];
+    if (!s.enabled) std::snprintf(line, sizeof(line), "%soptimizations off", fps);
+    else if (broken) std::snprintf(line, sizeof(line), "%s%u of %u on, %u could not start (cpuopt.log)", fps, on - broken, usable, broken);
+    else if (on == usable) std::snprintf(line, sizeof(line), "%sall %u optimizations on", fps, usable);
+    else std::snprintf(line, sizeof(line), "%s%u of %u optimizations on", fps, on, usable);
+    return line;
+}
+
+void on_frame(std::int64_t qpc) noexcept {
+    const auto previous = last_begin.exchange(qpc, std::memory_order_relaxed);
+    if (!previous || qpc <= previous) return;
+    const double ms = double(qpc - previous) * 1000.0 / double(qpc_frequency());
+    if (ms > 1000.0) return;  // a load or a pause, not a frame
+    const double old = interval_ms.load(std::memory_order_relaxed);
+    interval_ms.store(old > 0 ? old + (ms - old) * 0.02 : ms, std::memory_order_relaxed);
+}
+
+bool add(const void* cmfm, const Availability& a, const char* version, std::string& why) noexcept {
+    if (!cmfm) {
+        why = "CMFM not installed: settings in cpuopt.ini only";
+        return false;
+    }
+    available = a;
+    const Settings d;
+    const cmfm_setting_t settings[] = {
+        row(id_enabled, CMFM_TYPE_BOOL, "All optimizations",
+            "Every optimization below at once. Off is the game as it runs without cpuopt; the hotkey flips this in game.", d.enabled),
+        row(id_key, CMFM_TYPE_KEY, "On/off hotkey", "A key that flips All optimizations in game, to compare with and without them.",
+            static_cast<std::int32_t>(d.toggle_key)),
+        row(id_status, CMFM_TYPE_TEXT, "Status", "Frame rate, and how many optimizations run.", 0, CMFM_FLAG_LIVE),
+        row(id_optimizations, CMFM_TYPE_SECTION, "Optimizations", nullptr),
+        row(id_effect_stores, CMFM_TYPE_BOOL, "Effect drawing",
+            "Effects write their vertex data without reading GPU memory back. The biggest gain, most of all in effect-heavy scenes and fights.",
+            d.effect_stores),
+        row(id_job_order, CMFM_TYPE_BOOL, "Draw job order", "The slowest draw jobs start first, so each round of jobs ends sooner.",
+            d.job_order),
+        row(id_server_time, CMFM_TYPE_BOOL, "Steam server time",
+            "Steam's server time is read once a second instead of several times a frame.", d.server_time),
+        row(id_unit_threshold, CMFM_TYPE_BOOL, "Update threads",
+            "More of each frame's object updates run on the job threads instead of the main thread.", d.unit_threshold),
+        row(id_cache_ccd, CMFM_TYPE_BOOL, "Stay on the cache die",
+            "On CPUs with a 3D V-Cache die (7950X3D, 9950X3D...) the game runs on that die only. A large gain there.", d.cache_ccd),
+        row(id_parallel_contacts, CMFM_TYPE_BOOL, "Parallel hit detection",
+            "Hit detection runs on all job threads, as the engine was built to do. New: report it if a hit ever behaves oddly.",
+            d.parallel_contacts),
+        row(id_sleep_limiter, CMFM_TYPE_BOOL, "Sleeping frame limiter",
+            "With a frame rate limit, the game sleeps while it waits instead of keeping a core busy. Same frame pacing.", d.sleep_limiter),
+        row(id_experimental, CMFM_TYPE_SECTION, "Experimental", nullptr),
+        row(id_remove_fps_cap, CMFM_TYPE_BOOL, "Remove 300 fps limit",
+            "Lifts the engine's 300 fps limit while the in-game frame rate is set to no limit. A lower limit you chose stays.",
+            d.remove_fps_cap),
+    };
+    cmfm_page_t page;
+    std::memset(&page, 0, sizeof(page));
+    page.size = sizeof(page);
+    page.plugin = "cpuopt";
+    page.title = "CPU optimizations";
+    page.help = "Makes Monster Hunter: World use the CPU better. Changes apply at once and are kept in cpuopt.ini.";
+    page.settings = settings;
+    page.setting_count = static_cast<std::uint32_t>(std::size(settings));
+    page.get = get;
+    page.set = set;
+    page.validate = validate;
+    page.get_text = get_text;
+    page.locked = locked;
+    page.version = version;
+    page.mod = "cpuopt";
+    const auto* menu = static_cast<const cmfm_menu_t*>(cmfm);
+    char reason[200] = "";
+    if (!menu->add_page(&page, reason, sizeof(reason))) {
+        why = std::string("CMFM refused the page: ") + reason;
+        return false;
+    }
+    why = "page added";
+    return true;
+}
+}  // namespace cpuopt::menu
