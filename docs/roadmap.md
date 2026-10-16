@@ -1,6 +1,6 @@
 # Where cpuopt stands and what comes next
 
-Updated 2026-10-16 (after al-20). Numbers and methods: `research/engine-notes.md`;
+Updated 2026-10-16 (after al-21). Numbers and methods: `research/engine-notes.md`;
 how a run is done: `runtime-protocol.md`.
 
 ## Kept: switches that help (measured on and off in one session)
@@ -16,6 +16,10 @@ how a run is done: `runtime-protocol.md`.
 All of them (2424, with inline_rounds 64 which costs nothing measurable):
 Ancient Forest 181 to 244 fps (+35%), AT Velkhana 158 to 233 (+47%),
 Furious Rajang 204 to 267 (+31%); on six- and four-core settings +33-34%.
+
+On the CPU frame (al-21, uncapped): Ancient Forest 5.78 to 4.10 ms (-29%),
+hub 4.16 to 2.83 ms (-32%), title screen 1.84 to 1.43 ms (-22%); process
+CPU per frame -21 to -26%.
 
 ## Rejected or not shown
 
@@ -57,16 +61,18 @@ Both measuring switches stay on in both halves of every A/B.
 
 ## Plan
 
-1. **Measuring and the frame limiter** (now): frame_budget and uncap are
-   built (v0.9.0); next, re-measure the kept switches on the CPU frame at
-   the hub and the Ancient Forest. The limiter (sMain mMaxFps, +0x5C) Sleeps
-   only when 2 ms or more remain and otherwise spins on
-   QueryPerformanceCounter (about 30% of the game thread at a capped title
-   screen): a "sleep instead of spin" switch would keep the same cap
-   without burning a core.
-2. **The player's and the monster's moves:** a sampler mode that follows the
-   thread running one chosen job (the player's, a monster's) and samples it
-   every tick; then look for waste inside those ~200 us.
+1. **Measuring and the frame limiter:** frame_budget and uncap (v0.9.0)
+   re-measured the kept switches on the CPU frame (al-21, above). The
+   limiter spins whenever less than 2 ms remain: sleep_limiter (16384,
+   v0.10.0) sleeps on a high-resolution timer until 0.5 ms before the
+   deadline. Built and unit-tested; next run (al-22, prepared): limiter off
+   against on at the capped title screen and at a 144 fps cap.
+2. **The player's and the monster's moves:** the sampler's follow mode is
+   built (v0.10.0): it samples the thread running one class's job every
+   20 us while the job runs. Next: uPlayer's move in the Ancient Forest,
+   then a monster's in a fight, and look for waste inside those ~200 us.
+   In the forest the CPU frame is 55% job rounds, 37% serial game-thread
+   work and 7% the swapchain call; the serial part is next after the moves.
 3. **The DLSS mod together with cpuopt,** with the GPU's utilization logged
    (nvidia-smi, read-only): coexistence, and whether the GPU is now the
    limit at 1440p and 4K.

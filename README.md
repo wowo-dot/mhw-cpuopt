@@ -59,6 +59,11 @@ every number in `docs/research/engine-notes.md`):
 - The game asks Steam for the server time several times a frame, and each
   call waits on a lock inside Steam (4.3% of the game thread). Switch 32
   reuses one answer for a second.
+- Measured as CPU time per frame rather than fps (v0.9: the frame minus the
+  frame limiter's wait and the GPU wait), all the kept switches together
+  cut the CPU frame 29% in the Ancient Forest (5.78 to 4.10 ms), 32% at the
+  hub and 22% at the title screen; light scenes are now often GPU-bound or
+  at the engine's 300 fps cap.
 
 ## How it works
 

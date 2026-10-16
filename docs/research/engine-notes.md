@@ -502,3 +502,55 @@ pairs, 3 s windows, the first window of each step left out.
   seconds after a switch flip; flipping applies code changes with the
   game's threads paused and moves the process between the CPU dies, which
   normal play never does.
+
+### The CPU frame (al-21, v0.9.0; 2026-10-16)
+
+Measuring switches on in both halves: budget (4096) and uncap (8192,
+max_fps 1000); everything off against everything on (2424), four pairs of
+30 s, 5 s windows, the first window of each step left out. CPU frame = the
+frame interval minus the limiter's wait and the GPU wait (the fence wait in
+cD3DRender::present, outside the swapchain call); "CPU-bound fps" is 1000
+over it.
+
+| Scene | fps off / on | CPU frame off / on | rounds | serial | GPU wait | process CPU per frame |
+|---|---|---|---|---|---|---|
+| Title screen (the normal one) | 370.2 / 367.4 | 1.843 / 1.428 ms (-22.5%; 543 / 700 CPU-bound fps) | 0.728 / 0.356 | 0.754 / 0.711 | 0.858 / 1.293 | 4.55 / 3.57 ms |
+| Hub (Seliana) | 239.8 / 281.8 (+17.5%) | 4.157 / 2.830 ms (-31.9%; 241 / 353) | 2.640 / 1.450 | 1.255 / 0.997 | 0.013 / 0.718 | 17.75 / 13.55 ms |
+| Ancient Forest | 167.2 / 240.4 (+43.8%) | 5.775 / 4.095 ms (-29.1%; 173 / 244) | 3.686 / 2.259 | 1.791 / 1.525 | 0.205 / 0.064 | 29.50 / 21.76 ms |
+
+- The swapchain call is 0.25-0.37 ms a frame in every scene, on or off.
+- Uncapped, the title screen is GPU-bound at about 370 fps: the CPU time
+  the switches free (0.41 ms) becomes GPU wait (+0.43 ms). The hub with
+  everything on already waits 0.72 ms a frame for the GPU, so its fps gain
+  (+17.5%) understates the CPU gain (+47% CPU-bound fps). The forest stays
+  CPU-bound (GPU wait 0.06 ms): rounds 55% of its CPU frame, serial
+  game-thread work 37%, the swapchain call 7%.
+- At the GPU-bound title screen, everything on was 1.4-3.5 fps slower in
+  all four pairs (371.8/368.3, 370.2/367.1, 368.8/367.4, 370.2/366.9; about
+  0.02 ms a frame). Not chased (under 1%). Unverified suspect: cache_ccd
+  also confines the driver's threads in the process to the 8 cores of the
+  cache die.
+- The forest's p99 frame time: 15.38 ms off, 5.47 on.
+- The budget's own cost: at the hub, uncapped, 8192 against 8192|4096
+  (two pairs) 245.8 against 248.0 fps, process CPU 17.55 against 17.43 ms
+  a frame; at the capped title screen 299.9 fps both. None measurable.
+
+### The frame limiter (sub_14225F9F0; v0.10.0, not yet run in game)
+
+- sMain's frame timing ends each frame's wait: remaining ms = 1000 /
+  mMaxFps (+0x5C) minus the elapsed time, from a running sum of QPC ticks
+  times the game rate (+0x58, 60) at +0x70, the frame's reference at +0x78
+  and the last QPC reading at +0x80. If 2 ms or more remain it calls
+  Sleep((int)remaining - 1), then spins on QueryPerformanceCounter until
+  the frame is due. A byte at +0x60 selects a fixed-step branch that spins
+  with SwitchToThread instead. sAppExt::run calls timeBeginPeriod(1).
+- With the switches on, a 300 fps cap leaves about 1.9 ms a frame at the
+  title screen: under 2 ms, so all of it is spun on the game thread's core.
+- Switch sleep_limiter (16384) waits on a high-resolution waitable timer in
+  the frame-timing detour, before the game's function, until margin_us
+  (500) before the deadline computed from those fields; the function then
+  runs unchanged and spins the rest. In the unit test the timer woke 0.18
+  ms late on average (p99 0.24 ms).
+- The sampler's follow mode (control.ini follow, a vtable RVA) samples the
+  thread running one class's job every 20 us while it runs: uPlayer's move
+  (vtable 0x34a6d18) is next.
