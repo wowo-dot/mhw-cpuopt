@@ -98,7 +98,8 @@ target_compile_definitions(mhw_cpuopt PRIVATE ${CPUOPT_DEFINES}
 target_compile_options(mhw_cpuopt PRIVATE ${CPUOPT_WARNINGS} /guard:cf)
 target_link_libraries(mhw_cpuopt PRIVATE cpuopt_core bcrypt)
 # The map file gives the report symbols for the plugin's own frames.
-target_link_options(mhw_cpuopt PRIVATE /guard:cf /DEBUG /MAP /OPT:REF /OPT:NOICF)
+# PDBALTPATH: the DLL names its symbol file without the build folder's path.
+target_link_options(mhw_cpuopt PRIVATE /guard:cf /DEBUG /MAP /OPT:REF /OPT:NOICF "/PDBALTPATH:%_PDB%")
 set_target_properties(mhw_cpuopt PROPERTIES OUTPUT_NAME cpuopt RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 enable_testing()
