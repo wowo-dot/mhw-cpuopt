@@ -26,25 +26,27 @@ std::uintptr_t slot_of(std::uintptr_t call) noexcept {
 }
 }  // namespace
 
-Discovery discover(const std::uintptr_t* poll, unsigned poll_count, const std::uintptr_t* lobby, unsigned lobby_count) noexcept {
+Discovery discover(const std::uintptr_t (&first)[site_count], const unsigned (&counts)[site_count]) noexcept {
     Discovery d;
-    d.counts[0] = poll_count;
-    d.counts[1] = lobby_count;
-    if (!poll_count || !lobby_count) {
-        d.reason = "signature not found";
-        return d;
-    }
-    if (poll_count != 1 || lobby_count != 1) {
-        d.reason = "signature not unique";
-        return d;
-    }
-    d.sites[0] = poll[0] + poll_call;
-    d.sites[1] = lobby[0] + lobby_call;
+    for (unsigned i = 0; i < site_count; ++i) d.counts[i] = counts[i];
+    for (const auto c : counts)
+        if (!c) {
+            d.reason = "signature not found";
+            return d;
+        }
+    for (const auto c : counts)
+        if (c != 1) {
+            d.reason = "signature not unique";
+            return d;
+        }
+    const unsigned offsets[site_count] = {poll_call, lobby_call, session_call};
+    for (unsigned i = 0; i < site_count; ++i) d.sites[i] = first[i] + offsets[i];
     const auto slot = slot_of(d.sites[0]);
-    if (slot != slot_of(d.sites[1])) {
-        d.reason = "different imports";
-        return d;
-    }
+    for (unsigned i = 1; i < site_count; ++i)
+        if (slot != slot_of(d.sites[i])) {
+            d.reason = "different imports";
+            return d;
+        }
     d.found = true;
     d.reason = "ok";
     d.slot = slot;
@@ -81,15 +83,17 @@ std::string discovery_event(const Discovery& d, std::uintptr_t base, double t_ms
     json::string(out, scanner);
     json::key(out, "counts");
     out += '[';
-    json::number(out, std::uint64_t(d.counts[0]));
-    out += ',';
-    json::number(out, std::uint64_t(d.counts[1]));
+    for (unsigned i = 0; i < site_count; ++i) {
+        if (i) out += ',';
+        json::number(out, std::uint64_t(d.counts[i]));
+    }
     out += ']';
     json::key(out, "site_rvas");
     out += '[';
-    json::number(out, std::uint64_t(d.sites[0] ? d.sites[0] - base : 0));
-    out += ',';
-    json::number(out, std::uint64_t(d.sites[1] ? d.sites[1] - base : 0));
+    for (unsigned i = 0; i < site_count; ++i) {
+        if (i) out += ',';
+        json::number(out, std::uint64_t(d.sites[i] ? d.sites[i] - base : 0));
+    }
     out += ']';
     json::key(out, "stub");
     out += d.stub ? "true" : "false";

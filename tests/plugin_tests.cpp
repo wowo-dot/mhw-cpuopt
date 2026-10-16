@@ -979,7 +979,7 @@ __declspec(noinline) bool stand_in_is_running() {
     ++real_running_calls;
     return real_running_answer;
 }
-unsigned char planted_poll[64], planted_lobby[64];
+unsigned char planted_poll[64], planted_lobby[64], planted_session[64];
 std::uintptr_t running_slot, other_running_slot;
 
 void steam_running_test() {
@@ -1004,17 +1004,22 @@ void steam_running_test() {
     other_running_slot = function;
     plant(planted_poll, sr::poll_signature, sr::poll_call, &running_slot);
     plant(planted_lobby, sr::lobby_signature, sr::lobby_call, &running_slot);
-    const std::uintptr_t poll[1] = {reinterpret_cast<std::uintptr_t>(planted_poll)}, lobby[1] = {reinterpret_cast<std::uintptr_t>(planted_lobby)};
-    auto d = sr::discover(poll, 1, lobby, 1);
-    CHECK(d.found && d.slot == reinterpret_cast<std::uintptr_t>(&running_slot) && d.sites[0] == poll[0] + sr::poll_call &&
-          d.sites[1] == lobby[0] + sr::lobby_call);
+    plant(planted_session, sr::session_signature, sr::session_call, &running_slot);
+    const std::uintptr_t first[sr::site_count] = {reinterpret_cast<std::uintptr_t>(planted_poll), reinterpret_cast<std::uintptr_t>(planted_lobby),
+                                                  reinterpret_cast<std::uintptr_t>(planted_session)};
+    const unsigned once[sr::site_count] = {1, 1, 1};
+    auto d = sr::discover(first, once);
+    CHECK(d.found && d.slot == reinterpret_cast<std::uintptr_t>(&running_slot) && d.sites[0] == first[0] + sr::poll_call &&
+          d.sites[1] == first[1] + sr::lobby_call && d.sites[2] == first[2] + sr::session_call);
     const char* why = "";
     CHECK(!sr::resolve(d, 0, &why) && std::string(why) == "steam_api64 not loaded");
     CHECK(!sr::resolve(d, function + 16, &why) && std::string(why) == "import is not SteamAPI_IsSteamRunning");
     CHECK(sr::resolve(d, function, &why) && d.real == function);
-    CHECK(std::string(sr::discover(poll, 0, lobby, 1).reason) == "signature not found");
-    plant(planted_lobby, sr::lobby_signature, sr::lobby_call, &other_running_slot);
-    CHECK(std::string(sr::discover(poll, 1, lobby, 1).reason) == "different imports");
+    const unsigned missing[sr::site_count] = {1, 1, 0}, twice[sr::site_count] = {1, 2, 1};
+    CHECK(std::string(sr::discover(first, missing).reason) == "signature not found");
+    CHECK(std::string(sr::discover(first, twice).reason) == "signature not unique");
+    plant(planted_session, sr::session_signature, sr::session_call, &other_running_slot);
+    CHECK(std::string(sr::discover(first, once).reason) == "different imports");
 
     real_running_calls = 0;
     sr::set_active(false, 1000);

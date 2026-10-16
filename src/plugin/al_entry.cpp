@@ -51,7 +51,7 @@ std::uintptr_t spin_target{};                // the job threads' wait call (matc
 std::uint32_t spin_handle{};                 // al.patch handle, 0 until first switched on
 std::uintptr_t spin_stub{};                  // its jump stub, made at PRE_MAIN
 cpuopt::steam_running::Discovery running{};  // the IsSteamRunning sites and stub, found at PRE_MAIN
-std::uint32_t running_handles[2]{};          // al.patch handles, 0 until first switched on
+std::uint32_t running_handles[cpuopt::steam_running::site_count]{};  // al.patch handles, 0 until first switched on
 cpuopt::frame_budget::Discovery budget{};    // the limiter's function and cD3DRender::present
 std::uint32_t budget_handles[2]{};           // al.hooks handles, 0 until first switched on
 SRWLOCK switch_lock = SRWLOCK_INIT;
@@ -182,7 +182,7 @@ bool spin_patch(bool on, const char** reason) noexcept {
     return ok;
 }
 
-// The IsSteamRunning calls (steam_running.hpp): both sites or neither,
+// The IsSteamRunning calls (steam_running.hpp): all three sites or none,
 // through the stub made at PRE_MAIN.
 bool running_patch(bool on, const char** reason) noexcept {
     AcquireSRWLockExclusive(&switch_lock);
@@ -193,26 +193,29 @@ bool running_patch(bool on, const char** reason) noexcept {
     } else if (!running.found) {
         ok = false;
         *reason = "IsSteamRunning calls not found";
-    } else if (!running_handles[0] && !running_handles[1]) {
+    } else if (!running_handles[0] && !running_handles[1] && !running_handles[2]) {
         const auto steam = GetModuleHandleW(L"steam_api64.dll");
         const auto function = steam ? reinterpret_cast<std::uintptr_t>(GetProcAddress(steam, "SteamAPI_IsSteamRunning")) : 0;
         if (on && !running.real && !cpuopt::steam_running::resolve(running, function, reason)) {
             ok = false;
         } else if (on) {
-            static const std::string poll(cpuopt::steam_running::poll_signature), lobby(cpuopt::steam_running::lobby_signature);
-            const std::string* patterns[2] = {&poll, &lobby};
-            const unsigned offsets[2] = {cpuopt::steam_running::poll_call, cpuopt::steam_running::lobby_call};
-            static std::array<std::uint8_t, cpuopt::steam_running::call_length> expected[2], replacement[2];
+            namespace sr = cpuopt::steam_running;
+            static const std::string poll(sr::poll_signature), lobby(sr::lobby_signature), session(sr::session_signature);
+            const std::string* patterns[sr::site_count] = {&poll, &lobby, &session};
+            const unsigned offsets[sr::site_count] = {sr::poll_call, sr::lobby_call, sr::session_call};
+            const char* names[sr::site_count] = {"IsSteamRunning in sub_142209BF0 (cpuopt cache_steam_running)",
+                                                 "IsSteamRunning in sub_142215C00 (cpuopt cache_steam_running)",
+                                                 "IsSteamRunning in sub_1421E0E10 (cpuopt cache_steam_running)"};
+            static std::array<std::uint8_t, sr::call_length> expected[sr::site_count], replacement[sr::site_count];
             ok = running.stub != 0;
-            for (unsigned i = 0; i < 2 && ok; ++i) {
+            for (unsigned i = 0; i < sr::site_count && ok; ++i) {
                 std::memcpy(expected[i].data(), reinterpret_cast<const void*>(running.sites[i]), expected[i].size());
                 ok = cpuopt::steam_running::build_replacement(running.sites[i], running.stub, replacement[i]);
                 if (!ok) break;
                 al_patch_t p{};
                 p.size = sizeof(p);
                 p.kind = AL_PATCH_CODE;
-                p.name = i ? "IsSteamRunning in sub_142215C00 (cpuopt cache_steam_running)"
-                           : "IsSteamRunning in sub_142209BF0 (cpuopt cache_steam_running)";
+                p.name = names[i];
                 p.pattern = patterns[i]->c_str();
                 p.offset = static_cast<std::int32_t>(offsets[i]);
                 p.length = cpuopt::steam_running::call_length;
@@ -222,15 +225,16 @@ bool running_patch(bool on, const char** reason) noexcept {
                 running_handles[i] = patches->apply(self, &p);
                 ok = running_handles[i] != 0;
             }
-            if (!ok && running_handles[0]) patches->set_enabled(self, running_handles[0], 0);  // both or neither
+            if (!ok)  // all or none
+                for (const auto h : running_handles)
+                    if (h) patches->set_enabled(self, h, 0);
             *reason = ok ? "changes applied" : running.stub ? "al.patch refused a change (see the plugin log)" : "no jump stub";
         }
-    } else if (!running_handles[0] || !running_handles[1]) {
+    } else if (!running_handles[0] || !running_handles[1] || !running_handles[2]) {
         ok = false;
         *reason = "a change was refused earlier";
     } else {
-        ok = patches->set_enabled(self, running_handles[0], on ? 1 : 0) == AL_OK &&
-             patches->set_enabled(self, running_handles[1], on ? 1 : 0) == AL_OK;
+        for (const auto h : running_handles) ok = ok && patches->set_enabled(self, h, on ? 1 : 0) == AL_OK;
         *reason = ok ? (on ? "changes enabled" : "changes disabled") : "set_enabled failed";
     }
     ReleaseSRWLockExclusive(&switch_lock);
@@ -511,12 +515,17 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             budget = cpuopt::frame_budget::discover(timing, timing_count, present, present_count);
             host.budget = budget;
         }
-        // IsSteamRunning: its two per-frame calls, and their stub now.
+        // IsSteamRunning: its three per-frame calls, and their stub now.
         {
-            std::uintptr_t poll[2]{}, lobby[2]{};
-            const auto poll_count = find(cpuopt::steam_running::poll_signature, poll, 2);
-            const auto lobby_count = find(cpuopt::steam_running::lobby_signature, lobby, 2);
-            running = cpuopt::steam_running::discover(poll, poll_count, lobby, lobby_count);
+            namespace sr = cpuopt::steam_running;
+            std::uintptr_t first[sr::site_count]{}, hits[2]{};
+            unsigned counts[sr::site_count]{};
+            const std::string_view patterns[sr::site_count] = {sr::poll_signature, sr::lobby_signature, sr::session_signature};
+            for (unsigned i = 0; i < sr::site_count; ++i) {
+                counts[i] = find(patterns[i], hits, 2);
+                first[i] = hits[0];
+            }
+            running = sr::discover(first, counts);
             if (running.found)
                 running.stub = cpuopt::worker_spin::make_stub(running.sites[0], reinterpret_cast<const void*>(&cpuopt::steam_running::is_running));
             host.running = running;

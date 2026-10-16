@@ -119,7 +119,7 @@
 - Record the scene, graphics settings and which mods are loaded in the run
   note; the log records what it can detect itself.
 
-## The switches (v0.6 to v0.11)
+## The switches (v0.6 to v0.12)
 
 | Toggle | Name | What it changes | Parameters |
 |---|---|---|---|
@@ -132,7 +132,7 @@
 | 64 | inline_rounds | rounds with little work run on the game thread alone | inline_us (25) |
 | 128 | spin_workers | job threads spin after a round and take the next round's places without being woken (al.patch, 11 bytes, and a jump stub); slower in game (al-13), research only | spin_us (300) |
 | 256 | unit_threshold | sMhUnit's threshold between running a unit line alone and on the job threads (al-15: +2.8% at 40 us) | unit_us (40; the game's is 60) |
-| 512 | cache_steam_running | SteamAPI_IsSteamRunning answered once per time_ms at its two per-frame call sites (al.patch, 2 x 6 bytes); no measurable gain (al-15) | time_ms (1000) |
+| 512 | cache_steam_running | SteamAPI_IsSteamRunning answered once per time_ms at its per-frame call sites (al.patch, 6 bytes each): two in v0.7 (al-15: no gain measurable in fps), three from v0.12 (the network session driver's too; al-22: the three were about 1.5% of the game thread in a fight) | time_ms (1000) |
 | 2048 | cache_ccd | the process confined to the processors sharing the largest L3 (the 3D V-Cache die of a 7950X3D/9950X3D) and job rounds sized to match; nothing on CPUs with one or equal L3s (al-17: +4.9% on CCD0) | |
 | 1024 | smaller_cpu | research: the process confined to its first cpu_count logical processors (SMT siblings adjacent: 12 = six cores) and job rounds to as many threads; the original affinity back when off and at exit | cpu_count (12) |
 | 4096 | budget | research: the game thread's frame split into limiter, job rounds, Present path (GPU wait, swapchain call) and serial work; the CPU frame (interval minus limiter and GPU wait). Two detours: sMain's frame timing and cD3DRender::present | |

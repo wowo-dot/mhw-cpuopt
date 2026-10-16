@@ -355,10 +355,10 @@ int wmain(int argc, wchar_t** argv) {
     al_init_t start{sizeof(al_init_t), 0, self, folder.c_str(), folder.c_str(), nullptr};
     CHECK(init(&api, &start) == AL_OK);
     CHECK(last_status == AL_STATUS_ACTIVE);
-    CHECK(scans == 23);  // the frame counter, the four job_cap signatures, executeJob, the camera call site,
+    CHECK(scans == 24);  // the frame counter, the four job_cap signatures, executeJob, the camera call site,
                          // sPrimitive's loop, the two server time calls, the job threads' wait, the four
                          // sMhUnit signatures, the four sCollision ones, the frame budget's two functions
-                         // and the two IsSteamRunning calls
+                         // and the three IsSteamRunning calls
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && present_callback);
     CHECK(present_mask == (AL_D3D12_EVENT_BIT(AL_D3D12_PRE_PRESENT) | AL_D3D12_EVENT_BIT(AL_D3D12_POST_PRESENT)));
 
