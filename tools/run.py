@@ -1,9 +1,14 @@
 """Run folders for in-game measurements of the cpuopt plugin.
 
-  prepare <name> [--dll D] [--toggles N] [--marker M] [--note TEXT]
+  prepare <name> [--dll D] [--toggles N] [--marker M] [--note TEXT] [--player]
       New folder local/runs/<name>; installs the DLL into the MO2 slot if it
       differs (previous slot DLL backed up byte for byte), points the slot's
-      .output-dir sidecar at the folder and writes a receipt.
+      .output-dir sidecar at the folder and writes a receipt. --player: no
+      sidecar (moved into the folder if there was one), so the plugin starts
+      in player mode with the slot's cpuopt.ini (copied in as it was).
+  collect <run>
+      After a player-mode launch: copies the slot's cpuopt.log and cpuopt.ini
+      into the run folder (then seal it).
   control <run> [--toggles N] [--marker M] [--window-ms N] [--job-threads N]
           [--job-order 1|2] [--order-us N] [--inline-us N] [--time-ms N]
       Changes control.ini while the game runs; the plugin closes the current
@@ -105,20 +110,41 @@ def prepare(a):
         shutil.copyfile(dll, slot)
     if sha(slot) != sha(dll):
         raise SystemExit('installed DLL does not match')
-    Path(str(slot) + '.output-dir').write_text(str(run) + '\n', encoding='utf-8')
+    sidecar = Path(str(slot) + '.output-dir')
+    if a.player:
+        if sidecar.exists():
+            shutil.move(str(sidecar), str(run / 'previous-sidecar.txt'))
+        ini = slot.parent / 'cpuopt.ini'
+        if ini.exists():
+            shutil.copyfile(ini, run / 'cpuopt.ini.before')
+    else:
+        sidecar.write_text(str(run) + '\n', encoding='utf-8')
     control = {}
     if a.toggles is not None:
         control['toggles'] = str(a.toggles)
     if a.marker:
         control['marker'] = a.marker
-    if control:
+    if control and not a.player:
         write_control(run, control)
     receipt = dict(schema=1, prepared_utc=datetime.now(timezone.utc).isoformat(), run=str(run), slot=str(slot),
                    dll=dll.name, dll_sha256=sha(dll), previous_slot=previous, git=git_identity(), note=a.note,
-                   control=control)
+                   control=control, mode='player' if a.player else 'research')
     with (run / 'run-receipt.json').open('x', encoding='utf-8') as f:
         json.dump(receipt, f, indent=2)
     return receipt
+
+
+def collect(a):
+    if game_running():
+        raise SystemExit('close MonsterHunterWorld.exe first')
+    run = run_folder(a.run)
+    folder = Path(machine()['slot']).parent
+    copied = []
+    for name in ('cpuopt.log', 'cpuopt.ini'):
+        if (folder / name).exists():
+            shutil.copyfile(folder / name, run / name)
+            copied.append(name)
+    return dict(run=str(run), copied=copied)
 
 
 def control(a):
@@ -258,6 +284,9 @@ def main():
     s.add_argument('--toggles', type=lambda v: int(v, 0))
     s.add_argument('--marker')
     s.add_argument('--note', default='')
+    s.add_argument('--player', action='store_true')
+    s = sub.add_parser('collect')
+    s.add_argument('run')
     s = sub.add_parser('control')
     s.add_argument('run')
     s.add_argument('--toggles', type=lambda v: int(v, 0))
@@ -291,6 +320,8 @@ def main():
     a = p.parse_args()
     if a.action == 'prepare':
         print(json.dumps(prepare(a), indent=2))
+    elif a.action == 'collect':
+        print(json.dumps(collect(a)))
     elif a.action == 'control':
         print(json.dumps(control(a)))
     elif a.action == 'sequence':
