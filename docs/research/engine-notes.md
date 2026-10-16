@@ -466,3 +466,39 @@ time of day), so each variant is compared with its two neighbours.
   samples: unit moves 39% (uMhEffect::move 11%, the character update
   sub_141FBCCD0 12%), SpeedTree draws 12%, model draws 9%, effect draws 7.5%.
   On this CPU the job threads are idle about 88% of the time.
+
+### Fights and the unit lines (al-20, v0.8.2; 2026-10-16)
+
+Solo, the user fighting normally; everything off (0) against everything on
+(2424: v0.6's switches, unit_threshold 40, cache_ccd), 15 s steps, eight
+pairs, 3 s windows, the first window of each step left out.
+
+| Fight | off | on | gain | on steps vs off steps |
+|---|---|---|---|---|
+| Arch-Tempered Velkhana | 158.5 fps, p99 8.12 ms | 233.1 fps, p99 5.97 ms | +47.1% | 222-241 against 152-167 |
+| Furious Rajang | 204.3 | 267.4 | +30.9% | 252-281 against 198-209 |
+| Fatalis (small arena) | 233.9 | 247.6 | +5.9% | overlapping |
+| Alatreon | 268.8 | 279.7 | +4.1% | near the 300 fps cap |
+
+- **Fatalis's nova:** a 6-minute watch (45 s blocks off and on, 1 s
+  windows, sampler on) caught one slow stretch with everything off: 58-62
+  fps for about five seconds, process CPU 46-48 ms a frame (16 normally).
+  In those seconds sub_142570A40, the prim record loop plain_prim_stores
+  fixes, held 35.3% of all busy samples (5.7% in normal seconds of the same
+  fight). With everything on, the slowest second of the watch was 205 fps.
+- **What the rounds wait for in fights:** the monster's own move (uEm124
+  Velkhana 195 us, uEm023_05 Rajang 180, uEm013 Fatalis 263 in the line
+  dump, uEm050 Alatreon 206) and the player's (165-193 us) each end their
+  round in every frame.
+- **The unit lines (tools/unit_lines.py, read-only):** the monster is in
+  line 8 with its scar model, the player in line 10 with the bound
+  environment models (uBindBaseModelInstance, uBindSpeedTree), animals and
+  NPCs in 12, gimmicks in 14-15, armour and faces in 16, effects in 19-21,
+  lights and fog in 22. Lines run in order 0-31 in each pass; the order
+  looks like dependencies (the player and world, what moves with them,
+  effects bound to what moved, GUI and lights last), so overlapping lines,
+  even the monster's and the player's, would change what each sees.
+- Single long frames with everything on (Rajang, one of 71 ms) came a few
+  seconds after a switch flip; flipping applies code changes with the
+  game's threads paused and moves the process between the CPU dies, which
+  normal play never does.
