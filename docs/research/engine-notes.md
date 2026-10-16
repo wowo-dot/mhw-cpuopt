@@ -649,3 +649,64 @@ not timings.
   part breaks, clutch claw); stable through the quest end, a loading
   screen, alt-tab and menus; the loading screens' long frames (165-300 ms)
   only. Kept, on in every session from now so it sees more fights.
+
+### cache_steam_running with three sites, job order 3 in a fight (al-24, v0.12.0)
+
+- Ancient Forest, the kept set + budget, four pairs of 30 s: IsSteamRunning
+  went from about 5 calls a frame to 98 in 100 s (131,898 answers reused);
+  CPU frame 3.681 against 3.679 ms, serial game-thread work 1.356 against
+  1.338 ms. About 18 us a frame: no measurable gain on the CPU frame either.
+  The sampler had put the three calls at 1.5% of the game thread; its own
+  thread suspensions likely make registry calls look dearer. Optional.
+- Arch-Tempered Velkhana, job order 2 against 3 with time_jobs, six pairs of
+  15 s: the camera round 167.0 against 160.8 us, but the CPU frame +73 us on
+  average (worse in four of six pairs; reordering all ~540 jobs costs the
+  game thread more than the round saves). Mode 2 stays.
+
+### With the DLSS mod (al-25, v0.12.0; DLSS 0.28.5, quality, no frame generation, no Reflex)
+
+- Ancient Forest, cpuopt off (4096|8192) against the kept set, four pairs of
+  30 s: 168.9 against 238.4 fps (+41%), CPU frame 5.916 against 4.185 ms, p99
+  7.30 against 5.30 ms. nvidia-smi: GPU 58% busy (317 W) against 79% (401
+  W). The forest is CPU-bound with DLSS too (GPU wait under 0.01 ms in both
+  halves); DLSS alone gives nothing there (al-21 without it: 167 fps).
+- Both mods together: no errors, nothing changed in either's hooks.
+
+### Windows Game Mode parks the frequency die (al-25, al-26)
+
+- With the game focused it ran 234 fps, unfocused 265 (1 s windows, the
+  user focusing for 30 s): focused frames had +0.40 ms of job rounds, +0.11
+  ms of serial work and +2.5 ms of process CPU. typeperf (read-only,
+  Processor Information % Processor Time and Parking Status): focused, CCD1
+  was parked 90% of the time (4% busy, 18% unfocused) and CCD0 went from
+  42% to 56% busy: everything else on the PC was crowded onto MHW's die.
+- Cause on the test PC: Windows Game Mode on (AutoGameModeEnabled 1), the
+  amd3dvcache driver running, the Balanced plan letting class-1 cores park
+  to 0%. The user turned Game Mode off and set the BIOS's CPPC preferred
+  cores to frequency (al-26): CCD1 parked 0.00 with the game focused.
+- Runs before al-26 ran with the game focused under this parking (the A/B
+  halves alike), so their numbers are a little low against a clean setup.
+
+### cache_ccd on a clean setup, and stock against everything (al-26, v0.12.0)
+
+Ancient Forest, DLSS quality, Game Mode off, BIOS preferring the frequency
+die, no Process Lasso rule for MHW; four pairs of 30 s each.
+
+| | fps | CPU frame | p99 | process CPU a frame | CCD0 / CCD1 busy |
+|---|---|---|---|---|---|
+| kept set without cache_ccd | 188.1 | 5.295 ms | 6.25 ms | 41.6 ms | 29% / 47% |
+| kept set | 262.7 (+40%) | 3.776 ms | 4.53 ms | 21.9 ms | 39% / 18% |
+| everything off (stock) | 146.6 | 6.814 ms | 7.95 ms | 46.5 ms | |
+| kept set | 264.5 (+80%) | 3.747 ms | 4.50 ms | 21.8 ms | |
+
+- Without a pin, Windows put MHW's busiest threads on the frequency die (32
+  MB L3) and spread the rest over both dies: cross-die traffic and a third
+  of the cache. cache_ccd's +3.6-4.9% in al-17/19 was measured while Game
+  Mode parked CCD1 for the focused game, which put MHW on CCD0 anyway.
+- Gains by setup, Ancient Forest: Game Mode parking (Windows' default on
+  X3D) 169 to 238 fps (+41%, al-25); no parking, BIOS preferring frequency,
+  no pin 147 to 265 (+80%, al-26). A setup with no preference at all may
+  scatter the game across the dies more and gain more; not measured.
+- v0.12.1: cpu_limit's switch-off path set the mask read at startup, which
+  would undo a Process Lasso rule applied after it; it now restores only an
+  affinity it set itself.

@@ -1,6 +1,6 @@
 # Where cpuopt stands and what comes next
 
-Updated 2026-10-16 (after al-23). Numbers and methods: `research/engine-notes.md`;
+Updated 2026-10-16 (after al-26). Numbers and methods: `research/engine-notes.md`;
 how a run is done: `runtime-protocol.md`.
 
 ## Kept: switches that help (measured on and off in one session)
@@ -11,7 +11,7 @@ how a run is done: `runtime-protocol.md`.
 | 8 | order_jobs (mode 2) | the camera round's expensive jobs first: hub +4.8% |
 | 32 | reuse_server_time | Steam's server time read once a second: hub +3.0% |
 | 256 | unit_threshold (unit_us 40) | sMhUnit hands more lines to the job threads: Ancient Forest +2.8% |
-| 2048 | cache_ccd | the game on the 3D V-Cache die of a dual-die X3D CPU: +3.6% |
+| 2048 | cache_ccd | the game on the 3D V-Cache die of a dual-die X3D CPU: +3.6% with Windows Game Mode parking the other die (al-19), +40% without it (al-26) |
 | 32768 | parallel_contacts (contacts 1) | sCollision's contact pass as a job round, the engine's own path left off by an init-order slip: about 140 us a frame back in the Velkhana fight (al-23) |
 | 16384 | sleep_limiter (for capped play) | the frame limiter sleeps instead of spinning: game thread -21% at a 300 cap with margin 1000, same fps and pacing (al-22) |
 
@@ -76,9 +76,11 @@ Both measuring switches stay on in both halves of every A/B.
    us), sCamera::draw's serial setup (~220 us, sub_1423C3790), sub_141B05440
    (~130 us), endFrame12 (~220 us, D3D12). Also job order mode 3 in fights
    (replay: 75 us a frame).
-3. **The DLSS mod together with cpuopt,** with the GPU's utilization logged
-   (nvidia-smi, read-only): coexistence, and whether the GPU is now the
-   limit at 1440p and 4K.
+3. **The DLSS mod together with cpuopt (al-25, al-26):** no conflicts; the
+   forest stays CPU-bound with DLSS quality (GPU 58% busy stock, 79% with
+   cpuopt); stock against the kept set +41% (Game Mode parking) to +80%
+   (clean setup, no pin). Left: a fight with DLSS, frame generation, and the
+   Process Lasso rule's effect with v0.12.1 (al-27).
 4. **Player mode** (when the research settles): the kept switches on without
    a run folder, no logs, and a short guide.
 5. **Parked** (engine restructuring with real risk): overlapping camera
