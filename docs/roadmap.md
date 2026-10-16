@@ -38,12 +38,32 @@ move (165-263 us) and the player's (165-193 us) end their rounds every
 frame in fights. Light scenes reach the engine's 300 fps cap, and at the
 hub the game thread already waits on the GPU's frame fence.
 
+## How gains are measured (from v0.9)
+
+fps alone is a weak research measure: the engine's 300 fps cap and the GPU
+flatten it, and it does not say which part of a frame changed. Results are
+reported as:
+
+1. **CPU frame** (toggle 4096, frame_budget): per frame, the interval minus
+   the limiter's wait and the GPU wait; what a frame costs the CPU with no
+   cap and an infinitely fast GPU. With its parts: limiter, job rounds,
+   Present path (GPU wait, swapchain call), serial game-thread work.
+2. **Process CPU per frame:** all threads' work.
+3. **Frame-time percentiles** (p95, p99, worst) for smoothness and hitches.
+4. fps, secondary; with uncap (8192) on in both halves of an A/B, capped
+   scenes measure again.
+
+Both measuring switches stay on in both halves of every A/B.
+
 ## Plan
 
-1. **The frame limiter** (now): how the 300 fps cap works. It busy-waits on
-   the game thread (about 30% of it at a capped title screen), so:
-   - an "uncap" research switch, so capped scenes measure again;
-   - a "sleep instead of spin" switch: the same cap, without burning a core.
+1. **Measuring and the frame limiter** (now): frame_budget and uncap are
+   built (v0.9.0); next, re-measure the kept switches on the CPU frame at
+   the hub and the Ancient Forest. The limiter (sMain mMaxFps, +0x5C) Sleeps
+   only when 2 ms or more remain and otherwise spins on
+   QueryPerformanceCounter (about 30% of the game thread at a capped title
+   screen): a "sleep instead of spin" switch would keep the same cap
+   without burning a core.
 2. **The player's and the monster's moves:** a sampler mode that follows the
    thread running one chosen job (the player's, a monster's) and samples it
    every tick; then look for waste inside those ~200 us.
