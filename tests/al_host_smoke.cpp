@@ -414,6 +414,10 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     added_page.get_text(added_page.user, 3, status, sizeof(status));
     std::printf("  status: %s\n", status);
     CHECK(std::string(status).find("optimization") != std::string::npos && std::string(status).find(" on") != std::string::npos && std::string(status).find(" of ") == std::string::npos);
+    // A PIX capture request: taken (through the layer when PIX is installed here), logged, the file gone.
+    write_all(folder + L"\\pix-capture.txt", "2\r\n");
+    Sleep(1500);
+    CHECK(GetFileAttributesW((folder + L"\\pix-capture.txt").c_str()) == INVALID_FILE_ATTRIBUTES);
     // A hand edit while the game runs (and 1 s benchmark windows).
     write_all(ini, replaced(replaced(read_all(ini), "unit_us = 40", "unit_us = 50"), "benchmark_s = 6 ", "benchmark_s = 1 "));
     Sleep(2000);
@@ -499,6 +503,7 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     CHECK(log.find("\"marker\":\"player\"", log.find("\"event\":\"benchmark\"")) != std::string::npos);  // its own settings back
     CHECK(log.find("\"event\":\"modules\"") != std::string::npos && log.find("al_d3d12_subscribed") == std::string::npos);
     CHECK(log.find("\"event\":\"pix_capturer\"") != std::string::npos);
+    CHECK(log.find("\"event\":\"pix_capture\"") != std::string::npos && log.find("\"frames\":2") != std::string::npos);
     CHECK(lines_with(log, "\"event\":\"bench_window\"").size() >= 16 + 4 + 4);
     CHECK(log.find("\"stopped\":\"a setting changed\"") != std::string::npos && log.find("\"stopped\":\"the game closed\"") != std::string::npos);
     CHECK(read_all(folder + L"\\cpuopt-benchmark.txt").find("Stopped early (the game closed): ") != std::string::npos);

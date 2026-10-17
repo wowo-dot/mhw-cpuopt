@@ -524,6 +524,55 @@ void settings_event(const char* what, const std::string& detail) {
     out += '}';
     event_log.write(out);
 }
+// Research: a GPU capture through PIX's layer, when al_entry.cpp loaded it at
+// start (load-pix-capturer.txt). <folder>\pix-capture.txt asks for one: its
+// first number is how many frames (1 when none, at most 30). The layer's
+// CaptureNextFrame (what PIX's PIXGpuCaptureNextFrames calls) writes
+// <folder>\pix-<local time>.wpix at the next Present; the request file goes.
+void poll_pix_capture() {
+    const auto request = host.folder + L"\\pix-capture.txt";
+    if (GetFileAttributesW(request.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    std::string text;
+    read_small(request, text);
+    DeleteFileW(request.c_str());
+    unsigned frames = 0;
+    for (const char c : text) {
+        if (c < '0' || c > '9') {
+            if (frames) break;
+            continue;
+        }
+        frames = frames * 10 + unsigned(c - '0');
+        if (frames > 30) break;
+    }
+    frames = std::clamp(frames, 1U, 30U);
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+    wchar_t name[64];
+    swprintf_s(name, L"\\pix-%04u%02u%02u-%02u%02u%02u.wpix", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    const auto path = host.folder + name;
+    using CaptureNextFrame = HRESULT(WINAPI*)(PCWSTR file, UINT32 frames);
+    const auto layer = GetModuleHandleW(L"WinPixGpuCapturer.dll");
+    const auto capture = layer ? reinterpret_cast<CaptureNextFrame>(GetProcAddress(layer, "CaptureNextFrame")) : nullptr;
+    const HRESULT result = capture ? capture(path.c_str(), frames) : E_NOINTERFACE;
+    std::string out = "{";
+    json::key(out, "event");
+    json::string(out, "pix_capture");
+    json::key(out, "t_ms");
+    json::fixed(out, now_ms(), 3);
+    json::key(out, "frames");
+    json::number(out, std::uint64_t(frames));
+    json::key(out, "layer");
+    out += layer ? "true" : "false";
+    json::key(out, "hresult");
+    char hr[16];
+    std::snprintf(hr, sizeof(hr), "0x%08lX", static_cast<unsigned long>(result));
+    json::string(out, hr);
+    json::key(out, "file");
+    json::string(out, utf8(path));
+    out += '}';
+    event_log.write(out);
+}
+
 // cpuopt.ini edited by hand while the game runs: read again.
 void reload_if_edited(State& s) {
     const auto stamp = write_time(s.settings_path);
@@ -1009,6 +1058,7 @@ DWORD WINAPI player_worker(void* parameter) noexcept {
             const HANDLE waits[2] = {stop_event, change_event};
             if (WaitForMultipleObjects(2, waits, FALSE, b.phase == Bench::Phase::idle ? 1000 : 50) == WAIT_OBJECT_0) break;
             reload_if_edited(s);
+            poll_pix_capture();
             save_if_dirty(s);
             const auto now = settings();
             if (!(now == applied)) {
