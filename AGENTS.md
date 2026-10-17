@@ -139,8 +139,10 @@ rules come first.
 - **PIX GPU captures** (Microsoft PIX, installed by the user; from v0.14.4):
   - cpuopt loads PIX's capture layer (`WinPixGpuCapturer.dll`) at startup
     only while `<plugin folder>\load-pix-capturer.txt` exists. Make that file
-    only after the user's OK for the session, and remove it afterwards; it
-    never goes into a package;
+    only with the user's OK, for a session or for a stretch of work they
+    agree to (the GPU research from 2026-10-17), and remove it when that
+    ends or they ask; take it out for any launch that measures. It never
+    goes into a package;
   - the user launches through MO2 as always and PIX attaches to the running
     game; never launch the game from PIX. Offline only;
   - captures hold the game's shaders, textures and meshes: they stay under
