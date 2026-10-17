@@ -797,6 +797,20 @@ DLSS mod with Streamline). No crash or conflict was reported.
   the biggest switch, is mostly a Ryzen fix. Wanted: a non-X3D Ryzen, and
   the 13700K CPU-limited (the game's resolution scaling low) and in an
   effect-heavy spot.
+- **Ryzen 9 9950X3D, RTX 5080, 1440p Borderless, DLSS mod performance,
+  Reflex and frame generation off, no frame rate limit, the 300 fps cap
+  removed, all 32 logical processors, no affinity tool, no parked cores
+  (v0.15.0, third tester, 2026-10-17; scene not stated):** 137.2 to 257.8
+  fps, +88% (pairs +79 to +93%); p99 8.62 to 5.75 ms. The game thread's CPU
+  time per frame 7.20 to 3.19 ms (-56%; busy 99% to 82%), all threads'
+  33.9 to 16.7 ms (-51%). Job rounds 4.52 to 1.57 ms, its own work 2.29 to
+  1.30 ms, Present 0.44 to 0.98 ms. Off CPU-limited, on held by the
+  graphics card (the CPU alone about 313 fps). The off half ran over both
+  dies (nothing pinned it), so this is the README's "clean setup" case
+  (al-26: +80% on the test PC) reproduced on a second 9950X3D with a
+  different graphics card and set of mods; it says nothing new about
+  non-X3D Ryzen. Every signature matched, no failures, clean restore at
+  exit; the master switch's hotkey was used several times.
 - Most players with mid-range graphics cards at 1440p are GPU-limited, so
   their fps cannot rise. The README now says who gains fps; a live "Limited
   by" line on the Mods page is proposed (roadmap).
