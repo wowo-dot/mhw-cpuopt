@@ -95,9 +95,13 @@ Both measuring switches stay on in both halves of every A/B.
 5. **Release (closed beta running, v0.14.3):** the player guide, tester
    notes, the Mods page's benchmark (8 off/on pairs, a report testers send
    back) and `tools/package.py` are done. Two testers so far, both Intel and
-   GPU-limited (engine notes, "Closed beta, first results"). Wanted: a
-   non-X3D Ryzen, a CPU-limited Intel run. Then the public release (fresh
-   repo history, noreply author, licence check).
+   GPU-limited (engine notes, "Closed beta, first results"); a 5800X with
+   an RTX 5080 joined on 2026-10-17. Before the public release (the user's
+   call, 2026-10-17: more testers first), reports from: a single-die X3D
+   (5800X3D/7800X3D/9800X3D), a non-X3D Ryzen, a 6-core Ryzen, a
+   CPU-limited Intel, an older Intel without E-cores, a mid-range card
+   capped at 60, a Radeon card, Steam Deck or Linux. Then the public
+   release (fresh repo history, noreply author, licence check).
    - Proposed: a live "Limited by" line on the Mods page (CPU, graphics
      card or frame rate limit, from the game thread's cycle count against
      the frame time), and the benchmark's page line saying "GPU-limited"
