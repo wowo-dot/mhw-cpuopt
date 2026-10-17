@@ -37,6 +37,15 @@ void set_focus(unsigned per_tick) noexcept;
 void follow_begin(DWORD tid) noexcept;  // any thread
 void follow_end(DWORD tid) noexcept;
 void set_follow_gap(unsigned gap_us) noexcept;
+// Write-combined scan: each sample also checks the sampled thread's general
+// registers against the process's committed write-combined or uncached memory
+// (GPU upload heaps and mapped video memory, where every CPU read bypasses the
+// caches: the effect loop's cost, prim_stores.hpp). A sample with such a
+// pointer carries flag 8 on its stack and is counted per game instruction with
+// the registers that held one ("wc_leaves"), so a report can list the code
+// that touches that memory; whether it reads or only writes is for the
+// disassembly to say. The region list is rebuilt every 2 s while on. Any thread.
+void set_wc_scan(bool on) noexcept;
 // The "profile" event with the samples since the last call, or empty.
 std::string take_event(double t_ms, unsigned toggles, const std::string& marker);
 }  // namespace cpuopt::sampler

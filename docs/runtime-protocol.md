@@ -37,7 +37,9 @@
      times, for interleaved A/B (`--steps 8:30,24:30 --repeat 4`);
    - or by hand: `run.py control <name> --toggles 2 --job-threads 15`;
      `--job-order`, `--order-us`, `--inline-us` and `--time-ms` set the
-     switches' parameters (they stay in control.ini for later steps).
+     switches' parameters (they stay in control.ini for later steps);
+     `--set KEY=VALUE` writes any other control.ini key, e.g.
+     `--set wc_scan=1`.
    Each change closes the current statistics window first, so no window mixes
    two states.
 4. `python -B tools/run.py status <name>` shows the last windows live.
@@ -103,7 +105,16 @@
 - `profile` (only while toggle 1 is on): whole stacks per sampled thread with
   counts; the game and present threads are always sampled. From v0.6 also
   `leaves`: the game exe's hottest exact instructions ([rva, game thread,
-  all]), for `profile_report.py --leaves N`.
+  all]), for `profile_report.py --leaves N`. From v0.15.1, with control.ini
+  `wc_scan=1`: each sample's general registers are checked against the
+  process's committed write-combined or uncached memory (read-only
+  VirtualQuery walk every 2 s; GPU upload heaps, where every CPU read
+  bypasses the caches, as in the effect loop). Such samples carry flag 8 on
+  their stacks; `wc` holds the totals (samples scanned and flagged, regions,
+  bytes, the walk's time, modules) and `wc_leaves` the game instructions
+  ([rva, flagged, flagged on the game thread, register mask, all]), for
+  `profile_report.py --wc N`. A flagged instruction is a candidate: the
+  disassembly says whether it reads that memory or only writes it.
 - `stopping` / `stopped` at EXITING (the last window, sampler joined),
   `shutdown` at SHUTDOWN, `exit` from DllMain.
 

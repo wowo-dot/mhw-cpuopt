@@ -96,6 +96,19 @@ __declspec(noinline) void busy_leaf() {
 __declspec(noinline) void busy_outer() {
     while (!stop.load()) busy_leaf();
 }
+// Reads write-combined memory in a loop, as the effect loop did: the
+// write-combined scan must find it.
+const volatile std::uint64_t* wc_buffer{};
+__declspec(noinline) void wc_reader() {
+    std::uint64_t sum{};
+    while (!stop.load(std::memory_order_relaxed))
+        for (unsigned i = 0; i < 2048; ++i) sum += wc_buffer[i * 8];
+    sink = sum;
+}
+DWORD WINAPI wc_thread(void*) {
+    wc_reader();
+    return 0;
+}
 DWORD WINAPI busy_thread(void*) {
     busy_outer();
     return 0;
@@ -1623,6 +1636,66 @@ void census_and_sampler_test() {
     }
     CHECK(has_flag4);
     CloseHandle(job);
+
+    // Write-combined scan: a thread reading write-combined memory is flagged
+    // at its loop (flag 8, a wc_leaves entry with the pointer's register);
+    // the busy thread beside it, on ordinary memory, is not.
+    auto* buffer = static_cast<std::uint64_t*>(VirtualAlloc(nullptr, 1 << 17, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE | PAGE_WRITECOMBINE));
+    CHECK(buffer != nullptr);
+    if (!buffer) return;
+    wc_buffer = buffer;
+    stop.store(false);
+    const auto reader = CreateThread(nullptr, 0, wc_thread, nullptr, 0, nullptr);
+    const auto plain = CreateThread(nullptr, 0, busy_thread, nullptr, 0, nullptr);
+    const DWORD watched[] = {GetThreadId(reader), GetThreadId(plain)};
+    cpuopt::sampler::set_tracked(watched);
+    cpuopt::sampler::set_wc_scan(true);
+    cpuopt::toggles.store(cpuopt::sample_profile);
+    Sleep(2300);  // past the thread refresh
+    cpuopt::sampler::take_event(7, 1, "wc");
+    Sleep(500);
+    cpuopt::toggles.store(0);
+    Sleep(60);
+    const auto w = cpuopt::sampler::take_event(8, 1, "wc");
+    stop.store(true);
+    WaitForSingleObject(reader, INFINITE);
+    WaitForSingleObject(plain, INFINITE);
+    CloseHandle(reader);
+    CloseHandle(plain);
+    cpuopt::sampler::set_wc_scan(false);
+    cpuopt::sampler::set_tracked({});
+    const auto wc_at = w.find("\"wc\":{");
+    CHECK(wc_at != std::string::npos);
+    if (wc_at == std::string::npos) return;
+    const auto scan = w.substr(wc_at);
+    const auto flagged_samples = number_after(scan, "samples"), scanned = number_after(scan, "scanned");
+    std::printf("sampler wc: %lld of %lld samples flagged, %lld regions, %lld bytes, refresh %lld us\n", flagged_samples, scanned,
+                number_after(scan, "regions"), number_after(scan, "bytes"), number_after(scan, "refresh_us"));
+    CHECK(scanned > 200 && flagged_samples > 100 && flagged_samples < scanned * 3 / 4);  // the reader, not the busy thread
+    CHECK(number_after(scan, "regions") >= 1 && number_after(scan, "bytes") >= (1 << 17));
+    const auto leaves = w.find("\"wc_leaves\":[[");
+    CHECK(leaves != std::string::npos);
+    if (leaves != std::string::npos) {
+        char* end{};
+        const auto rva = std::strtoull(w.c_str() + leaves + 14, &end, 10);
+        const auto wc = std::strtoull(end + 1, &end, 10);
+        std::strtoull(end + 1, &end, 10);  // wc_game
+        const auto regs = std::strtoull(end + 1, &end, 10);
+        const auto total = std::strtoull(end + 1, &end, 10);
+        const auto fn = rva_of(reinterpret_cast<const void*>(&wc_reader));
+        std::printf("sampler wc: top leaf rva %llu (wc_reader %u), wc %llu of %llu, regs 0x%llx\n", rva, fn, wc, total, regs);
+        CHECK(rva >= fn && rva < fn + 256 && wc * 10 >= total * 9 && regs != 0 && !(regs & 0x10));
+    }
+    char reader_key[32];
+    std::snprintf(reader_key, sizeof(reader_key), "[%lu,", static_cast<unsigned long>(watched[0]));
+    bool has_flag8 = false;
+    const auto wc_stacks = w.find("\"stacks\":[");
+    for (auto at = wc_stacks; wc_stacks != std::string::npos && (at = w.find(reader_key, at + 1)) != std::string::npos;) {
+        const auto comma = w.find(',', at + std::strlen(reader_key));
+        if (comma != std::string::npos && (std::atoi(w.c_str() + comma + 1) & 8)) has_flag8 = true;
+    }
+    CHECK(has_flag8);
+    VirtualFree(buffer, 0, MEM_RELEASE);
 }
 
 void start_event_test() {

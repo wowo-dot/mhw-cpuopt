@@ -12,8 +12,10 @@
       and cpuopt-benchmark.txt into the run folder (then seal it).
   control <run> [--toggles N] [--marker M] [--window-ms N] [--job-threads N]
           [--job-order 1|2] [--order-us N] [--inline-us N] [--time-ms N]
+          [--set KEY=VALUE ...]
       Changes control.ini while the game runs; the plugin closes the current
-      window and logs the change within about 300 ms.
+      window and logs the change within about 300 ms. --set writes any other
+      key (src/core/control.hpp), e.g. --set wc_scan=1.
   sweep <run> --marker M --steps 0:45,15:45,0:45,11:45 [--profile]
       job_thread_cap A/B: each step is job threads (0 = the game's own count,
       switch off) and seconds; the sampler stays off unless --profile.
@@ -164,6 +166,11 @@ def control(a):
     for key in ('job_order', 'order_us', 'inline_us', 'time_ms'):
         if getattr(a, key) is not None:
             values[key] = str(getattr(a, key))
+    for item in a.set:  # any other control.ini key (src/core/control.hpp), checked by the plugin
+        key, sep, value = item.partition('=')
+        if not sep or not key.strip():
+            raise SystemExit(f'--set needs KEY=VALUE, got {item!r}')
+        values[key.strip()] = value.strip()
     write_control(run, values)
     return dict(run=str(run), control=values)
 
@@ -298,6 +305,7 @@ def main():
     s.add_argument('--order-us', type=int)
     s.add_argument('--inline-us', type=int)
     s.add_argument('--time-ms', type=int)
+    s.add_argument('--set', action='append', default=[], metavar='KEY=VALUE')
     s = sub.add_parser('sweep')
     s.add_argument('run')
     s.add_argument('--marker', required=True)

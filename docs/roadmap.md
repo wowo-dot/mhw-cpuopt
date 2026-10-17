@@ -76,6 +76,12 @@ Both measuring switches stay on in both halves of every A/B.
    us), sCamera::draw's serial setup (~220 us, sub_1423C3790), sub_141B05440
    (~130 us), endFrame12 (~220 us, D3D12). Also job order mode 3 in fights
    (replay: 75 us a frame).
+2c. **More code like the effect loop (v0.15.1, starting):** the sampler's
+   write-combined scan (control.ini `wc_scan=1`) flags samples with a
+   register pointing into GPU upload memory. Check first that it finds the
+   effect loop with plain_prim_stores off, then sweep the hub, forest,
+   Elder's Recess, a fight, menus, item box and smithy with every kept
+   switch on; each hot hit gets a look in IDA (read or write).
 3. **The DLSS mod together with cpuopt (al-25, al-26):** no conflicts; the
    forest stays CPU-bound with DLSS quality (GPU 58% busy stock, 79% with
    cpuopt); stock against the kept set +41% (Game Mode parking) to +80%

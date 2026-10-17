@@ -34,7 +34,8 @@ struct Thread {
 struct Stack {
     std::uint64_t hash{};
     std::uint32_t tid{}, count{};
-    std::uint16_t depth{}, flags{};  // flags: 1 cut short, 2 taken while the game thread spun, 4 followed job
+    std::uint16_t depth{}, flags{};  // flags: 1 cut short, 2 taken while the game thread spun, 4 followed job,
+                                     // 8 a register pointed into write-combined memory (set_wc_scan)
     std::array<std::uint64_t, depth_capacity> frames;  // module id << 32 | rva
 };
 struct ThreadStat {
@@ -53,6 +54,12 @@ constexpr unsigned spin_round_capacity = 64;
 // Samples whose innermost frame is in the game exe, by exact instruction.
 struct Leaf {
     std::uint32_t rva{}, game{}, all{};  // all: every sampled thread; game: the game thread
+    std::uint32_t wc{}, wc_game{};       // of those, samples with a register into write-combined memory
+    std::uint32_t regs{};                // which registers held one (bit = x64 register number)
+};
+constexpr unsigned wc_capacity = 4096, wc_listed = 200;
+struct WcRegion {
+    std::uintptr_t base{}, end{};
 };
 struct Table {
     std::array<Stack, stack_capacity> stacks;
@@ -66,6 +73,10 @@ struct Table {
     std::array<Leaf, leaf_capacity> leaves{};
     unsigned leaves_used{};
     std::uint64_t leaf_overflow{};
+    // Write-combined scan: samples with such a pointer, those of the game
+    // thread, and per module of the innermost frame (the last slot: unknown).
+    std::uint64_t wc_samples{}, wc_game{}, wc_scanned{};
+    std::array<std::uint32_t, name_capacity + 1> wc_modules{};
 };
 
 // The spin probe's code range and sMain's global (job_cap.hpp); set once.
@@ -99,6 +110,12 @@ std::atomic<std::uint64_t> follow_jobs{};
 std::atomic<unsigned> focus_per_tick{};
 std::uintptr_t focus_start{};
 unsigned next_focus{};
+// Write-combined scan (set_wc_scan): the regions, sampler thread only, and
+// the last rebuild's totals for the event.
+std::atomic<bool> wc_scan{};
+std::array<WcRegion, wc_capacity> wc_regions;
+unsigned wc_count{};
+std::atomic<std::uint64_t> wc_bytes{}, wc_listed_regions{}, wc_dropped{}, wc_refresh_us{};
 
 using QueryThread = LONG(NTAPI*)(HANDLE, int, void*, ULONG, ULONG*);
 QueryThread query_thread{};
@@ -204,6 +221,48 @@ void refresh_threads() noexcept {
         }
     }
 }
+// The committed write-combined or uncached regions, in address order,
+// adjacent ones merged; past wc_capacity they are counted, not kept.
+void refresh_wc() noexcept {
+    const auto began = qpc_now();
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    auto at = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
+    const auto top = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
+    unsigned n{};
+    std::uint64_t bytes{}, dropped{};
+    MEMORY_BASIC_INFORMATION info{};
+    while (at < top && VirtualQuery(reinterpret_cast<const void*>(at), &info, sizeof(info)) == sizeof(info) && info.RegionSize) {
+        const auto base = reinterpret_cast<std::uintptr_t>(info.BaseAddress), end = base + info.RegionSize;
+        if (info.State == MEM_COMMIT && (info.Protect & (PAGE_WRITECOMBINE | PAGE_NOCACHE)) && !(info.Protect & PAGE_GUARD)) {
+            bytes += info.RegionSize;
+            if (n && wc_regions[n - 1].end == base) wc_regions[n - 1].end = end;
+            else if (n < wc_capacity) wc_regions[n++] = {base, end};
+            else ++dropped;
+        }
+        at = end;
+    }
+    wc_count = n;
+    wc_bytes.store(bytes, std::memory_order_relaxed);
+    wc_listed_regions.store(n, std::memory_order_relaxed);
+    wc_dropped.store(dropped, std::memory_order_relaxed);
+    wc_refresh_us.store(static_cast<std::uint64_t>((qpc_now() - began) * 1000000 / qpc_frequency()), std::memory_order_relaxed);
+}
+bool in_wc(std::uintptr_t p) noexcept {
+    const auto end = wc_regions.begin() + wc_count;
+    auto it = std::upper_bound(wc_regions.begin(), end, p, [](std::uintptr_t v, const WcRegion& r) { return v < r.base; });
+    if (it == wc_regions.begin()) return false;
+    --it;
+    return p < it->end;
+}
+// Which of the 16 general registers (x64 numbering: rax 0 ... r15 15; rsp is
+// skipped) point into write-combined memory.
+std::uint32_t wc_mask(const std::array<std::uintptr_t, 16>& regs) noexcept {
+    std::uint32_t mask{};
+    for (unsigned i = 0; i < regs.size(); ++i)
+        if (i != 4 && regs[i] > 0xFFFF && in_wc(regs[i])) mask |= 1U << i;
+    return mask;
+}
 const Module* find(std::uintptr_t pc) noexcept {
     const auto end = modules.begin() + module_count;
     auto it = std::upper_bound(modules.begin(), end, pc, [](std::uintptr_t v, const Module& m) { return v < m.base; });
@@ -272,7 +331,7 @@ ThreadStat* stat_of(Table& t, DWORD tid) noexcept {
     s = {tid, 0, 0};
     return &s;
 }
-void count_leaf(Table& t, std::uint32_t rva, bool game) noexcept {
+void count_leaf(Table& t, std::uint32_t rva, bool game, std::uint32_t wc) noexcept {
     auto slot = static_cast<unsigned>((rva * 0x9E3779B1U) >> 19) & (leaf_capacity - 1);
     for (unsigned probe = 0; probe < 32; ++probe, slot = (slot + 1) & (leaf_capacity - 1)) {
         auto& l = t.leaves[slot];
@@ -285,17 +344,31 @@ void count_leaf(Table& t, std::uint32_t rva, bool game) noexcept {
         }
         ++l.all;
         l.game += game ? 1 : 0;
+        if (wc) {
+            ++l.wc;
+            l.wc_game += game ? 1 : 0;
+            l.regs |= wc;
+        }
         return;
     }
     ++t.leaf_overflow;
 }
 // `leaf`: the innermost instruction's RVA + 1 when it is in the game exe, else 0.
-void record(DWORD tid, const std::uint64_t* frames, unsigned depth, std::uint16_t flags, std::uint32_t leaf, bool game) noexcept {
+// `wc`: the write-combined scan's register mask, `scanned`: whether it ran.
+void record(DWORD tid, const std::uint64_t* frames, unsigned depth, std::uint16_t flags, std::uint32_t leaf, bool game,
+            std::uint32_t wc = 0, bool scanned = false) noexcept {
     std::uint64_t hash = (0xcbf29ce484222325ULL ^ tid) * 0x100000001b3ULL ^ flags;
     for (unsigned i = 0; i < depth; ++i) hash = (hash ^ frames[i]) * 0x100000001b3ULL;
     AcquireSRWLockExclusive(&lock);
     auto& t = *tables[active];
-    if (leaf) count_leaf(t, leaf - 1, game);
+    if (leaf) count_leaf(t, leaf - 1, game, wc);
+    t.wc_scanned += scanned ? 1 : 0;
+    if (wc) {
+        ++t.wc_samples;
+        t.wc_game += game ? 1 : 0;
+        const auto module = static_cast<unsigned>(frames[0] >> 32);
+        ++t.wc_modules[module < name_capacity ? module : name_capacity];
+    }
     ++t.samples;
     if (flags & 4) ++t.follow_samples;
     if (auto* s = stat_of(t, tid)) ++s->samples;
@@ -376,6 +449,7 @@ bool sample(const Thread& t, bool during_spin, bool followed = false) noexcept {
     unsigned n{};
     std::uintptr_t rip{}, rbx{};
     std::uint32_t rdi{};
+    std::array<std::uintptr_t, 16> regs{};
     if (GetThreadContext(t.handle, &c)) {  // returns once the thread has stopped
         if (followed && follow_tid.load(std::memory_order_acquire) != t.id) {
             ResumeThread(t.handle);
@@ -387,6 +461,7 @@ bool sample(const Thread& t, bool during_spin, bool followed = false) noexcept {
         rip = static_cast<std::uintptr_t>(c.Rip);  // before the unwind changes them
         rbx = static_cast<std::uintptr_t>(c.Rbx);
         rdi = static_cast<std::uint32_t>(c.Rdi);
+        regs = {c.Rax, c.Rcx, c.Rdx, c.Rbx, c.Rsp, c.Rbp, c.Rsi, c.Rdi, c.R8, c.R9, c.R10, c.R11, c.R12, c.R13, c.R14, c.R15};
         n = walk(c, t.teb, pcs, cut);
     }
     ResumeThread(t.handle);
@@ -397,8 +472,12 @@ bool sample(const Thread& t, bool during_spin, bool followed = false) noexcept {
     std::array<std::uint64_t, depth_capacity> frames;
     for (unsigned i = 0; i < n; ++i) frames[i] = frame_of(pcs[i], i == 0);
     const bool in_game = pcs[0] >= game_base && pcs[0] < game_end;
-    record(t.id, frames.data(), n, static_cast<std::uint16_t>((cut ? 1 : 0) | (during_spin ? 2 : 0) | (followed ? 4 : 0)),
-           in_game ? static_cast<std::uint32_t>(pcs[0] - game_base) + 1 : 0, t.id == tracked[0].load(std::memory_order_relaxed));
+    const bool scanned = wc_scan.load(std::memory_order_relaxed) && wc_count;
+    const auto wc = scanned ? wc_mask(regs) : 0;
+    record(t.id, frames.data(), n,
+           static_cast<std::uint16_t>((cut ? 1 : 0) | (during_spin ? 2 : 0) | (followed ? 4 : 0) | (wc ? 8 : 0)),
+           in_game ? static_cast<std::uint32_t>(pcs[0] - game_base) + 1 : 0, t.id == tracked[0].load(std::memory_order_relaxed),
+           wc, scanned);
     const bool spinning = rip >= spin_begin.load(std::memory_order_relaxed) && rip < spin_end.load(std::memory_order_relaxed);
     if (spinning) probe(n > 1 ? frames[1] : 0, rbx, rdi);
     return spinning;
@@ -442,8 +521,8 @@ DWORD WINAPI run(void*) noexcept {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     query_thread = reinterpret_cast<QueryThread>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
     const auto timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-    std::uint64_t refreshed{};
-    bool was_on = false;
+    std::uint64_t refreshed{}, wc_refreshed{};
+    bool was_on = false, wc_was_on = false;
     while (!stopping.load(std::memory_order_relaxed)) {
         if (!on(sample_profile)) {
             was_on = false;
@@ -456,6 +535,13 @@ DWORD WINAPI run(void*) noexcept {
             refresh_threads();
             refreshed = now;
             was_on = true;
+        }
+        if (!wc_scan.load(std::memory_order_relaxed)) {
+            wc_was_on = false;
+        } else if (!wc_was_on || now - wc_refreshed >= 2000) {
+            refresh_wc();
+            wc_refreshed = now;
+            wc_was_on = true;
         }
         // The game thread first (tracked slot 0): if it is spinning in
         // executeJob, this tick's other samples are marked as taken during
@@ -552,6 +638,7 @@ void follow_end(DWORD tid) noexcept {
     follow_tid.compare_exchange_strong(expected, 0, std::memory_order_release);
 }
 void set_follow_gap(unsigned gap_us) noexcept { follow_gap_us.store(gap_us); }
+void set_wc_scan(bool on) noexcept { wc_scan.store(on); }
 
 void set_excluded(std::span<const DWORD> list) noexcept {
     for (unsigned i = 0; i < excluded.size(); ++i) excluded[i].store(i < list.size() ? list[i] : 0, std::memory_order_relaxed);
@@ -721,6 +808,61 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
             out += ']';
         }
         out += ']';
+        // The write-combined scan: when it ran in this window, its regions and
+        // the instructions sampled with a pointer into them, most samples first.
+        if (t.wc_scanned) {
+            json::key(out, "wc");
+            out += '{';
+            json::key(out, "scanned");
+            json::number(out, t.wc_scanned);
+            json::key(out, "samples");
+            json::number(out, t.wc_samples);
+            json::key(out, "game_thread");
+            json::number(out, t.wc_game);
+            json::key(out, "regions");
+            json::number(out, wc_listed_regions.load());
+            json::key(out, "dropped");
+            json::number(out, wc_dropped.load());
+            json::key(out, "bytes");
+            json::number(out, wc_bytes.load());
+            json::key(out, "refresh_us");
+            json::number(out, wc_refresh_us.load());
+            json::key(out, "modules");  // [module id (65535: unknown), samples] by the innermost frame
+            out += '[';
+            bool listed = false;
+            for (unsigned i = 0; i < t.wc_modules.size(); ++i) {
+                if (!t.wc_modules[i]) continue;
+                out += listed ? ",[" : "[";
+                listed = true;
+                json::number(out, std::uint64_t(i < name_capacity ? i : unknown_module));
+                out += ',';
+                json::number(out, std::uint64_t(t.wc_modules[i]));
+                out += ']';
+            }
+            out += "]}";
+            std::vector<Leaf> touched;
+            for (const auto& l : t.leaves)
+                if (l.wc) touched.push_back(l);
+            std::sort(touched.begin(), touched.end(), [](const Leaf& a, const Leaf& b) { return a.wc > b.wc; });
+            json::key(out, "wc_leaf_columns");
+            out += "[\"rva\",\"wc\",\"wc_game\",\"regs\",\"all\"]";
+            json::key(out, "wc_leaves");
+            out += '[';
+            for (std::size_t i = 0; i < touched.size() && i < wc_listed; ++i) {
+                out += i ? ",[" : "[";
+                json::number(out, std::uint64_t(touched[i].rva));
+                out += ',';
+                json::number(out, std::uint64_t(touched[i].wc));
+                out += ',';
+                json::number(out, std::uint64_t(touched[i].wc_game));
+                out += ',';
+                json::number(out, std::uint64_t(touched[i].regs));
+                out += ',';
+                json::number(out, std::uint64_t(touched[i].all));
+                out += ']';
+            }
+            out += ']';
+        }
         json::key(out, "stack_columns");
         out += "[\"tid\",\"count\",\"flags\",\"frames\"]";
         json::key(out, "stacks");
@@ -738,6 +880,8 @@ std::string take_event(double t_ms, unsigned toggle_state, const std::string& ma
     for (auto& l : t.leaves) l = {};
     t.leaves_used = 0;
     t.leaf_overflow = 0;
+    t.wc_samples = t.wc_game = t.wc_scanned = 0;
+    t.wc_modules.fill(0);
     return out;
 }
 }  // namespace cpuopt::sampler

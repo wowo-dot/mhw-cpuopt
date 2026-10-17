@@ -1,7 +1,7 @@
 """Hotspot report from the stack sampler's "profile" events.
 
   python -B tools/profile_report.py <run> [--pid N] [--marker M] [--toggles T]
-         [--threads 4] [--top 30] [--folded out.txt] [--leaves 40]
+         [--threads 4] [--top 30] [--folded out.txt] [--leaves 40] [--wc 30]
 
 Per sampled thread (most samples first): where its time goes by module, the
 functions it was executing (self), the functions on its stack (inclusive),
@@ -18,6 +18,14 @@ are instruction addresses ("@").
 --leaves N lists the game's N hottest instructions (samples whose innermost
 frame is that exact instruction, from v0.6 on), as function+offset and VA,
 with the game thread's share: which loop of a function the time goes to.
+
+--wc N (windows sampled with control.ini wc_scan=1, from v0.15.1) lists the
+game instructions sampled most often with a register pointing into
+write-combined memory (GPU upload heaps: every CPU read there bypasses the
+caches, the effect loop's cost), with the registers, the share of that
+instruction's samples that had such a pointer, and the call paths of the
+functions involved. A hit is a candidate, not a finding: the disassembly
+says whether the instruction reads that memory or only writes it.
 """
 import argparse
 import bisect
@@ -33,6 +41,7 @@ RAW = 0x80000000
 UNKNOWN = 0xFFFF
 GAME = 'MonsterHunterWorld.exe'
 GAME_BASE = 0x140000000
+REGISTERS = ('rax', 'rcx', 'rdx', 'rbx', 'rsp', 'rbp', 'rsi', 'rdi', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15')
 
 
 class MapSymbols:
@@ -150,6 +159,7 @@ def main():
     p.add_argument('--folded', type=Path, help='write folded stacks (flame graph input) for the shown threads')
     p.add_argument('--leaves', type=int, default=0, help="list the game's N hottest instructions")
     p.add_argument('--followed', action='store_true', help='only the follow mode\'s samples (flag 4), all threads as one')
+    p.add_argument('--wc', type=int, default=0, help='the write-combined scan: the N most flagged game instructions')
     a = p.parse_args()
     run = run_folder(a.run)
     log = run / f'cpuopt-{a.pid}.jsonl' if a.pid else newest_log(run)
@@ -240,12 +250,65 @@ def main():
         for rva, n in leaf_all.most_common(a.leaves):
             print(f'{100 * n / max(every, 1):7.2f}  {100 * leaf_game[rva] / max(game_total, 1):7.2f}  {n:8d}  '
                   f'{sym.nearest(rva)}  ({GAME_BASE + rva:#x})')
+    if a.wc:
+        wc_report(profiles, sym, a.wc)
     if a.folded:
         merged = collections.Counter()
         for line, n in folded:
             merged[line] += n
         a.folded.write_text(''.join(f'{line} {n}\n' for line, n in merged.items()), encoding='utf-8')
         print(f'\nfolded stacks: {a.folded}')
+
+
+def wc_report(profiles, sym, top):
+    scanned = [e for e in profiles if 'wc' in e]
+    if not scanned:
+        print('\n=== write-combined scan: not on in these windows (control.ini wc_scan=1, v0.15.1 on)')
+        return
+    total = sum(e['wc']['scanned'] for e in scanned)
+    flagged = sum(e['wc']['samples'] for e in scanned)
+    game = sum(e['wc']['game_thread'] for e in scanned)
+    rebuilds = sorted(e['wc']['refresh_us'] for e in scanned)
+    print(f'\n=== write-combined scan: {flagged} of {total} samples ({100 * flagged / max(total, 1):.2f}%) had a register '
+          f'pointing into write-combined memory, {game} of them on the game thread; '
+          f'{max(e["wc"]["regions"] for e in scanned)} regions, {max(e["wc"]["bytes"] for e in scanned) / 2**20:.0f} MB, '
+          f'{sum(e["wc"]["dropped"] for e in scanned)} past the list; region list rebuilt in {rebuilds[len(rebuilds) // 2]} us '
+          f'(worst {rebuilds[-1]})')
+    modules = collections.Counter()
+    for e in scanned:
+        names = e['modules']
+        for m, n in e['wc']['modules']:
+            modules[names[m] if m != UNKNOWN and m < len(names) else '(unknown)'] += n
+    print('-- module of the executing code')
+    for name, n in modules.most_common(10):
+        print(f'{100 * n / max(flagged, 1):6.1f}%  {n:7d}  {name}')
+    wc, wc_game, regs, every = (collections.Counter() for _ in range(4))
+    for e in scanned:
+        for rva, n, g, mask, a in e.get('wc_leaves', []):
+            wc[rva] += n
+            wc_game[rva] += g
+            regs[rva] |= mask
+            every[rva] += a
+    print("-- game instructions with such a pointer (of all: the share of that instruction's samples)")
+    print('  flagged  game  of all  registers        instruction')
+    for rva, n in wc.most_common(top):
+        mask = regs[rva]
+        names = ','.join(r for i, r in enumerate(REGISTERS) if mask >> i & 1)
+        print(f'{n:9d} {wc_game[rva]:5d} {100 * n / max(every[rva], 1):6.0f}%  {names:15s}  {sym.nearest(rva)}  ({GAME_BASE + rva:#x})')
+    # Call paths of the flagged samples, by the function executing.
+    paths = collections.defaultdict(collections.Counter)
+    for e in scanned:
+        names = e['modules']
+        frames = [(names[m] if m != UNKNOWN and m < len(names) else None, r) for m, r in e['frames']]
+        for tid, count, flags, stack in e['stacks']:
+            if flags & 8 and stack:
+                chain = [frames[i] for i in stack]
+                paths[sym.label(*chain[0])][' <- '.join(sym.label(*f) for f in chain[1:6])] += count
+    print('-- call paths of the flagged samples (executing function, then up to five callers)')
+    for function, counter in sorted(paths.items(), key=lambda kv: -sum(kv[1].values()))[:12]:
+        print(f'{sum(counter.values()):7d}  {function}')
+        for path, n in counter.most_common(2):
+            print(f'           {n:6d}  <- {path}')
 
 
 if __name__ == '__main__':

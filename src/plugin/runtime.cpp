@@ -118,6 +118,7 @@ struct State {
     unsigned contacts_mode{1};            // toggle parallel_contacts: bit 0 contact pass, bit 1 setup pass (al-23: 1)
     unsigned follow{};                    // follow mode: the followed class's vtable RVA (0 off)
     unsigned follow_us{20};               // follow mode: the gap between samples
+    bool wc_scan{};                       // toggle sample_profile: the write-combined scan
     bool running{};                       // the steam_running change is in
     bool prim_buffer{};                   // the prim ring's memory has been reported
     unsigned window_ms{5000};
@@ -258,6 +259,8 @@ void apply_control(State& s, const Control& c, bool initial, std::string out) {
     if (c.job_threads) s.job_threads = *c.job_threads;
     if (c.cpu_count) s.cpu_count = *c.cpu_count;
     if (c.sample_jobs) sampler::set_focus(*c.sample_jobs);
+    if (c.wc_scan) s.wc_scan = *c.wc_scan != 0;
+    sampler::set_wc_scan(s.wc_scan);
     if (c.max_fps) s.max_fps = *c.max_fps;
     if (c.margin_us) s.margin_us = *c.margin_us;
     if (c.contacts) s.contacts_mode = *c.contacts;
@@ -388,6 +391,8 @@ void apply_control(State& s, const Control& c, bool initial, std::string out) {
     json::number(out, std::uint64_t(s.follow));
     json::key(out, "follow_us");
     json::number(out, std::uint64_t(s.follow_us));
+    json::key(out, "wc_scan");
+    out += s.wc_scan ? "true" : "false";
     out += '}';
     event_log.write(out);
 }
