@@ -276,7 +276,6 @@ void apply_control(State& s, const Control& c, bool initial, std::string out) {
         s.budget = timing_hooks ? ok : !ok;
         switched("budget_hooks", s.budget, why);
     }
-    if (on(budget) && s.budget && s.hook) frame_budget::set_active(true);
     if (on(sleep_limiter) && s.budget) limiter::set_active(true, s.margin_us);
     mark(sleep_limiter, on(sleep_limiter) && !s.budget);
     // The processors the game keeps: the largest L3's (cache_ccd), the first
@@ -307,6 +306,10 @@ void apply_control(State& s, const Control& c, bool initial, std::string out) {
     mark(order_jobs, on(order_jobs) && !s.hook);
     job_timing::set_order(on(order_jobs) && s.hook ? static_cast<int>(s.job_order) : 0, s.order_us);
     job_timing::set_inline(on(inline_rounds) && s.hook, s.inline_us);
+    // The frame budget measures once both its detours and the executeJob one
+    // are in; here, so a change that brings both in at once measures at once
+    // (al-34: the first benchmark window had no frame_budget numbers).
+    if (on(budget) && s.budget && s.hook) frame_budget::set_active(true);
     // sPrimitive's record loop: a code change through al.patch.
     if (on(plain_prim_stores) != s.prim && host.prim_patch) {
         const char* why = "";

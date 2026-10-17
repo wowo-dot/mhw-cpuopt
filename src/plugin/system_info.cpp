@@ -368,11 +368,21 @@ std::string other_modules(HMODULE self) {
     entry.dwSize = sizeof(entry);
     const auto exe = GetModuleHandleW(nullptr);
     for (BOOL ok = Module32FirstW(snapshot, &entry); ok; ok = Module32NextW(snapshot, &entry))
-        if (entry.hModule != exe && entry.hModule != self && !in_windows_folder(entry.szExePath)) names.emplace_back(entry.szModule);
+        if (entry.hModule != exe && entry.hModule != self && !in_windows_folder(entry.szExePath)) {
+            // Not NVIDIA's NGX model files (.bin, mapped as images by the driver, even with DLSS off).
+            const std::wstring_view name(entry.szModule);
+            if (name.size() > 4 && CompareStringOrdinal(name.data() + name.size() - 4, 4, L".bin", 4, TRUE) == CSTR_EQUAL) continue;
+            names.emplace_back(entry.szModule);
+        }
     CloseHandle(snapshot);
     std::sort(names.begin(), names.end(), [](const std::wstring& a, const std::wstring& b) {
         return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_LESS_THAN;
     });
+    names.erase(std::unique(names.begin(), names.end(),
+                            [](const std::wstring& a, const std::wstring& b) {
+                                return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
+                            }),
+                names.end());
     std::string out;
     for (const auto& n : names) {
         if (!out.empty()) out += ", ";
