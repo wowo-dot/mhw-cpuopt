@@ -800,3 +800,61 @@ DLSS mod with Streamline). No crash or conflict was reported.
 - Most players with mid-range graphics cards at 1440p are GPU-limited, so
   their fps cannot rise. The README now says who gains fps; a live "Limited
   by" line on the Mods page is proposed (roadmap).
+
+### The GPU side, first look (al-34 to al-39, v0.14.4 to v0.14.6; 2026-10-17)
+
+Setup: the RTX 5090's clock locked at 1200 MHz by the user (`nvidia-smi
+-lgc 1200,1200`) so the GPU sets the frame rate; no DLSS mod; Ancient Forest
+camp, 2560x1440, the game's own AA, the user's options (AO High, Volume
+Rendering Highest, Shadows High, SSR, SSS, Z-Prepass on). NVIDIA Broadcast
+running unless noted.
+
+**The Mods page's benchmark, GPU-limited (cpuopt on half, fps):**
+
+| Change from the baseline | fps | GPU frame | |
+|---|---|---|---|
+| baseline, Windowed (start / end of al-37) | 156.9 / 154.0 | 6.37 / 6.49 ms | drift about 2% (time of day, monsters) |
+| Z-Prepass off | 150.9 | 6.63 ms | -4%: the prepass pays for itself |
+| Ambient occlusion off | 177.5 | 5.63 ms | AO High costs 0.74 ms |
+| Ambient occlusion Mid | 172.8 | 5.79 ms | AO Mid costs 0.16 ms |
+| NVIDIA Broadcast closed | 160.6 | 6.23 ms | about 2%, near the noise |
+| Borderless (al-38) | 158.5 | 6.31 ms | within the noise of Windowed |
+| nine heavy options off (al-34) | 229.7 | 4.35 ms | about a third of the GPU frame |
+
+- With the GPU limiting, cpuopt still cuts the game thread's CPU time per
+  frame 34-37% on the 9950X3D (busy 82-91% to 53-63%); the saved time
+  becomes GPU wait in Present. With the heavy options off the off half
+  turns CPU-limited and cpuopt gains +25% fps (183 to 230).
+- Frame-time spikes of 16-19 ms: in Windowed runs the cpuopt-off windows
+  always have them (the effect loop: al-30's on windows had none, so they
+  follow the switch, not the window); with cpuopt on they come back only
+  when the GPU is maxed. The user sees separate hitches from the window tool
+  Borderless Gaming when the window changes (menus).
+
+**One frame through PIX (`local/pix/`, captures stay private):** captured
+in game through cpuopt's switches (PIX's layer loaded at PRE_MAIN,
+`CaptureNextFrame` on request; pixtool cannot attach for GPU captures to a
+process it did not launch), replayed with pixtool at the same 1200 MHz;
+timing needs the Performance Log Users group (or admin). The main queue:
+276 passes, 3.79 ms (per-pass medians over seven replays; a few compute
+passes overlap differently from replay to replay). The largest: the
+G-buffer 0.51 ms (three passes), AO 0.42 ms (one full-screen draw), the
+Z-prepass 0.41 ms (its alpha-tested foliage runs 13.8 M pixel-shader
+invocations for depth), indirect and compute passes without images 0.88 ms,
+full-screen passes about 0.4 ms. No single waste stands out. In game the
+GPU frame is 6.4 ms against the replay's 3.8: work on the second queue
+(the frame waits on it), contention and the replay's idealisation are the
+candidates; not explained yet (a PIX timing capture would show it).
+
+**AO High against Mid (captures of one spot with High, Mid, Off):** not a
+bug. Both use `ApproximateSSAO` with Capsule AO; High runs it at full
+resolution (3.69 M pixels, 0.416 ms), Mid at half resolution (0.92 M
+pixels, 0.089 ms) and scales it up; a full-screen pass that combines the
+sun's screen-space shadow mask with the AO runs at every setting (0.03-0.05
+ms). In the code: `sub_142269EB0` draws the AO pass from a settings object
+(`+0x110` float: the AO resolution scale; `+0x11C`: the algorithm,
+0 ApproximateSSAO, 1 a path over three rotating buffers (temporal, by the look), 2/3 HDAO and HDAO2,
+4/5 HBAO and HBAO+); `sub_14227DBD0(full, x4, capsule, hiz, compute)` picks
+the shader variant (`[CS]ApproximateSSAO[Full][x4][WithCapsuleAO][_HIZ]`),
+`full` from `sub_142594CE0`'s level. The buffers look alike, Mid softer.
+For players: AO Mid gets back most of High's cost.
