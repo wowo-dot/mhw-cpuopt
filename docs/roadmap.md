@@ -102,6 +102,27 @@ Both measuring switches stay on in both halves of every A/B.
    CPU-limited Intel, an older Intel without E-cores, a mid-range card
    capped at 60, a Radeon card, Steam Deck or Linux. Then the public
    release (fresh repo history, noreply author, licence check).
+   - Code cleanup before the release (noted 2026-10-18, not started): no
+     hooking library is used (al.hooks for the 5 detours, al.patch for the
+     code changes, direct writes only to engine objects outside the exe),
+     but the research phase left work behind:
+     1. spin_workers (128) and cache_steam_running (512) were rejected, yet
+        every player's game searches their signatures and allocates their
+        two jump stubs at PRE_MAIN; remove both switches with their stubs
+        and signatures.
+     2. `make_stub` lives in `worker_spin.cpp` and steam_running borrows it;
+        it goes with item 1, or into its own file if a stub is still needed.
+     3. Other rejected or research-only switches still compiled in
+        (job_thread_cap, inline_rounds, job order mode 3, smaller_cpu):
+        keep the research ones, skip their searches in player mode, drop
+        what nothing uses.
+     4. `runtime.cpp` (about 1,300 lines): move the benchmark state machine
+        and the "Limited by" sampler into their own files.
+     Player-visible switches stay as they are.
+   - For Astera Loader (the user's project): `AL_PATCH_CALL` only takes
+     E8/E9 rel32 calls; accepting FF 15 (call through the import table, 6
+     bytes) would remove the need for plugins' own stubs at Steam and
+     Windows API call sites.
    - Proposed: a live "Limited by" line on the Mods page (CPU, graphics
      card or frame rate limit, from the game thread's cycle count against
      the frame time), and the benchmark's page line saying "GPU-limited"
