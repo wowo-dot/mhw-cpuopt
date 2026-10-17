@@ -94,6 +94,10 @@ Organizer 2. Nothing else on the PC or in the game is changed.
 - **The switches:** each optimization on its own, applied at once.
 - **Status:** the frame rate and how many optimizations run; if one could
   not start, it says so and `cpuopt-session.log` says why.
+- **Limited by:** what sets your frame rate right now: the CPU, the graphics
+  card (with what your CPU alone could do), V-Sync, a frame rate limit, or
+  both about even. When it says graphics card, cpuopt cannot raise your fps
+  there; it still cuts the CPU time every frame needs.
 - `cpuopt.ini` holds the same settings with a comment on each line. Edits
   made while the game runs are picked up within a second.
 
