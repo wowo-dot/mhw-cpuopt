@@ -10,8 +10,10 @@ This is a closed beta: please do not pass the files on.
 
 ## Install
 
-1. You need Astera Loader 0.2.3 or newer, and CMFM 0.1.0 or newer for the
-   in-game menu (the benchmark needs CMFM).
+1. You need Astera Loader 0.2.2 or newer (0.2.3 on Linux), and CMFM 0.1.0
+   or newer for the in-game menu (the benchmark needs CMFM). On Linux with
+   Proton cpuopt has not been tried yet: if that is you, tell us how it
+   goes.
 2. Install the zip as a mod in Mod Organizer 2, or extract it into the game
    folder. Either way the DLL ends up at
    `<game folder>\AsteraLoader\plugins\cpuopt\cpuopt.dll`.

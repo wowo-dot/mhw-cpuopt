@@ -65,7 +65,9 @@ own code, only on more threads.
 You need:
 
 - Monster Hunter: World on Steam, version 421810 (the current one).
-- [Astera Loader](https://github.com/wowo-dot/AsteraLoader) 0.2.3 or newer.
+- [Astera Loader](https://github.com/wowo-dot/AsteraLoader) 0.2.2 or newer
+  (on Linux with Proton, 0.2.3 or newer for the loader itself; cpuopt has
+  not been tried there yet).
 - Recommended: [CMFM](https://github.com/wowo-dot/CMFM) 0.1.0 or newer, the
   in-game Mods menu. Without it, settings are in `cpuopt.ini`.
 
