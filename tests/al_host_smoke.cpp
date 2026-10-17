@@ -375,7 +375,7 @@ std::string replaced(std::string text, const std::string& from, const std::strin
 int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     CHECK(last_status == AL_STATUS_ACTIVE);
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && !present_callback);  // no Present timing
-    CHECK(added_title == "CPU optimizations" && added_rows == 17 && added_page.get && added_page.set && added_page.get_text);
+    CHECK(added_title == "CPU optimizations" && added_rows == 18 && added_page.get && added_page.set && added_page.get_text);
     CHECK(added_page.press && added_page.on_event && added_page.locked);
     if (!too_long.empty()) std::printf("  too long for CMFM: %s\n", too_long.c_str());
     CHECK(too_long.empty());
@@ -405,6 +405,10 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     added_page.get_text(added_page.user, 3, status, sizeof(status));
     std::printf("  status: %s\n", status);
     CHECK(std::string(status).find("optimizations off") != std::string::npos);
+    // "Limited by": the stand-in game thread spins through its frames, so the CPU.
+    added_page.get_text(added_page.user, 4, status, sizeof(status));
+    std::printf("  limited by: %s\n", status);
+    CHECK(std::string(status) != "measuring" && std::string(status).size() <= 30);
     // The hotkey turns them on again.
     CHECK(hotkey_fn != nullptr);
     if (hotkey_fn) hotkey_fn(self, hotkey_live, hotkey_user);

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mhw_cpuopt VERSION 0.14.6 LANGUAGES CXX)
+project(mhw_cpuopt VERSION 0.15.0 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "64-bit Windows only")
@@ -32,6 +32,8 @@ add_library(cpuopt_core STATIC
     src/core/control.hpp
     src/core/histogram.hpp
     src/core/json.hpp
+    src/core/limit.cpp
+    src/core/limit.hpp
     src/core/settings.cpp
     src/core/settings.hpp
     src/core/signature.cpp

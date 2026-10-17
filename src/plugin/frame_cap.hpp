@@ -29,6 +29,8 @@ void request(unsigned max_fps, bool only_unlimited = false) noexcept;
 inline constexpr float unlimited_fps = 300.0f;  // the engine's mMaxFps with the frame rate at no limit
 void on_begin() noexcept;  // al.frame BEGIN, game thread
 void restore() noexcept;   // EXITING
+// The cap in force now (the game's, or the raised one); 0 while unknown.
+float limit() noexcept;
 // "cap": {state, game, requested, applied} into an open JSON object.
 void append(std::string& out);
 }  // namespace cpuopt::frame_cap

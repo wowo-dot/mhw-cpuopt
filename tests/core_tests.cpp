@@ -4,6 +4,7 @@
 #include "../src/core/control.hpp"
 #include "../src/core/histogram.hpp"
 #include "../src/core/json.hpp"
+#include "../src/core/limit.hpp"
 #include "../src/core/settings.hpp"
 #include "../src/core/signature.hpp"
 #include <cmath>
@@ -210,6 +211,29 @@ void settings() {
     CHECK(cpuopt::parse_settings("benchmark_s = 1\n").benchmark_s == 1 && cpuopt::parse_settings("benchmark_s = 61\n").benchmark_s == 6);
 }
 
+// The "Limited by" line against the runs it was calibrated on (engine notes).
+void limits() {
+    namespace l = cpuopt::limit;
+    const auto kind = [](double fps, double busy_ms, double cap = 0, bool vsync = false) {
+        return l::classify({fps, busy_ms, cap, vsync}).kind;
+    };
+    // al-34 benchmark 2, cpuopt off: 183.1 fps, the game thread 5.13 ms a frame: the CPU.
+    CHECK(kind(183.1, 5.13) == l::Kind::cpu);
+    // al-37 benchmark 1, cpuopt on: 156.9 fps at 3.57 ms: the graphics card (the CPU alone 280).
+    CHECK(kind(156.9, 3.57) == l::Kind::gpu);
+    CHECK(l::text(l::classify({156.9, 3.57, 0, false})) == "graphics card (CPU: 280 fps)");
+    // The 13700K, cpuopt off: 158.6 fps at 5.68 ms (GPU 99%): not the CPU alone.
+    CHECK(kind(158.6, 5.68) == l::Kind::even);
+    // al-37 benchmark 3, cpuopt off (AO off): 165.5 fps at 5.41 ms: both.
+    CHECK(kind(165.5, 5.41) == l::Kind::even);
+    // At the engine's cap, or with V-Sync holding it.
+    CHECK(kind(298.0, 2.0, 300.0) == l::Kind::frame_cap && l::text(l::classify({298.0, 2.0, 300.0, false})) == "frame rate limit");
+    CHECK(kind(143.5, 3.0, 144.0) == l::Kind::frame_cap);
+    CHECK(kind(120.0, 3.0, 0, true) == l::Kind::vsync && l::text(l::classify({120.0, 3.0, 0, true})) == "V-Sync (CPU: 335 fps)");
+    CHECK(kind(0, 3.0) == l::Kind::unknown && l::text(l::classify({0, 3.0, 0, false})) == "measuring");
+    for (const auto* s : {"graphics card (CPU: 1000 fps)", "CPU and GPU about even", "V-Sync (CPU: 1000 fps)"}) CHECK(std::string(s).size() <= 30);
+}
+
 bool near(double a, double b) { return std::fabs(a - b) < 1e-6 * (std::fabs(b) + 1.0); }
 
 void benchmark() {
@@ -280,6 +304,7 @@ void benchmark() {
     for (auto& x : held)
         if (x.on) x.busy_ms = 2.0;
     CHECK(b::report(m, held, b::summarize(held)).find("the CPU alone could reach about 500 fps, the game ran at 270.") != std::string::npos);
+    CHECK(b::fps_line(b::summarize(held)) == "+50% fps, 270, GPU-limited");
     // A scene that changed: the pairs from +10% to +80%.
     auto drift = w;
     drift[1].frames = static_cast<std::uint64_t>(198 * 12);
@@ -328,6 +353,7 @@ int main() {
     json_text();
     settings();
     benchmark();
+    limits();
     std::printf(failures ? "core_tests: %d failure(s)\n" : "core_tests: ok\n", failures);
     return failures ? 1 : 0;
 }

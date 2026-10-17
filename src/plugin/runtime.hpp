@@ -69,6 +69,9 @@ unsigned failed_toggles() noexcept;
 // starts 10 s after the Mods page closes, pauses while the page is open or
 // the game is in the background (that window runs again), and stops at any
 // settings change. The report goes to <folder>\cpuopt-benchmark.txt.
+// The Mods page's "Limited by": what sets the frame rate right now (limit.hpp),
+// updated every second by the runtime's thread. Any thread.
+std::string limit_text();
 void bench_press() noexcept;
 void menu_shown(bool open) noexcept;  // CMFM's Mods page opened or closed
 bool bench_busy() noexcept;           // asked for, waiting or running

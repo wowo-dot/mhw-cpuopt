@@ -16,6 +16,7 @@ struct State {
     IntervalHistogram update_interval, present_interval;
     DurationHistogram update_work, present_call;
 } state;
+std::atomic<std::uint64_t> total_frames{};
 
 std::uint64_t us(std::int64_t ticks) noexcept {
     const auto f = static_cast<std::uint64_t>(qpc_frequency());
@@ -55,6 +56,7 @@ void on_begin(std::int64_t qpc, std::uint32_t thread) noexcept {
     if (state.last_begin && qpc > state.last_begin) state.update_interval.add(us(qpc - state.last_begin));
     state.last_begin = state.begin = qpc;
     state.updates.fetch_add(1, std::memory_order_relaxed);
+    total_frames.fetch_add(1, std::memory_order_relaxed);
     if (state.game_thread.load(std::memory_order_relaxed) != thread) state.game_thread.store(thread, std::memory_order_relaxed);
 }
 
@@ -99,6 +101,7 @@ Window take() noexcept {
 }
 
 std::uint32_t game_thread() noexcept { return state.game_thread.load(std::memory_order_relaxed); }
+std::uint64_t frames_total() noexcept { return total_frames.load(std::memory_order_relaxed); }
 std::uint32_t present_thread() noexcept { return state.present_thread.load(std::memory_order_relaxed); }
 
 void append(std::string& out, const Window& w, double window_ms) {

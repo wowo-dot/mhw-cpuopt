@@ -109,6 +109,8 @@ void restore() noexcept {
     if (!final_state(state.load())) state.store(restored);
 }
 
+float limit() noexcept { return applied.load(std::memory_order_relaxed); }
+
 void append(std::string& out) {
     json::key(out, "cap");
     out += '{';

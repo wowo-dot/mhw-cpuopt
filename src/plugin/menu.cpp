@@ -15,6 +15,7 @@ enum Id : std::uint32_t {
     id_enabled = 1,
     id_key,
     id_status,
+    id_limited,
     id_optimizations = 10,
     id_effect_stores,
     id_job_order,
@@ -92,6 +93,7 @@ cmfm_result_t CMFM_CALL validate(void*, std::uint32_t id, const cmfm_value_t* va
 }
 void CMFM_CALL get_text(void*, std::uint32_t id, char* text, std::uint32_t size) {
     if (id == id_status) std::snprintf(text, size, "%s", status_text().c_str());
+    if (id == id_limited) std::snprintf(text, size, "%s", runtime::limit_text().c_str());
     if (id == id_result) std::snprintf(text, size, "%s", runtime::bench_text(0).c_str());
     if (id == id_cpu_result) std::snprintf(text, size, "%s", runtime::bench_text(1).c_str());
 }
@@ -192,6 +194,10 @@ bool add(const void* cmfm, const Availability& a, const char* version, std::stri
         row(id_key, CMFM_TYPE_KEY, "On/off hotkey", "A key that flips All optimizations in game, to compare with and without them.",
             static_cast<std::int32_t>(d.toggle_key)),
         row(id_status, CMFM_TYPE_TEXT, "Status", "Frame rate, and how many optimizations run.", 0, CMFM_FLAG_LIVE),
+        row(id_limited, CMFM_TYPE_TEXT, "Limited by",
+            "What sets the frame rate right now. When it is the graphics card or a limit, cpuopt cannot raise fps; it still cuts the "
+            "CPU time each frame needs.",
+            0, CMFM_FLAG_LIVE),
         row(id_optimizations, CMFM_TYPE_SECTION, "Optimizations", nullptr),
         row(id_effect_stores, CMFM_TYPE_BOOL, "Effect drawing",
             "Effects write their vertex data without reading GPU memory back. The biggest gain, most of all in effect-heavy scenes and fights.",

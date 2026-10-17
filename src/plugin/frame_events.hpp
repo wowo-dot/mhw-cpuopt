@@ -30,6 +30,8 @@ struct Window {
     std::uint32_t game_thread{}, present_thread{};
 };
 Window take() noexcept;
+// Every al.frame BEGIN since the start; never reset (take() resets its own count).
+std::uint64_t frames_total() noexcept;
 std::uint32_t game_thread() noexcept;
 std::uint32_t present_thread() noexcept;
 // Appends "update", "present" and "render" objects to an open JSON object.

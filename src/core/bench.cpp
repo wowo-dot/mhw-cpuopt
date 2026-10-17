@@ -206,7 +206,12 @@ std::string report(const Machine& m, std::span<const Window> w, const Result& r)
 
 std::string fps_line(const Result& r) {
     char line[64];
-    std::snprintf(line, sizeof(line), "%s fps, %.0f to %.0f", percent(r.gain).c_str(), r.off_fps, r.on_fps);
+    // Held by something besides the CPU with the optimizations on (as the report's note).
+    const double need = r.busy ? r.on_busy : r.cpu ? r.on_cpu : 0.0;
+    if (need > 0 && r.on_fps < 0.9 * 1000.0 / need)
+        std::snprintf(line, sizeof(line), "%s fps, %.0f, GPU-limited", percent(r.gain).c_str(), r.on_fps);
+    else
+        std::snprintf(line, sizeof(line), "%s fps, %.0f to %.0f", percent(r.gain).c_str(), r.off_fps, r.on_fps);
     return line;
 }
 std::string cpu_line(const Result& r) {

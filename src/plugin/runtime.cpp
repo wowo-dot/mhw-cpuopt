@@ -2,6 +2,7 @@
 #include "../core/bench.hpp"
 #include "../core/control.hpp"
 #include "../core/json.hpp"
+#include "../core/limit.hpp"
 #include "../core/settings.hpp"
 #include "../core/toggles.hpp"
 #include "cpu_limit.hpp"
@@ -52,6 +53,7 @@ constexpr unsigned tracked_max = 6;
 std::atomic<bool> bench_requested{}, menu_open{}, bench_running{};
 SRWLOCK bench_lock = SRWLOCK_INIT;
 std::string bench_lines[2] = {"Not run yet", "-"};
+std::string limit_line = "measuring";  // the Mods page's "Limited by", under bench_lock
 void set_bench_line(std::string first, std::string second) {
     AcquireSRWLockExclusive(&bench_lock);
     bench_lines[0] = std::move(first);
@@ -695,6 +697,54 @@ ULONG64 thread_cycles(const Bench& b) noexcept {
     return b.game_thread && QueryThreadCycleTime(b.game_thread.get(), &c) ? c : 0;
 }
 
+// The Mods page's "Limited by" (limit.hpp): every second, the game thread's
+// cycles and the frames since the last sample. Reads only.
+struct LimitSampler {
+    std::unique_ptr<void, HandleCloser> thread;
+    DWORD tid{};
+    ULONG64 cycles{};
+    std::uint64_t tsc{}, frames{};
+    double t{}, vsync_checked{};
+    bool vsync{};
+};
+void limit_tick(LimitSampler& l) {
+    const double t = now_ms();
+    if (t - l.t < 1000.0) return;
+    const auto id = static_cast<DWORD>(frame_events::game_thread());
+    if (!id) return;
+    if (id != l.tid) {  // the first frame, or another thread runs the frames now
+        l.thread.reset(OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, id));
+        l.tid = id;
+        l.cycles = 0;
+    }
+    if (t - l.vsync_checked > 5000.0) {  // the game's own option; it can change in game
+        const auto ini = system_info::folder_of(system_info::module_path(nullptr)) + L"\\graphics_option.ini";
+        l.vsync = system_info::ini_value(ini, L"GraphicsOption", L"V-Sync") == "On";
+        l.vsync_checked = t;
+    }
+    ULONG64 cycles{};
+    const bool ok = l.thread && QueryThreadCycleTime(l.thread.get(), &cycles);
+    const auto tsc = __rdtsc();
+    const auto frames = frame_events::frames_total();
+    if (ok && l.cycles && cycles > l.cycles && tsc > l.tsc && frames > l.frames) {
+        const double ms = t - l.t;
+        const double tsc_per_ms = double(tsc - l.tsc) / ms;
+        limit::Input in;
+        in.fps = double(frames - l.frames) * 1000.0 / ms;
+        in.busy_ms = double(cycles - l.cycles) / tsc_per_ms / double(frames - l.frames);
+        in.cap_fps = frame_cap::limit();
+        in.vsync = l.vsync;
+        auto line = limit::text(limit::classify(in));
+        AcquireSRWLockExclusive(&bench_lock);
+        limit_line = std::move(line);
+        ReleaseSRWLockExclusive(&bench_lock);
+    }
+    l.cycles = ok ? cycles : 0;
+    l.tsc = tsc;
+    l.frames = frames;
+    l.t = t;
+}
+
 // The settings with the optimizations on or off, and frame_budget in both.
 Control bench_control(const Settings& st, bool on) {
     auto copy = st;
@@ -1054,6 +1104,7 @@ DWORD WINAPI player_worker(void* parameter) noexcept {
         double status_due = now_ms() + 10000.0;  // the switches settle within a few frames
         system_info::ModuleCensus modules;       // other mods: with each status line, when they changed
         Bench b;
+        LimitSampler limiter_sampler;
         for (;;) {
             const HANDLE waits[2] = {stop_event, change_event};
             if (WaitForMultipleObjects(2, waits, FALSE, b.phase == Bench::Phase::idle ? 1000 : 50) == WAIT_OBJECT_0) break;
@@ -1070,6 +1121,7 @@ DWORD WINAPI player_worker(void* parameter) noexcept {
             }
             if (bench_requested.exchange(false) && b.phase == Bench::Phase::idle) bench_arm(s, b, now);
             bench_tick(s, b);
+            limit_tick(limiter_sampler);
             if (now_ms() >= status_due) {
                 status_event();
                 if (auto e = modules.changed_event(now_ms()); !e.empty()) event_log.write(e);
@@ -1123,6 +1175,12 @@ void menu_shown(bool open) noexcept {
     if (change_event) SetEvent(change_event);
 }
 bool bench_busy() noexcept { return bench_running.load() || bench_requested.load(); }
+std::string limit_text() {
+    AcquireSRWLockShared(&bench_lock);
+    auto copy = limit_line;
+    ReleaseSRWLockShared(&bench_lock);
+    return copy;
+}
 std::string bench_text(unsigned line) {
     AcquireSRWLockShared(&bench_lock);
     auto copy = bench_lines[line ? 1 : 0];
