@@ -118,6 +118,14 @@ Both measuring switches stay on in both halves of every A/B.
         what nothing uses.
      4. `runtime.cpp` (about 1,300 lines): move the benchmark state machine
         and the "Limited by" sampler into their own files.
+     5. The start record hashes the 84 MB game exe on the worker thread
+        before any switch is applied, though Astera Loader already hands
+        over that hash (`al.game`); use AL's when present, so the switches
+        apply sooner (slow disks, Proton). Also write a short first record
+        (version, commit, Wine version if `ntdll!wine_get_version` exists)
+        before the slow one, so a log from a game that dies early still
+        says what ran (the Proton tester's log on 2026-10-18 stopped before
+        its start record).
      Player-visible switches stay as they are.
    - For Astera Loader (the user's project): `AL_PATCH_CALL` only takes
      E8/E9 rel32 calls; accepting FF 15 (call through the import table, 6
