@@ -812,6 +812,23 @@ DLSS mod with Streamline). No crash or conflict was reported.
   different graphics card and set of mods; it says nothing new about
   non-X3D Ryzen. Every signature matched, no failures, clean restore at
   exit; the master switch's hotkey was used several times.
+- **Core i5-12400F (6 cores, no E-cores, one L3), RTX 3060, 1920x1080
+  Borderless, V-Sync on (a 144 Hz FreeSync monitor), no frame rate limit,
+  AO off and low shadows, the DLSS mod loaded (its settings are not in
+  v0.14.1's report), the old CRC bypass and Stracker plugins (v0.14.1,
+  fifth tester's report forwarded on 2026-10-19, scene not stated; 8 pairs
+  of 15 s):** 82.3 to 83.3 fps (+1.1%, pairs -1.3 to +3.6%), p99 18.1 to
+  18.2 ms; the game thread's CPU time per frame (v0.14.1's frame_budget
+  measure) 6.90 to 6.38 ms (-7.5%), all threads 37.6 to 37.1 ms. That
+  measure is 55-59% of the frame, the rest the wait in Present: Reflex
+  sleeping would have been counted and brought it near the whole frame (as
+  on the 12600KF), so the cut is most likely real game-thread work.
+  GPU- or V-Sync-limited in both halves; the 13700K's -9% again, so the
+  small Intel figure holds without E-cores too. Update threads was
+  "waiting" until the benchmark re-requested it (the player-mode bug fixed
+  in v0.16.0); the report's list of on switches named "stay on the cache
+  die" (0.14.1's bug, fixed in 0.14.2). Frame-time spikes of 20-64 ms in
+  both halves alike.
 - Most players with mid-range graphics cards at 1440p are GPU-limited, so
   their fps cannot rise. The README now says who gains fps; a live "Limited
   by" line on the Mods page is proposed (roadmap).
