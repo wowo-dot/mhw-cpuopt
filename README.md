@@ -42,24 +42,26 @@ rate cannot rise.
 
 | CPU | Graphics card, settings | Frame rate without → with | Game thread per frame | What limits the frame rate with cpuopt |
 |---|---|---|---|---|
-| Ryzen 9 9950X3D | RTX 5080, DLSS performance, nothing pinning the game, scene not stated | 137 → 258 fps (**+88%**) | 7.20 → 3.19 ms (-56%) | the graphics card (the CPU alone: about 313 fps) |
+| Ryzen 9 9950X3D | RTX 5080, DLSS performance, Elder's Recess, nothing pinning the game | 137 → 258 fps (**+88%**) | 7.20 → 3.19 ms (-56%) | the graphics card (the CPU alone: about 313 fps) |
 | Ryzen 9 9950X3D (test PC) | RTX 5090, DLSS quality, Ancient Forest, nothing pinning the game | 147 → 265 fps (**+80%**) | 6.81 → 3.75 ms (-45%) | the CPU |
-| Ryzen 9 9950X3D (test PC) | the same, with a Process Lasso rule already keeping MHW on the cache die | 172 → 271 fps (**+58%**) | 5.03 → 3.44 ms (-32%) | the CPU |
-| Ryzen 9 9950X3D (test PC) | the same, Arch-Tempered Velkhana fight | 175 → 286 fps (**+63%**) | 5.70 → 3.15 ms (-45%) | the graphics card (97% busy) |
-| Core i7-13700K | RTX 3080 Ti, DLSS performance, Ancient Forest | 159 → 159 fps (+0%) | 5.68 → 5.15 ms (-9%) | the graphics card, in both |
+| Ryzen 9 9950X3D (test PC) | the same, Ancient Forest, with a Process Lasso rule already keeping MHW on the cache die | 172 → 271 fps (**+58%**) | 5.03 → 3.44 ms (-32%) | the CPU |
+| Ryzen 9 9950X3D (test PC) | the same, Arch-Tempered Velkhana fight in Elder's Recess | 175 → 286 fps (**+63%**) | 5.70 → 3.15 ms (-45%) | the graphics card (97% busy) |
+| Core i7-13700K | RTX 3080 Ti, DLSS performance, Elder's Recess | 159 → 159 fps (+0%) | 5.68 → 5.15 ms (-9%) | the graphics card, in both |
 | Core i5-12600KF | RTX 3060 Ti, Reflex on, Elder's Recess, the game held to 6 threads by another tool | 116 → 116 fps (+0%) | not measured (Reflex) | the graphics card, in both |
 
 The worst frames improve with the average on the Ryzen: the forest's 99th
-percentile frame time went from 16.7 to 4.3 ms on the test PC (8.6 to
-5.8 ms on the RTX 5080 PC). More CPUs, among them non-X3D and single-die
+percentile frame time went from 16.7 to 4.3 ms on the test PC, Elder's
+Recess's from 8.6 to 5.8 ms on the RTX 5080 PC. More CPUs, among them non-X3D and single-die
 Ryzen, will be added as the beta reports them.
 
 ### Why it depends on your CPU
 
 - **The effect bug costs far more on the Ryzen measured so far (the
   9950X3D, on two PCs) than on the Intel CPUs.** Reading that graphics
-  memory back was the single biggest cost on the 9950X3D; the 13700K showed none of its frame-time spikes, and
-  its game thread gained 9% where the Ryzen gained 32 to 56%. Our best
+  memory back was the single biggest cost on the 9950X3D. In the same
+  effect-heavy area, Elder's Recess, the 13700K showed none of its
+  frame-time spikes and its game thread gained 9%, where the 9950X3D on
+  the RTX 5080 PC gained 56% (32 to 56% across the Ryzen results). Our best
   explanation is that such reads cost much less on these Intel CPUs; that
   is not proven yet, and results from more CPUs will tell.
 - **Dual-die X3D CPUs gain the most** when nothing else keeps the game on

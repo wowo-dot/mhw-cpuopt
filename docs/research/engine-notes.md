@@ -773,8 +773,8 @@ compatibility layer, an old CRC bypass, HunterPie, the Discord overlay, the
 DLSS mod with Streamline). No crash or conflict was reported.
 
 - **i7-13700K (8 P + 8 E cores), RTX 3080 Ti, 1440p, DLSS performance,
-  Reflex off, all 24 threads, normal priority (v0.14.3, Ancient Forest
-  camp):** GPU-limited at 159 fps in both states (GPU 99%). The game
+  Reflex off, all 24 threads, normal priority (v0.14.3, Elder's Recess;
+  the user corrected the scene on 2026-10-19):** GPU-limited at 159 fps in both states (GPU 99%). The game
   thread's CPU time per frame 5.68 to 5.15 ms (-9.4%; busy 90% to 82%); job
   rounds 3.01 to 2.77 ms, its own work 2.23 to 1.91 ms, Present (the GPU
   wait) 1.02 to 1.58 ms; all threads' CPU per frame 31.8 to 32.3 ms (the
@@ -792,15 +792,16 @@ DLSS mod with Streamline). No crash or conflict was reported.
 - Against the 9950X3D (al-26: the kept set without cache_ccd cut the CPU
   frame 22%, with it 45%; al-30: off p99 16.65 ms, on 4.30 ms), the
   13700K's gain is a third of that and its off windows show none of the
-  effect loop's spikes. Hypothesis, not shown: reading write-combined memory
-  costs far less on these Intel CPUs than on Zen, so plain_prim_stores,
-  the biggest switch, is mostly a Ryzen fix. Wanted: a non-X3D Ryzen, and
-  the 13700K CPU-limited (the game's resolution scaling low) and in an
-  effect-heavy spot.
+  effect loop's spikes, in Elder's Recess, the effect-heavy area where the
+  third tester's 9950X3D gained 56%. Hypothesis, not shown: reading
+  write-combined memory costs far less on these Intel CPUs than on Zen, so
+  plain_prim_stores, the biggest switch, is mostly a Ryzen fix. Wanted: a
+  non-X3D Ryzen, and the 13700K CPU-limited (the game's resolution scaling
+  low).
 - **Ryzen 9 9950X3D, RTX 5080, 1440p Borderless, DLSS mod performance,
   Reflex and frame generation off, no frame rate limit, the 300 fps cap
   removed, all 32 logical processors, no affinity tool, no parked cores
-  (v0.15.0, third tester, 2026-10-17; scene not stated):** 137.2 to 257.8
+  (v0.15.0, third tester, 2026-10-17, Elder's Recess):** 137.2 to 257.8
   fps, +88% (pairs +79 to +93%); p99 8.62 to 5.75 ms. The game thread's CPU
   time per frame 7.20 to 3.19 ms (-56%; busy 99% to 82%), all threads'
   33.9 to 16.7 ms (-51%). Job rounds 4.52 to 1.57 ms, its own work 2.29 to
