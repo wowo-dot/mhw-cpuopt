@@ -189,6 +189,10 @@ the CPU time per frame: the report says when that is the case.
 - **Frame rate limit:** with a limit set (60, 120, 144...), the frame rate
   will not rise, but the game then needs less CPU per frame: cooler, quieter
   and steadier.
+- **Hitches when a menu opens or the window changes:** check window tools
+  first. On the test PC, the Borderless Gaming app caused exactly these;
+  the game's own Borderless mode avoids the extra tool where your screen
+  allows it.
 
 ## Reporting a problem
 

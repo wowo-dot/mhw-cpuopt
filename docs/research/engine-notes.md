@@ -844,7 +844,9 @@ running unless noted.
   always have them (the effect loop: al-30's on windows had none, so they
   follow the switch, not the window); with cpuopt on they come back only
   when the GPU is maxed. The user sees separate hitches from the window tool
-  Borderless Gaming when the window changes (menus).
+  Borderless Gaming when the window changes (menus); on 2026-10-19 the
+  user confirmed that app as the cause of those hitches (not cpuopt, not
+  the game).
 
 **One frame through PIX (`local/pix/`, captures stay private):** captured
 in game through cpuopt's switches (PIX's layer loaded at PRE_MAIN,
