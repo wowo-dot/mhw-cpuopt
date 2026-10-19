@@ -50,9 +50,15 @@
 
 ## What the log holds (`cpuopt-<pid>.jsonl`)
 
+- `init` (from v0.16.0), the first line, written before anything slow:
+  version and commit, mode (player or research), the loader's API and game
+  version, whether the loader gave the exe's hash, and Wine's version under
+  Wine or Proton (empty on Windows). A log from a game that ends early still
+  says what ran.
 - `start`: version and commit, loader (name, API version, MHW build string,
-  its exe hash), executable and DLL SHA-256 (and whether the executable is the
-  tested build), CPU brand, caches with their processor masks, CPU sets
+  its exe hash), executable and DLL SHA-256 (the exe's from the loader when
+  it gave one, `sha256_from`; and whether the executable is the tested
+  build), CPU brand, caches with their processor masks, CPU sets
   (core, last-level cache, parked), process affinity, OS build,
   `graphics_option.ini`, `config.ini` `[CPU]` and `[GRAPHICS]`.
 - `modules`: every loaded module with base, size and SHA-256 (outside the

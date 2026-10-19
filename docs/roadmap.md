@@ -102,8 +102,8 @@ Both measuring switches stay on in both halves of every A/B.
    CPU-limited Intel, an older Intel without E-cores, a mid-range card
    capped at 60, a Radeon card, Steam Deck or Linux. Then the public
    release (fresh repo history, noreply author, licence check).
-   - Code cleanup before the release (noted 2026-10-18; items 1 and 2
-     done in v0.16.0): no
+   - Code cleanup before the release (noted 2026-10-18; items 1, 2 and 5
+     done in v0.16.0, with the player-mode fix for Update threads): no
      hooking library is used (al.hooks for the 5 detours, al.patch for the
      code changes, direct writes only to engine objects outside the exe),
      but the research phase left work behind:
@@ -117,7 +117,7 @@ Both measuring switches stay on in both halves of every A/B.
         what nothing uses.
      4. `runtime.cpp` (about 1,300 lines): move the benchmark state machine
         and the "Limited by" sampler into their own files.
-     5. The start record hashes the 84 MB game exe on the worker thread
+     5. Done (v0.16.0). The start record hashed the 84 MB game exe on the worker thread
         before any switch is applied, though Astera Loader already hands
         over that hash (`al.game`); use AL's when present, so the switches
         apply sooner (slow disks, Proton). Also write a short first record

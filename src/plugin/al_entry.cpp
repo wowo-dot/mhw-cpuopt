@@ -23,6 +23,7 @@
 #include "runtime.hpp"
 #include "sampler.hpp"
 #include "server_time.hpp"
+#include "system_info.hpp"
 #include "unit_lines.hpp"
 #include <atomic>
 #include <cstddef>
@@ -475,7 +476,9 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             api->set_status(self, AL_STATUS_DEGRADED, reason.c_str());
             return AL_OK;
         }
-        say(AL_LOG_INFO, std::string("cpuopt ") + CPUOPT_VERSION + (cpuopt::runtime::player() ? ", " : ", research run, log ") + reason);
+        const auto wine = cpuopt::system_info::wine_version();
+        say(AL_LOG_INFO, std::string("cpuopt ") + CPUOPT_VERSION + (wine.empty() ? "" : " under Wine " + wine) +
+                             (cpuopt::runtime::player() ? ", " : ", research run, log ") + reason);
         load_pix_capturer(host.folder);
         // Player mode: cpuopt's page in CMFM's Mods menu, when CMFM is there.
         if (cpuopt::runtime::player()) {

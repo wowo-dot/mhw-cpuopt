@@ -32,6 +32,8 @@ namespace {
 HMODULE self_module{};
 EventLog event_log;
 Host host;
+// What Astera Loader said about itself and the game, for the log's first records.
+system_info::LoaderInfo loader_info() { return {"Astera Loader", host.api_version, host.game_version, host.exe_sha256}; }
 HANDLE stop_event{}, worker_thread{};
 std::atomic<bool> started{}, stopped{};
 std::atomic<std::uint64_t> windows_written{};
@@ -424,10 +426,10 @@ DWORD WINAPI worker(void* parameter) noexcept {
     auto& s = *owned;
     try {
         s.ccd = cpu_limit::find_cache_ccd();
-        system_info::LoaderInfo loader{"Astera Loader", host.api_version, host.game_version, host.exe_sha256};
-        event_log.write(system_info::start_event(self_module, s.control_path, loader));
+        event_log.write(system_info::start_event(self_module, s.control_path, loader_info()));
         poll_control(s, true);  // a run may start with switches already set
         system_info::ModuleCensus modules;
+        modules.known(system_info::module_path(nullptr), system_info::loader_hash(loader_info()));
         if (auto e = modules.changed_event(now_ms()); !e.empty()) event_log.write(e);
         log_discoveries(s);
 
@@ -1066,8 +1068,7 @@ DWORD WINAPI player_worker(void* parameter) noexcept {
     auto& s = *owned;
     try {
         s.ccd = cpu_limit::find_cache_ccd();
-        system_info::LoaderInfo loader{"Astera Loader", host.api_version, host.game_version, host.exe_sha256};
-        event_log.write(system_info::start_event(self_module, s.settings_path, loader));
+        event_log.write(system_info::start_event(self_module, s.settings_path, loader_info()));
         log_discoveries(s);
         auto applied = settings();
         auto key = applied.toggle_key;
@@ -1075,6 +1076,7 @@ DWORD WINAPI player_worker(void* parameter) noexcept {
         if (host.hotkey) host.hotkey(key);
         double status_due = now_ms() + 10000.0;  // the switches settle within a few frames
         system_info::ModuleCensus modules;       // other mods: with each status line, when they changed
+        modules.known(system_info::module_path(nullptr), system_info::loader_hash(loader_info()));
         Bench b;
         LimitSampler limiter_sampler;
         for (;;) {
@@ -1182,6 +1184,7 @@ bool start(HMODULE self, const Host& h, std::string& reason) noexcept {
                 reason = "cpuopt-session.log cannot be written: idle";
                 return false;
             }
+            event_log.write(system_info::init_event("player", loader_info()));
             auto state = std::make_unique<State>();
             state->player = true;
             state->settings_path = host.folder + L"\\cpuopt.ini";
@@ -1211,6 +1214,7 @@ bool start(HMODULE self, const Host& h, std::string& reason) noexcept {
             reason = "run folder not writable: idle";
             return false;
         }
+        event_log.write(system_info::init_event("research", loader_info()));
         auto state = std::make_unique<State>();
         state->control_path = folder + L"\\control.ini";
         stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);

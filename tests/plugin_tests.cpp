@@ -1494,6 +1494,19 @@ void start_event_test() {
     CHECK(e.find("\"brand\":\"") != std::string::npos);
     const auto at = e.find("\"sha256\":\"");
     CHECK(at != std::string::npos && e.find('"', at + 10) == at + 10 + 64);
+    CHECK(e.find("\"sha256_from\":\"file\"") != std::string::npos);  // "ab" is no SHA-256
+    // A loader's hash is used as given (lower case), the file not read.
+    const std::string given(64, 'C');
+    const cpuopt::system_info::LoaderInfo hashed{"Test Loader", 0x10008, "421810", given};
+    const auto h = cpuopt::system_info::start_event(GetModuleHandleW(nullptr), L"x", hashed);
+    CHECK(h.find("\"sha256\":\"" + std::string(64, 'c') + "\",\"sha256_from\":\"loader\"") != std::string::npos);
+    // The first record: who ran, before anything slow.
+    const auto init = cpuopt::system_info::init_event("player", hashed);
+    std::printf("init: %s\n", init.c_str());
+    CHECK(init.find("{\"event\":\"init\",\"t_ms\":") == 0 && init.back() == '}');
+    CHECK(init.find("\"mode\":\"player\",\"loader_api\":\"1.8\",\"game_version\":\"421810\",\"exe_sha256_from_loader\":true,\"wine\":\"") !=
+          std::string::npos);
+    CHECK(cpuopt::system_info::wine_version().empty() == !GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version"));
     cpuopt::system_info::ModuleCensus modules;
     CHECK(modules.changed_event(0).find("plugin_tests.exe") != std::string::npos);
     CHECK(modules.changed_event(0).empty());  // unchanged

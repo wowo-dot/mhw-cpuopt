@@ -260,13 +260,16 @@ std::string start_event(HMODULE self, const std::wstring& control_path, const Lo
     out += '}';
 
     const auto exe_path = module_path(nullptr);
-    const auto exe_hash = sha256_file(exe_path);
+    const auto given = loader_hash(loader);
+    const auto exe_hash = given.empty() ? sha256_file(exe_path) : given;
     json::key(out, "exe");
     out += '{';
     json::key(out, "path");
     json::string(out, utf8(exe_path));
     json::key(out, "sha256");
     json::string(out, exe_hash);
+    json::key(out, "sha256_from");
+    json::string(out, given.empty() ? "file" : "loader");
     json::key(out, "tested_build");
     out += exe_hash == tested_exe_sha256 ? "true" : "false";
     image_identity(out, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)));
@@ -326,6 +329,61 @@ std::string start_event(HMODULE self, const std::wstring& control_path, const Lo
     json::string(out, utf8(control_path));
     json::key(out, "toggles");
     json::number(out, std::uint64_t(toggles.load()));
+    out += '}';
+    return out;
+}
+
+std::string loader_hash(const LoaderInfo& loader) {
+    if (loader.exe_sha256.size() != 64) return {};
+    std::string out;
+    for (const char c : loader.exe_sha256) {
+        if (c >= '0' && c <= '9') out += c;
+        else if (c >= 'a' && c <= 'f') out += c;
+        else if (c >= 'A' && c <= 'F') out += static_cast<char>(c - 'A' + 'a');
+        else return {};
+    }
+    return out;
+}
+
+std::string wine_version() {
+    using Fn = const char*(CDECL*)();
+    const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto fn = ntdll ? reinterpret_cast<Fn>(GetProcAddress(ntdll, "wine_get_version")) : nullptr;
+    const char* v = fn ? fn() : nullptr;
+    return v ? std::string(v) : std::string{};
+}
+
+std::string init_event(const char* mode, const LoaderInfo& loader) {
+    std::string out = "{";
+    json::key(out, "event");
+    json::string(out, "init");
+    json::key(out, "t_ms");
+    json::fixed(out, now_ms(), 3);
+    json::key(out, "version");
+    json::string(out, CPUOPT_VERSION);
+    json::key(out, "commit");
+    json::string(out, CPUOPT_COMMIT);
+    SYSTEMTIME st{};
+    GetSystemTime(&st);
+    char utc[40];
+    std::snprintf(utc, sizeof(utc), "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+                  st.wMilliseconds);
+    json::key(out, "utc");
+    json::string(out, utc);
+    json::key(out, "pid");
+    json::number(out, std::uint64_t(GetCurrentProcessId()));
+    json::key(out, "mode");
+    json::string(out, mode);
+    json::key(out, "loader_api");
+    char api[24];
+    std::snprintf(api, sizeof(api), "%u.%u", loader.api_version >> 16, loader.api_version & 0xFFFFu);
+    json::string(out, api);
+    json::key(out, "game_version");
+    json::string(out, loader.game_version);
+    json::key(out, "exe_sha256_from_loader");
+    out += loader_hash(loader).empty() ? "false" : "true";
+    json::key(out, "wine");
+    json::string(out, wine_version());
     out += '}';
     return out;
 }

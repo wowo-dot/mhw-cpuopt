@@ -518,7 +518,8 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
 
     const auto log = read_all(folder + L"\\cpuopt-session.log");
     std::printf("al_host_smoke (player): %zu bytes of cpuopt-session.log, EXITING took %.1f ms\n", log.size(), exiting_ms);
-    CHECK(log.find("{\"event\":\"start\"") == 0 || log.find("\n{\"event\":\"start\"") != std::string::npos);
+    CHECK(log.find("{\"event\":\"init\",") == 0 && log.find("\"mode\":\"player\"") != std::string::npos);  // the first line
+    CHECK(log.find("\n{\"event\":\"start\"") != std::string::npos);
     CHECK(log.find("\"toggles\":51512,\"requested_toggles\":51512,\"marker\":\"player\"") != std::string::npos);
     CHECK(log.find("\"toggles\":0,\"requested_toggles\":0,\"marker\":\"player\"") != std::string::npos);
     CHECK(log.find("\"unit_us\":50") != std::string::npos);  // the hand edit
@@ -648,7 +649,8 @@ int wmain(int argc, wchar_t** argv) {
     const auto profiles = lines_with(text, "\"event\":\"profile\"");
     std::printf("al_host_smoke: %zu bytes, %zu windows, %zu profiles, EXITING took %.1f ms\n", text.size(), windows.size(), profiles.size(),
                 exiting_ms);
-    CHECK(text.rfind("{\"event\":\"start\"", 0) == 0 || text.find("\n{\"event\":\"start\"") != std::string::npos);
+    CHECK(text.find("{\"event\":\"init\",") == 0 && text.find("\"mode\":\"research\"") != std::string::npos);  // the first line
+    CHECK(text.find("\n{\"event\":\"start\"") != std::string::npos);
     CHECK(text.find("\"loader\":{\"name\":\"Astera Loader\",\"api\":\"1.8\",\"game_version\":\"421810\"") != std::string::npos);
     CHECK(text.find("\"event\":\"frame_clock\",") != std::string::npos);
     CHECK(text.find("\"found\":true,\"reason\":\"ok\",\"scanner\":\"al.scanner\",\"matches\":1") != std::string::npos);

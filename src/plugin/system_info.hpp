@@ -21,8 +21,20 @@ struct LoaderInfo {
 
 // The "start" event: build identity, loader, executable and DLL hashes, CPU
 // and cache layout, CPU sets and affinity, OS build and the game's own
-// graphics and CPU settings files (read only).
+// graphics and CPU settings files (read only). The executable's hash is the
+// loader's when it gave one (Astera Loader hashes the exe before plugins
+// start), else read from the file (84 MB: slow on some disks).
 std::string start_event(HMODULE self, const std::wstring& control_path, const LoaderInfo& loader);
+// The "init" event, the log's first line, written before anything slow:
+// build identity, mode ("player" or "research"), the loader's API and game
+// version, and Wine's version when running under Wine or Proton, so a log
+// from a game that ends early still says what ran.
+std::string init_event(const char* mode, const LoaderInfo& loader);
+// Wine's version ("9.0") when this process runs under Wine or Proton
+// (ntdll exports wine_get_version there), else empty.
+std::string wine_version();
+// The loader's exe hash in lower case if it is a SHA-256 (64 hex digits), else empty.
+std::string loader_hash(const LoaderInfo& loader);
 
 // For the benchmark's report: plain text, no paths.
 std::string cpu_name();                         // the CPU's brand string
@@ -40,6 +52,10 @@ public:
     // The "modules" event if the set of loaded modules changed since the last
     // call, else empty.
     std::string changed_event(double t_ms);
+    // A hash already known (the exe's from the loader), so it is not read again.
+    void known(const std::wstring& path, const std::string& sha256) {
+        if (!sha256.empty()) hashes_[path] = sha256;
+    }
 
 private:
     struct Entry {
