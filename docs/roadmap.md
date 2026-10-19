@@ -92,7 +92,8 @@ Both measuring switches stay on in both halves of every A/B.
    kept switches are on from cpuopt.ini, with a CMFM page (a switch and a
    line of help per optimization, everything on/off with a hotkey, a live
    status line, the experimental 300 fps cap removal) and a small log.
-5. **Release (closed beta running, v0.14.3):** the player guide, tester
+5. **Release (v0.16.0 tagged on 2026-10-20 after al-43, the release candidate's
+   48-minute session; the public release is being prepared):** the player guide, tester
    notes, the Mods page's benchmark (8 off/on pairs, a report testers send
    back) and `tools/package.py` are done. Two testers so far, both Intel and
    GPU-limited (engine notes, "Closed beta, first results"); a 5800X with

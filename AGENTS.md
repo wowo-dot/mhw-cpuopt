@@ -8,44 +8,32 @@ measurable. Measurement comes first: no game code is changed until a profile
 proves where the time goes. Every change must be switchable at runtime and
 measured against the same scene with the switch on and off.
 
-The sibling project `D:\mh world modding\dlssupdate` (DLSS, Reflex and frame
-generation mod) is the source of most engine knowledge and of reusable tools.
-Start with `docs/handoff-20261008.md`.
+The sibling DLSS, Reflex and frame generation mod is the source of most
+engine knowledge and of reusable tools.
 
-## Canonical Local Paths
+## Local Paths
 
-- Repository: `D:\mh world modding\cpuopt`
-- Sibling DLSS project (read-only reference from here): `D:\mh world modding\dlssupdate`
-- Game directory: `D:\SteamLibrary\steamapps\common\Monster Hunter World`
-- Game executable: `D:\SteamLibrary\steamapps\common\Monster Hunter World\MonsterHunterWorld.exe`
-- IDA directory: `C:\Program Files\IDA Professional 9.4` (the Hex-Rays IDA MCP
-  needs 9.4; 9.3 stays installed)
-- IDA executable: `C:\Program Files\IDA Professional 9.4\ida.exe`
-- Clean decoded game image (Capcom code: never commit or redistribute):
-  `D:\mh world modding\CMFM\local\runs\20261011-clean-dump\dump\image.exe`,
+Machine-local paths (this repository, the sibling DLSS project, the game
+directory and executable, IDA, the clean decoded game image, the reversing
+tools, Mod Organizer 2, Python and CMake) are in `local/paths.md`, which is
+not tracked. Read it before working. Never write them into tracked files or
+distributable binaries, and do not assume other contributors use the same
+paths.
+
+- The clean decoded game image (its path in `local/paths.md`) is Capcom
+  code: never commit or redistribute it. It is a read-only memory copy of
+  the tested exe at the title screen (plain Steam start, no mods); the exe
+  on disk has SteamStub-encrypted code, so offline signature checks run on
+  this image. Read it in place, never write into the folder that holds it.
   SHA-256 `a78ea69b0566414a42f16d0f8ff7d729e095041e2ae76a34cc02dbe0939f1d80`.
-  A read-only memory copy of the tested exe at the title screen, plain Steam
-  start, no mods (CMFM `docs/handoff-clean-image-20261011.md`). The exe on
-  disk has SteamStub-encrypted code, so offline signature checks run on this
-  image; read it in place, never write into CMFM's folder.
-- Private IDA database: `local\ida\MonsterHunterWorld_C2EBBBD2_clean.i64`,
-  built from `local\ida\MonsterHunterWorld_C2EBBBD2_clean.exe` (a copy of the
-  clean image, same SHA-256) with `tools/ida_build.py`, plus Fexty's names
-  (`docs/research/ida-database.md`).
-- Do not use the old decoded image
-  `D:\mh world modding\ai\glavenus\MonsterHunterWorld_decrypted.exe`
-  (SHA-256 `d7861173…884c`): it was dumped with mods loaded and differs from
-  the original code in 29 places. The old database
-  `local\ida\MonsterHunterWorld_C2EBBBD2.i64` is retired with it.
-- Claude Code reversing tools: `C:\Users\akifs\.claude\re-tools\` (Python 3.12:
-  `py -3.12 -B`); x64dbg: `D:\reverse engine jank\x64dbg\release\x96dbg.exe`
-- Mod Organizer 2 (portable): `C:\Modding\MO2\ModOrganizer.exe`, data directory `D:\MO2\MHW`
-- Python 3.10: `C:\Users\akifs\AppData\Local\Programs\Python\Python310\python.exe` (run with `-B`)
-- CMake/CTest (Visual Studio 18 2026, x64):
-  `C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`
-
-These paths are machine-local configuration. Do not encode them into
-distributable binaries or assume other contributors use the same paths.
+- Private IDA database: `local/ida/MonsterHunterWorld_C2EBBBD2_clean.i64`,
+  built from `local/ida/MonsterHunterWorld_C2EBBBD2_clean.exe` (a copy of
+  the clean image, same SHA-256) with `tools/ida_build.py`, plus Fexty's
+  names (`docs/research/ida-database.md`).
+- Do not use the old decoded image with SHA-256 `d7861173…884c`: it was
+  dumped with mods loaded and differs from the original code in 29 places.
+  The old database `local/ida/MonsterHunterWorld_C2EBBBD2.i64` is retired
+  with it.
 
 ## Safety and Scope
 
@@ -115,8 +103,8 @@ rules come first.
   - The 2026-10-11 export (clean database with Fexty's names) has 53,197
     named functions (53,229 lines). When a hotspot is understood, name it in
     the private database, save, and re-export.
-- **Signatures** (`py -3.12 -B C:\Users\akifs\.claude\re-tools\sigscan.py`, on
-  the clean image):
+- **Signatures** (`sigscan.py` from the reversing tools in `local/paths.md`,
+  on the clean image):
   - `audit <image> src` before staging a build that changes a pattern. A
     searched pattern must match exactly once; the frame-clock signature
     matched once, at `0x23922C2`, on the clean image on 2026-10-11.

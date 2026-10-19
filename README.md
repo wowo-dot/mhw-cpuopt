@@ -53,7 +53,7 @@ rate cannot rise.
 The worst frames improve with the average on the Ryzen: the forest's 99th
 percentile frame time went from 16.7 to 4.3 ms on the test PC, Elder's
 Recess's from 8.6 to 5.8 ms on the RTX 5080 PC. More CPUs, among them non-X3D and single-die
-Ryzen, will be added as the beta reports them.
+Ryzen, will be added as players send them (`docs/sending-results.md`).
 
 ### Why it depends on your CPU
 
@@ -79,15 +79,15 @@ Ryzen, will be added as the beta reports them.
 Only where the CPU is what holds it back: a fast graphics card (an RTX
 4090, 5080 or 5090 at 1440p, for example) or a lower resolution, heavy
 scenes and fights, high refresh rates, and so far most on AMD Ryzen. If the
-graphics card is already fully busy, as on every mid-range card in the
-beta so far, cpuopt cannot raise the frame rate; it still lowers the CPU
+graphics card is already fully busy, as on every mid-range card measured
+so far, cpuopt cannot raise the frame rate; it still lowers the CPU
 time every frame needs, which keeps frames steadier where effects pile up
 and leaves room for a faster graphics card later. With the DLSS mod's
 Reflex on, a shorter CPU frame most likely means lower input latency too.
 The Mods page's "Limited by" line shows live what holds your frame rate,
 and the benchmark (below) measures both.
 
-**Status:** experimental (closed beta, 0.15). Tested with MHW 421810, the
+**Status:** experimental, 0.16.0. Tested with MHW 421810, the
 final version, on Windows. On Linux with Proton the first try did not
 reach the title screen; that is being looked into.
 
@@ -202,7 +202,8 @@ the CPU time per frame: the report says when that is the case.
 Say what happened and attach `cpuopt-session.log` from that session (it is replaced
 at each start) and `cpuopt-benchmark.txt` if you ran one. The log contains
 the paths of the game and mod folders, which can include your Windows user
-name. Beta testers: see `docs/beta-testing.md`.
+name. Benchmark results from your PC help most, especially from CPUs not
+in the table above: `docs/sending-results.md` says what to run and send.
 
 ## How it was found
 

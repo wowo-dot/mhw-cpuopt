@@ -1,19 +1,18 @@
-# cpuopt closed beta: notes for testers
+# Sending results from your PC
 
-Thank you for testing. cpuopt cuts Monster Hunter: World's CPU cost; on the
-developer's PC (Ryzen 9 9950X3D) it gains 48 to 80% fps where the CPU is the
-limit. What nobody knows yet is how it does on other PCs: Intel CPUs,
-single-die Ryzens, fewer cores, other graphics cards. That is what this beta
-is for. `README.md` (next to this file) explains what every switch does.
-
-This is a closed beta: please do not pass the files on.
+cpuopt's gain depends a lot on the CPU (see the README's "Results on
+different PCs"). So far it has been measured on a Ryzen 9 9950X3D (two PCs)
+and on three Intel CPUs. Results from other CPUs help most: non-X3D and
+single-die X3D Ryzens (5800X, 5800X3D, 7800X3D, 9800X3D), six-core Ryzens,
+CPU-limited Intel setups, older CPUs, Radeon graphics cards. `README.md`
+explains what every switch does.
 
 ## Install
 
-1. You need Astera Loader 0.2.2 or newer (0.2.3 on Linux), and CMFM 0.1.0
-   or newer for the in-game menu (the benchmark needs CMFM). On Linux with
-   Proton cpuopt has not been tried yet: if that is you, tell us how it
-   goes.
+1. You need Astera Loader 0.2.2 or newer, and CMFM 0.1.1 or newer for the
+   in-game menu (the benchmark needs CMFM). On Linux with Proton, cpuopt's
+   first try did not reach the title screen; if you are on Linux, tell us
+   how it goes.
 2. Install the zip as a mod in Mod Organizer 2, or extract it into the game
    folder. Either way the DLL ends up at
    `<game folder>\AsteraLoader\plugins\cpuopt\cpuopt.dll`.
@@ -36,22 +35,19 @@ This is a closed beta: please do not pass the files on.
    The spots:
    - the Ancient Forest, at the Southwest Camp (the first camp), looking out
      from the tent;
-   - Astera or Seliana, somewhere with people around.
+   - Elder's Recess, where effects are heaviest (or Astera or Seliana,
+     somewhere with people around).
 
    Each result is added to `cpuopt-benchmark.txt` next to the DLL.
 3. **Play.** A hunt or two with everything on. Set a hotkey on the page
    ("On/off hotkey") and flip it in a fight to feel the difference. Things to
    watch for:
    - hits that do not land or land oddly, monsters or the player passing
-     through walls or each other ("Parallel hit detection" is the newest
-     switch);
+     through walls or each other;
    - stutter or hitches that are not there with the optimizations off;
    - crashes, freezes, or the game not closing.
 4. **If something is off:** turn the switches off one at a time until it
    goes away and tell us which one did it.
-
-During the beta, please play solo or in private sessions rather than public
-lobbies: if something is wrong, better to find it in your own hunt.
 
 ## What to send
 
@@ -64,17 +60,25 @@ lobbies: if something is wrong, better to find it in your own hunt.
   you.
 - The screenshot of the page.
 - In a few words:
-  - your resolution and upscaling (the DLSS mod and its mode, or none);
+  - where you stood for each benchmark;
+  - your resolution and upscaling (the DLSS mod and its mode, or none), and
+    whether Reflex was on;
   - whether Windows Game Mode is on;
   - anything running alongside, such as a Discord stream, recording,
     overlays or Process Lasso;
   - anything odd you noticed, with or without cpuopt.
 
+Open an issue on the project's GitHub page and attach the files there.
+
 ## Good to know
 
 - The frame rate only shows the gain where the CPU is the limit. With a
   frame rate limit, V-Sync, or a fully busy graphics card, the benchmark's
-  "CPU time per frame" shows it instead, and the report says so.
+  "CPU time per frame" shows it instead, and the report says so. The Mods
+  page's "Limited by" line shows which one holds your frame rate.
+- Reflex (the DLSS mod's) paces the game's frames itself, so with it on the
+  frame rate shows less of the gain; for the clearest comparison, run one
+  benchmark with Reflex off.
 - Frame generation's extra frames are not counted; the benchmark measures
   the game's own frames.
 - "Remove 300 fps limit" is experimental and off by default. Leave it off

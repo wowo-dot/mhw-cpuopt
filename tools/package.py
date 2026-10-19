@@ -66,7 +66,7 @@ def main():
 
     files = {'cpuopt.dll': data, 'README.md': (ROOT / 'README.md').read_bytes()}
     if args.label:
-        files['BETA.md'] = (ROOT / 'docs' / 'beta-testing.md').read_bytes()
+        files['BETA.md'] = (ROOT / 'docs' / 'sending-results.md').read_bytes()
     markers = private_markers()
     for name, content in files.items():
         lower = content.lower()
