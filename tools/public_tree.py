@@ -38,7 +38,8 @@ def version():
 def markers():
     """Lower-case byte strings that must not appear in a public file."""
     found = set()
-    for path in (str(ROOT), os.path.expanduser('~')):
+    # The repository, the folder that holds it and the user profile.
+    for path in (str(ROOT), str(ROOT.parent), os.path.expanduser('~')):
         for form in (path, path.replace('\\', '/'), path.replace('\\', '\\\\')):
             found.add(form.lower().encode('utf-8'))
     user = os.environ.get('USERNAME', '')
@@ -47,7 +48,6 @@ def markers():
     for email in git('log', '--format=%ae%n%ce').decode().split():
         if email and 'noreply' not in email:
             found.add(email.lower().encode('utf-8'))
-    found.add(b'mh world modding')
     return found
 
 

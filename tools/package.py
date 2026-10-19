@@ -48,12 +48,12 @@ def version():
 def private_markers():
     """Byte strings that must not ship: this machine's paths, in the forms a binary or text would hold them."""
     markers = set()
-    for path in (str(ROOT), os.path.expanduser('~')):
+    # The repository, the folder that holds it (named in this repository's own
+    # paths, so not written out here) and the user profile.
+    for path in (str(ROOT), str(ROOT.parent), os.path.expanduser('~')):
         for form in (path, path.replace('\\', '/'), path.replace('\\', '\\\\')):
             markers.add(form.encode('utf-8').lower())
             markers.add(form.encode('utf-16-le').lower())
-    markers.add(b'mh world modding')
-    markers.add('mh world modding'.encode('utf-16-le'))
     return markers
 
 
