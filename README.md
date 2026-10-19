@@ -1,39 +1,90 @@
 # cpuopt: CPU optimizations for Monster Hunter: World
 
-Monster Hunter: World on PC is held back by its CPU code, not by the
-graphics card: on most PCs one game thread sets the frame rate, which is why
-upscaling alone does little for it. cpuopt is an
+cpuopt is an experimental
 [Astera Loader](https://github.com/wowo-dot/AsteraLoader) plugin that fixes
-the worst of that in memory while the game runs. It changes no game files.
+a handful of specific problems in Monster Hunter: World's CPU code, found by
+measuring the running game. It changes them in memory while the game runs
+and changes no game files.
 
-On the test PC (Ryzen 9 9950X3D, RTX 5090, 1440p, the
-[DLSS mod](https://github.com/wowo-dot/mhw-dlss-update) at quality):
+**It is not a general speed-up.** Apart from these problems, the game looks
+reasonably well optimized from what we measured: once they are fixed, the
+CPU time that remains goes to real work, spread over the engine's job
+threads, with no single waste left that we could find, and the graphics
+side spends its time on what its options ask for (ambient occlusion High,
+for example, is expensive by design, not by mistake). What cpuopt gives
+you therefore depends on two things: whether these problems hit your CPU,
+which differs a lot between CPU architectures, and whether the CPU is what
+limits your frame rate at all.
 
-| Scene | Without cpuopt | With cpuopt | |
-|---|---|---|---|
-| Ancient Forest, standing at a camp | 147 fps | 265 fps | +80% |
-| The same, with a Process Lasso rule already keeping MHW on the cache die | 182 fps | 269 fps | +48% |
-| Arch-Tempered Velkhana fight | 175 fps | 286 fps | +63%, then the graphics card is the limit (97% busy) |
+What it fixes:
 
-The game thread's CPU time per frame falls by 30 to 45%, and the worst frames
-improve with it (the forest's 99th percentile frame time: 16.7 to 4.4 ms
-with the Lasso rule). These are one PC's numbers. An earlier version gained
-as much with the same CPU limited to six or four cores (+33-34%), but other
-CPUs have not been measured yet: that is what the beta is for.
+- **One real bug,** the biggest: effects (fire, ice, sparks, dust) build
+  their vertex data in memory meant for the graphics card, and the game
+  read every record back from that memory eight times. The CPU can only
+  read that kind of memory very slowly. On the test PC's Ryzen 9 9950X3D
+  this made effect drawing about ten times slower than it needs to be and
+  dropped heavy effect moments (Fatalis's nova) to 60 fps.
+- **Some smaller waste:** Steam's server time asked for several times a
+  frame, the slowest drawing jobs started last, hit detection left on one
+  thread although the engine has a parallel version, a frame limiter that
+  keeps a core busy while it waits, an update threshold that keeps work off
+  the job threads.
+- **On dual-die X3D CPUs** (7900X3D, 7950X3D, 9900X3D, 9950X3D): Windows
+  often spreads the game over both dies; cpuopt keeps it on the die with
+  the large cache.
+
+## Results on different PCs
+
+From the Mods page's benchmark (below) and the test PC's measurements, all
+at 2560x1440. "Game thread" is the CPU time the game's main thread needs
+per frame, the work cpuopt cuts; it shows the effect even where the frame
+rate cannot rise.
+
+| CPU | Graphics card, settings | Frame rate without → with | Game thread per frame | What limits the frame rate with cpuopt |
+|---|---|---|---|---|
+| Ryzen 9 9950X3D | RTX 5080, DLSS performance, nothing pinning the game, scene not stated | 137 → 258 fps (**+88%**) | 7.20 → 3.19 ms (-56%) | the graphics card (the CPU alone: about 313 fps) |
+| Ryzen 9 9950X3D (test PC) | RTX 5090, DLSS quality, Ancient Forest, nothing pinning the game | 147 → 265 fps (**+80%**) | 6.81 → 3.75 ms (-45%) | the CPU |
+| Ryzen 9 9950X3D (test PC) | the same, with a Process Lasso rule already keeping MHW on the cache die | 172 → 271 fps (**+58%**) | 5.03 → 3.44 ms (-32%) | the CPU |
+| Ryzen 9 9950X3D (test PC) | the same, Arch-Tempered Velkhana fight | 175 → 286 fps (**+63%**) | 5.70 → 3.15 ms (-45%) | the graphics card (97% busy) |
+| Core i7-13700K | RTX 3080 Ti, DLSS performance, Ancient Forest | 159 → 159 fps (+0%) | 5.68 → 5.15 ms (-9%) | the graphics card, in both |
+| Core i5-12600KF | RTX 3060 Ti, Reflex on, Elder's Recess, the game held to 6 threads by another tool | 116 → 116 fps (+0%) | not measured (Reflex) | the graphics card, in both |
+
+The worst frames improve with the average on the Ryzen: the forest's 99th
+percentile frame time went from 16.7 to 4.3 ms on the test PC (8.6 to
+5.8 ms on the RTX 5080 PC). More CPUs, among them non-X3D and single-die
+Ryzen, will be added as the beta reports them.
+
+### Why it depends on your CPU
+
+- **The effect bug costs far more on the Ryzen measured so far (the
+  9950X3D, on two PCs) than on the Intel CPUs.** Reading that graphics
+  memory back was the single biggest cost on the 9950X3D; the 13700K showed none of its frame-time spikes, and
+  its game thread gained 9% where the Ryzen gained 32 to 56%. Our best
+  explanation is that such reads cost much less on these Intel CPUs; that
+  is not proven yet, and results from more CPUs will tell.
+- **Dual-die X3D CPUs gain the most** when nothing else keeps the game on
+  the cache die: "Stay on the cache die" alone was worth up to +40% on the
+  test PC. With a Process Lasso rule already doing that, the gain is
+  smaller (+58% instead of +80%).
+- **Everything else** (the smaller fixes) is worth a few percent each on
+  the test PC, and should help any CPU about as much.
 
 ### Will my frame rate go up?
 
 Only where the CPU is what holds it back: a fast graphics card (an RTX
 4090, 5080 or 5090 at 1440p, for example) or a lower resolution, heavy
-scenes and fights, high refresh rates. If the graphics card is
-already fully busy, cpuopt cannot raise the frame rate; it still lowers the
-CPU time every frame needs, which keeps frames steadier where effects pile
-up and leaves room for a faster graphics card later. With the DLSS mod's
+scenes and fights, high refresh rates, and so far most on AMD Ryzen. If the
+graphics card is already fully busy, as on every mid-range card in the
+beta so far, cpuopt cannot raise the frame rate; it still lowers the CPU
+time every frame needs, which keeps frames steadier where effects pile up
+and leaves room for a faster graphics card later. With the DLSS mod's
 Reflex on, a shorter CPU frame most likely means lower input latency too.
-The benchmark (below) measures both and says which one held your frame
-rate.
+The Mods page's "Limited by" line shows live what holds your frame rate,
+and the benchmark (below) measures both.
 
-**Status:** closed beta (0.14). Tested with MHW 421810, the final version.
+**Status:** experimental (closed beta, 0.15). Tested with MHW 421810, the
+final version, on Windows. On Linux with Proton the first try did not
+reach the title screen; that is being looked into.
 
 ## What it changes
 
@@ -66,10 +117,11 @@ You need:
 
 - Monster Hunter: World on Steam, version 421810 (the current one).
 - [Astera Loader](https://github.com/wowo-dot/AsteraLoader) 0.2.2 or newer
-  (on Linux with Proton, 0.2.3 or newer for the loader itself; cpuopt has
-  not been tried there yet).
-- Recommended: [CMFM](https://github.com/wowo-dot/CMFM) 0.1.0 or newer, the
-  in-game Mods menu. Without it, settings are in `cpuopt.ini`.
+  (on Linux with Proton, 0.2.3 or newer for the loader itself; cpuopt's
+  first try there did not reach the title screen, see Status above).
+- Recommended: [CMFM](https://github.com/wowo-dot/CMFM) 0.1.1 or newer, the
+  in-game Mods menu (0.1.0's page takes no input when it is the only mod
+  page). Without it, settings are in `cpuopt.ini`.
 
 Then put `cpuopt.dll` here, or install the zip as a mod in Mod Organizer 2
 (it has this layout):
