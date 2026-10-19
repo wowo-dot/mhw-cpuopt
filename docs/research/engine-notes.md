@@ -846,7 +846,8 @@ running unless noted.
   when the GPU is maxed. The user sees separate hitches from the window tool
   Borderless Gaming when the window changes (menus); on 2026-10-19 the
   user confirmed that app as the cause of those hitches (not cpuopt, not
-  the game).
+  the game) and replaced it with a small borderless tool of their own;
+  runs from then on are without Borderless Gaming.
 
 **One frame through PIX (`local/pix/`, captures stay private):** captured
 in game through cpuopt's switches (PIX's layer loaded at PRE_MAIN,
