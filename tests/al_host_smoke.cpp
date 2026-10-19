@@ -63,9 +63,24 @@ __declspec(allocate(".cpotest")) unsigned char planted_spin[] = {
     0xF3, 0x90, 0x8B, 0x83, 0xFC, 0xF1, 0x09, 0x00, 0x3B, 0xC7,  // pause; mov eax,[rbx+9F1FCh]; cmp eax,edi
     0x75, 0xF4,                                                  // jnz pause
     0x5F, 0x5B, 0xC3};                                           // done: pop rdi; pop rbx; ret
+// sMhUnit's four signatures (unit_lines.hpp), once each; the owner's call
+// operands are zeros.
+__declspec(allocate(".cpotest")) unsigned char planted_units[] = {
+    0xF6, 0xC2, 0x01, 0x74, 0x16, 0x8B, 0x87, 0x58, 0x4A, 0x00, 0x00, 0xC6, 0x85, 0x90, 0x00, 0x00, 0x00, 0x01, 0x39, 0x84,
+    0x3E, 0xA8, 0x00, 0x00, 0x00, 0x77, 0x07, 0xCC,
+    0xF6, 0xC1, 0x01, 0x74, 0x15, 0x8B, 0x87, 0x58, 0x4A, 0x00, 0x00, 0x41, 0x39, 0x84, 0x3E, 0xAC, 0x00, 0x00, 0x00, 0x76,
+    0x05, 0x40, 0xB5, 0x01, 0xCC,
+    0x48, 0xC7, 0x83, 0x58, 0x4A, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x00, 0xCC,
+    0xB9, 0xC0, 0xDE, 0x3D, 0x00, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0xC0, 0x74, 0x12, 0xBA, 0x40, 0x00, 0x00, 0x00,
+    0x48, 0x8B, 0xC8, 0x44, 0x8B, 0xC2, 0xE8, 0x00, 0x00, 0x00, 0x00, 0xEB, 0x03, 0x49, 0x8B, 0xC4, 0x48, 0x89, 0x83, 0xD0,
+    0xF8, 0x0A, 0x00, 0xC3};
 using SpinFn = void (*)(void* smain, int released);
 std::uintptr_t fake_smain;
-std::uint8_t smain_object[0xAF680 + 64];
+std::uint8_t smain_object[0xAF8D0 + 64];
+// sMhUnit, made only once the player flow is "in game" (sMain +0xAF8D0 points
+// at it then); its line threshold at +0x4A58.
+std::uint8_t unit_object[0x4A58 + 64];
+std::uint32_t& unit_threshold() { return *reinterpret_cast<std::uint32_t*>(unit_object + 0x4A58); }
 std::uint32_t& smain_field(std::uint32_t offset) { return *reinterpret_cast<std::uint32_t*>(smain_object + offset); }
 std::uintptr_t& job_slot(unsigned i) { return *reinterpret_cast<std::uintptr_t*>(smain_object + 0x9E8F0 + i * 0x48 + 0x30); }
 // The job a fake job thread "runs" for 0.5 ms each frame while the game thread spins.
@@ -383,6 +398,15 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     const HANDLE threads[] = {CreateThread(nullptr, 0, game_thread, nullptr, 0, nullptr),
                               CreateThread(nullptr, 0, present_thread, nullptr, 0, nullptr)};
     Sleep(1500);
+    // Update threads: requested at the title screen, before sMhUnit exists,
+    // it must land within a couple of seconds of sMhUnit appearing, with no
+    // settings change in between (0.15.1 and before waited for one).
+    CHECK(unit_threshold() == 0);
+    unit_threshold() = 60;  // the constructor's value
+    *reinterpret_cast<std::uintptr_t*>(smain_object + 0xAF8D0) = reinterpret_cast<std::uintptr_t>(unit_object);
+    Sleep(2500);
+    std::printf("  update threads: threshold %u after sMhUnit appeared\n", unit_threshold());
+    CHECK(unit_threshold() == 40);
     const auto ini = folder + L"\\cpuopt.ini";
     auto text = read_all(ini);
     CHECK(text.find("enabled = on") != std::string::npos && text.find("remove_fps_cap = off") != std::string::npos);
@@ -425,6 +449,7 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     // A hand edit while the game runs (and 1 s benchmark windows).
     write_all(ini, replaced(replaced(read_all(ini), "unit_us = 40", "unit_us = 50"), "benchmark_s = 6 ", "benchmark_s = 1 "));
     Sleep(2000);
+    CHECK(unit_threshold() == 50);
 
     // The benchmark: Run on the page, then it starts once the page closes. The
     // page opening on the way pauses it, and that window runs again.
@@ -489,6 +514,7 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     WaitForSingleObject(jobs, 2000);
     const al_phase_shutdown_t shutdown{sizeof(al_phase_shutdown_t), 0};
     info->on_phase(self, AL_PHASE_SHUTDOWN, &shutdown);
+    CHECK(unit_threshold() == 60);  // the game's own back at EXITING
 
     const auto log = read_all(folder + L"\\cpuopt-session.log");
     std::printf("al_host_smoke (player): %zu bytes of cpuopt-session.log, EXITING took %.1f ms\n", log.size(), exiting_ms);
@@ -662,7 +688,7 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(text.find("\"event\":\"prim_patch\",\"on\":false,\"reason\":\"no al.patch\"") != std::string::npos);
     CHECK(text.find("\"event\":\"server_hooks\",\"on\":false,\"reason\":\"server time calls not found\"") != std::string::npos);
     CHECK(text.find("\"inline_us\":500,\"time_ms\":500,\"spin_us\":300,\"unit_us\":20") != std::string::npos);
-    CHECK(text.find("\"event\":\"unit_lines\",\"t_ms\"") != std::string::npos && text.find("\"units\":{\"state\":\"no target\",") != std::string::npos);
+    CHECK(text.find("\"event\":\"unit_lines\",\"t_ms\"") != std::string::npos && text.find("\"units\":{\"state\":\"waiting\",") != std::string::npos);  // no sMhUnit in this flow
     CHECK(text.find("\"event\":\"steam_running\",") != std::string::npos);
     CHECK(text.find("\"event\":\"running_patch\",\"on\":false,\"reason\":\"no al.patch\"") != std::string::npos);
     CHECK(text.find("\"event\":\"frame_budget\",") != std::string::npos);

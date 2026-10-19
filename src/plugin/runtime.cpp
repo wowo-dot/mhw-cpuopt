@@ -1127,6 +1127,10 @@ DWORD WINAPI player_worker(void* parameter) noexcept {
             if (bench_requested.exchange(false) && b.phase == Bench::Phase::idle) bench_arm(s, b, now);
             bench_tick(s, b);
             limit_tick(limiter_sampler);
+            // unit_threshold's request from the title screen, before sMhUnit
+            // exists, and its drift check (research mode does this with each
+            // window; player mode has none, so it waited until a setting changed).
+            unit_lines::apply();
             if (now_ms() >= status_due) {
                 status_event();
                 if (auto e = modules.changed_event(now_ms()); !e.empty()) event_log.write(e);
