@@ -20,12 +20,10 @@ enum Toggle : unsigned {
                               // game's two callers of GetServerRealTime; server_time.hpp)
     inline_rounds = 64U,      // job rounds whose jobs take less than control.ini inline_us in total
                               // run on the game thread alone, learned per call site (job_timing.hpp)
-    spin_workers = 128U,      // job threads spin for control.ini spin_us after a round and take the
-                              // next round's places without being woken (worker_spin.hpp)
+    // 128: spin_workers, rejected (al-13) and removed in v0.16.0
     unit_threshold = 256U,    // sMhUnit's line threshold (run alone or on the job threads) set to
                               // control.ini unit_us instead of the game's 60 us (unit_lines.hpp)
-    cache_steam_running = 512U,  // SteamAPI_IsSteamRunning answered once per time_ms at its two
-                                 // per-frame call sites (al.patch; steam_running.hpp)
+    // 512: cache_steam_running, no measurable gain (al-15, al-22), removed in v0.16.0
     smaller_cpu = 1024U,      // research: the process confined to control.ini cpu_count logical
                               // processors and job rounds to as many threads (cpu_limit.hpp)
     cache_ccd = 2048U,        // the process confined to the processors sharing the largest L3 (the
@@ -39,7 +37,7 @@ enum Toggle : unsigned {
     parallel_contacts = 32768U,  // sCollision's contact and setup passes as job rounds, the flags the
                                  // engine sets with more than one job thread (contacts.hpp)
 };
-inline constexpr unsigned toggle_mask = 65535U;  // every defined bit
+inline constexpr unsigned toggle_mask = 65535U & ~(128U | 512U);  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }

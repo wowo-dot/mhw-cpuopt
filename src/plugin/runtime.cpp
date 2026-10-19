@@ -107,8 +107,6 @@ struct State {
     unsigned inline_us{25};               // toggle inline_rounds: threshold
     unsigned time_ms{1000};               // toggle reuse_server_time: how long a read is reused
     bool prim{}, server{};                // the prim_stores change / the server_time detours are in
-    unsigned spin_us{300};                // toggle spin_workers: spin window
-    bool spin{};                          // the worker_spin change is in
     unsigned unit_us{40};                 // toggle unit_threshold: the threshold to set (al-15: 40-50 best)
     unsigned cpu_count{12};               // toggle smaller_cpu: logical processors kept
     cpu_limit::Ccd ccd;                   // toggle cache_ccd: the largest L3's processors
@@ -119,7 +117,6 @@ struct State {
     unsigned follow{};                    // follow mode: the followed class's vtable RVA (0 off)
     unsigned follow_us{20};               // follow mode: the gap between samples
     bool wc_scan{};                       // toggle sample_profile: the write-combined scan
-    bool running{};                       // the steam_running change is in
     bool prim_buffer{};                   // the prim ring's memory has been reported
     unsigned window_ms{5000};
     std::uint64_t seq{}, updates{}, presents{};
@@ -191,9 +188,7 @@ void write_window(State& s) {
     job_timing::append_order(out);
     job_timing::append_inline(out, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)));
     server_time::append(out);
-    worker_spin::append(out);
     unit_lines::append(out);
-    steam_running::append(out);
     cpu_limit::append(out);
     frame_budget::append(out);
     frame_cap::append(out);
@@ -295,12 +290,10 @@ void apply_control(State& s, const Control& c, bool initial, std::string out) {
     if (c.order_us) s.order_us = *c.order_us;
     if (c.inline_us) s.inline_us = *c.inline_us;
     if (c.time_ms) s.time_ms = *c.time_ms;
-    if (c.spin_us) s.spin_us = *c.spin_us;
     if (c.unit_us) s.unit_us = *c.unit_us;
     unit_lines::request(on(unit_threshold) ? s.unit_us : 0);
-    // One detour serves job timing, job order, inline rounds and the spinning
-    // job threads' round announcements.
-    const bool need = on(time_jobs) || on(order_jobs) || on(inline_rounds) || on(spin_workers) || on(budget);
+    // One detour serves job timing, job order, inline rounds and the frame budget's round clock.
+    const bool need = on(time_jobs) || on(order_jobs) || on(inline_rounds) || on(budget);
     if (need != s.hook && host.job_hook) {
         const char* why = "";
         const bool ok = host.job_hook(need, &why);
@@ -334,27 +327,6 @@ void apply_control(State& s, const Control& c, bool initial, std::string out) {
     }
     if (on(reuse_server_time) && s.server) server_time::set_active(true, s.time_ms);
     mark(reuse_server_time, on(reuse_server_time) && !s.server);
-    // Spinning job threads: the wait is ready before the change sends threads
-    // to it, and the change is out before the wait stops spinning.
-    const bool spin = on(spin_workers) && s.hook;
-    if (spin) worker_spin::set_active(true, s.spin_us);
-    if (spin != s.spin && host.spin_patch) {
-        const char* why = "";
-        const bool ok = host.spin_patch(spin, &why);
-        s.spin = spin ? ok : !ok;
-        switched("spin_patch", s.spin, why);
-    }
-    if (!s.spin) worker_spin::set_active(false, s.spin_us);
-    // IsSteamRunning: the cache is ready before the change sends calls to it
-    // (it passes every call through while inactive).
-    if (!on(cache_steam_running)) steam_running::set_active(false, s.time_ms);
-    if (on(cache_steam_running) != s.running && host.running_patch) {
-        const char* why = "";
-        const bool ok = host.running_patch(on(cache_steam_running), &why);
-        s.running = on(cache_steam_running) ? ok : !ok;
-        switched("running_patch", s.running, why);
-    }
-    if (on(cache_steam_running) && s.running) steam_running::set_active(true, s.time_ms);
     json::key(out, "t_ms");
     json::fixed(out, now_ms(), 3);
     json::key(out, "toggles");
@@ -375,8 +347,6 @@ void apply_control(State& s, const Control& c, bool initial, std::string out) {
     json::number(out, std::uint64_t(s.inline_us));
     json::key(out, "time_ms");
     json::number(out, std::uint64_t(s.time_ms));
-    json::key(out, "spin_us");
-    json::number(out, std::uint64_t(s.spin_us));
     json::key(out, "unit_us");
     json::number(out, std::uint64_t(s.unit_us));
     json::key(out, "cpu_count");
@@ -441,15 +411,12 @@ void log_discoveries(const State& s) {
         }
         event_log.write(prim_stores::discovery_event(host.prim, now_ms(), host.scanner));
         event_log.write(server_time::discovery_event(host.server, now_ms(), host.scanner));
-        event_log.write(worker_spin::discovery_event(host.spin, now_ms(), host.scanner));
         event_log.write(cpu_limit::ccd_event(s.ccd, now_ms()));
         event_log.write(frame_budget::discovery_event(host.budget, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
                                                       host.scanner));
         event_log.write(unit_lines::discovery_event(host.units, now_ms(), host.scanner));
         event_log.write(contacts::discovery_event(host.contacts, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
                                                   host.scanner));
-        event_log.write(steam_running::discovery_event(host.running, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
-                                                       host.scanner));
 }
 
 DWORD WINAPI worker(void* parameter) noexcept {

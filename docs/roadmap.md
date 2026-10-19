@@ -102,16 +102,15 @@ Both measuring switches stay on in both halves of every A/B.
    CPU-limited Intel, an older Intel without E-cores, a mid-range card
    capped at 60, a Radeon card, Steam Deck or Linux. Then the public
    release (fresh repo history, noreply author, licence check).
-   - Code cleanup before the release (noted 2026-10-18, not started): no
+   - Code cleanup before the release (noted 2026-10-18; items 1 and 2
+     done in v0.16.0): no
      hooking library is used (al.hooks for the 5 detours, al.patch for the
      code changes, direct writes only to engine objects outside the exe),
      but the research phase left work behind:
-     1. spin_workers (128) and cache_steam_running (512) were rejected, yet
-        every player's game searches their signatures and allocates their
-        two jump stubs at PRE_MAIN; remove both switches with their stubs
-        and signatures.
-     2. `make_stub` lives in `worker_spin.cpp` and steam_running borrows it;
-        it goes with item 1, or into its own file if a stub is still needed.
+     1. Done (v0.16.0): spin_workers (128) and cache_steam_running (512)
+        removed with their signatures and jump stubs; nothing in cpuopt
+        writes code of its own any more.
+     2. Done with item 1: `make_stub` went with them.
      3. Other rejected or research-only switches still compiled in
         (job_thread_cap, inline_rounds, job order mode 3, smaller_cpu):
         keep the research ones, skip their searches in player mode, drop

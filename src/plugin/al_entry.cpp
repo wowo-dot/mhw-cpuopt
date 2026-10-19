@@ -23,9 +23,7 @@
 #include "runtime.hpp"
 #include "sampler.hpp"
 #include "server_time.hpp"
-#include "steam_running.hpp"
 #include "unit_lines.hpp"
-#include "worker_spin.hpp"
 #include <atomic>
 #include <cstddef>
 #include <cstring>
@@ -52,11 +50,6 @@ const al_patches_t* patches{};
 std::uint32_t prim_handle{};                 // al.patch handle, 0 until first switched on
 std::uint32_t query_hook{}, date_hook{};     // al.hooks handles, 0 until first switched on
 std::uintptr_t prim_target{}, query_target{}, date_target{};  // found at PRE_MAIN
-std::uintptr_t spin_target{};                // the job threads' wait call (match + 7), found at PRE_MAIN
-std::uint32_t spin_handle{};                 // al.patch handle, 0 until first switched on
-std::uintptr_t spin_stub{};                  // its jump stub, made at PRE_MAIN
-cpuopt::steam_running::Discovery running{};  // the IsSteamRunning sites and stub, found at PRE_MAIN
-std::uint32_t running_handles[cpuopt::steam_running::site_count]{};  // al.patch handles, 0 until first switched on
 cpuopt::frame_budget::Discovery budget{};    // the limiter's function and cD3DRender::present
 std::uint32_t budget_handles[2]{};           // al.hooks handles, 0 until first switched on
 SRWLOCK switch_lock = SRWLOCK_INIT;
@@ -137,110 +130,6 @@ bool prim_patch(bool on, const char** reason) noexcept {
     } else {
         ok = patches->set_enabled(self, prim_handle, on ? 1 : 0) == AL_OK;
         *reason = ok ? (on ? "change enabled" : "change disabled") : "set_enabled failed";
-    }
-    ReleaseSRWLockExclusive(&switch_lock);
-    return ok;
-}
-
-// The job threads' wait (worker_spin.hpp): applied the first time the
-// switch is on, through a jump stub within 2 GB of the exe, then switched
-// with set_enabled.
-bool spin_patch(bool on, const char** reason) noexcept {
-    AcquireSRWLockExclusive(&switch_lock);
-    bool ok = true;
-    if (!patches) {
-        ok = false;
-        *reason = "no al.patch";
-    } else if (!spin_target) {
-        ok = false;
-        *reason = "job threads' wait not found";
-    } else if (!spin_handle) {
-        if (on) {
-            const auto stub = spin_stub;
-            std::array<std::uint8_t, cpuopt::worker_spin::patch_length> expected{}, replacement{};
-            std::memcpy(expected.data(), reinterpret_cast<const void*>(spin_target), expected.size());
-            if (!stub || !cpuopt::worker_spin::build_replacement(spin_target, stub, replacement)) {
-                ok = false;
-                *reason = stub ? "jump stub out of reach" : "no room for a jump stub within 2 GB at start-up";
-            } else {
-                static const std::string pattern(cpuopt::worker_spin::signature);
-                al_patch_t p{};
-                p.size = sizeof(p);
-                p.kind = AL_PATCH_CODE;
-                p.name = "job threads' wait: spin before sleeping (cpuopt spin_workers)";
-                p.pattern = pattern.c_str();
-                p.offset = static_cast<std::int32_t>(cpuopt::worker_spin::patch_offset);
-                p.length = cpuopt::worker_spin::patch_length;
-                p.address = reinterpret_cast<void*>(spin_target);
-                p.expected = expected.data();
-                p.replacement = replacement.data();
-                spin_handle = patches->apply(self, &p);
-                ok = spin_handle != 0;
-                *reason = ok ? "change applied" : "al.patch refused the change (see the plugin log)";
-            }
-        }
-    } else {
-        ok = patches->set_enabled(self, spin_handle, on ? 1 : 0) == AL_OK;
-        *reason = ok ? (on ? "change enabled" : "change disabled") : "set_enabled failed";
-    }
-    ReleaseSRWLockExclusive(&switch_lock);
-    return ok;
-}
-
-// The IsSteamRunning calls (steam_running.hpp): all three sites or none,
-// through the stub made at PRE_MAIN.
-bool running_patch(bool on, const char** reason) noexcept {
-    AcquireSRWLockExclusive(&switch_lock);
-    bool ok = true;
-    if (!patches) {
-        ok = false;
-        *reason = "no al.patch";
-    } else if (!running.found) {
-        ok = false;
-        *reason = "IsSteamRunning calls not found";
-    } else if (!running_handles[0] && !running_handles[1] && !running_handles[2]) {
-        const auto steam = GetModuleHandleW(L"steam_api64.dll");
-        const auto function = steam ? reinterpret_cast<std::uintptr_t>(GetProcAddress(steam, "SteamAPI_IsSteamRunning")) : 0;
-        if (on && !running.real && !cpuopt::steam_running::resolve(running, function, reason)) {
-            ok = false;
-        } else if (on) {
-            namespace sr = cpuopt::steam_running;
-            static const std::string poll(sr::poll_signature), lobby(sr::lobby_signature), session(sr::session_signature);
-            const std::string* patterns[sr::site_count] = {&poll, &lobby, &session};
-            const unsigned offsets[sr::site_count] = {sr::poll_call, sr::lobby_call, sr::session_call};
-            const char* names[sr::site_count] = {"IsSteamRunning in sub_142209BF0 (cpuopt cache_steam_running)",
-                                                 "IsSteamRunning in sub_142215C00 (cpuopt cache_steam_running)",
-                                                 "IsSteamRunning in sub_1421E0E10 (cpuopt cache_steam_running)"};
-            static std::array<std::uint8_t, sr::call_length> expected[sr::site_count], replacement[sr::site_count];
-            ok = running.stub != 0;
-            for (unsigned i = 0; i < sr::site_count && ok; ++i) {
-                std::memcpy(expected[i].data(), reinterpret_cast<const void*>(running.sites[i]), expected[i].size());
-                ok = cpuopt::steam_running::build_replacement(running.sites[i], running.stub, replacement[i]);
-                if (!ok) break;
-                al_patch_t p{};
-                p.size = sizeof(p);
-                p.kind = AL_PATCH_CODE;
-                p.name = names[i];
-                p.pattern = patterns[i]->c_str();
-                p.offset = static_cast<std::int32_t>(offsets[i]);
-                p.length = cpuopt::steam_running::call_length;
-                p.address = reinterpret_cast<void*>(running.sites[i]);
-                p.expected = expected[i].data();
-                p.replacement = replacement[i].data();
-                running_handles[i] = patches->apply(self, &p);
-                ok = running_handles[i] != 0;
-            }
-            if (!ok)  // all or none
-                for (const auto h : running_handles)
-                    if (h) patches->set_enabled(self, h, 0);
-            *reason = ok ? "changes applied" : running.stub ? "al.patch refused a change (see the plugin log)" : "no jump stub";
-        }
-    } else if (!running_handles[0] || !running_handles[1] || !running_handles[2]) {
-        ok = false;
-        *reason = "a change was refused earlier";
-    } else {
-        for (const auto h : running_handles) ok = ok && patches->set_enabled(self, h, on ? 1 : 0) == AL_OK;
-        *reason = ok ? (on ? "changes enabled" : "changes disabled") : "set_enabled failed";
     }
     ReleaseSRWLockExclusive(&switch_lock);
     return ok;
@@ -429,9 +318,7 @@ void AL_CALL on_phase(al_plugin_t*, al_phase_t phase, const void* data) {
         cpuopt::limiter::set_active(false, 1000);  // the game's own spin for its teardown
         cpuopt::contacts::restore();
         cpuopt::server_time::set_active(false, 0);
-        cpuopt::worker_spin::set_active(false, 0);  // job threads block again for the game's teardown
         cpuopt::unit_lines::restore();
-        cpuopt::steam_running::set_active(false, 0);
         cpuopt::cpu_limit::restore();
         cpuopt::runtime::stop("exiting");
         say(AL_LOG_INFO, "stopped at EXITING");
@@ -540,14 +427,6 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             query_target = query_site[0];
             date_target = date_site[0];
         }
-        std::uintptr_t wait_site[2]{};
-        host.spin = cpuopt::worker_spin::discover(base, wait_site, find(cpuopt::worker_spin::signature, wait_site, 2));
-        if (host.spin.found) {
-            spin_target = wait_site[0] + cpuopt::worker_spin::patch_offset;
-            // The jump stub now, while there is still room near the exe.
-            host.spin.stub = cpuopt::worker_spin::make_stub(spin_target, reinterpret_cast<const void*>(&cpuopt::worker_spin::wait));
-            spin_stub = host.spin.stub;
-        }
         // sMhUnit's line threshold: four signatures, and sMain's global from job_cap.
         {
             std::uintptr_t unused2[2]{};
@@ -577,21 +456,6 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             budget = cpuopt::frame_budget::discover(timing, timing_count, present, present_count);
             host.budget = budget;
         }
-        // IsSteamRunning: its three per-frame calls, and their stub now.
-        {
-            namespace sr = cpuopt::steam_running;
-            std::uintptr_t first[sr::site_count]{}, hits[2]{};
-            unsigned counts[sr::site_count]{};
-            const std::string_view patterns[sr::site_count] = {sr::poll_signature, sr::lobby_signature, sr::session_signature};
-            for (unsigned i = 0; i < sr::site_count; ++i) {
-                counts[i] = find(patterns[i], hits, 2);
-                first[i] = hits[0];
-            }
-            running = sr::discover(first, counts);
-            if (running.found)
-                running.stub = cpuopt::worker_spin::make_stub(running.sites[0], reinterpret_cast<const void*>(&cpuopt::steam_running::is_running));
-            host.running = running;
-        }
 
         std::string reason;
         frame = service<al_frame_t>(AL_FRAME_INTERFACE, AL_FRAME_VERSION);
@@ -601,8 +465,6 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         patches = service<al_patches_t>(AL_PATCH_INTERFACE, AL_PATCH_VERSION);
         host.prim_patch = prim_patch;
         host.server_hooks = server_hooks;
-        host.spin_patch = spin_patch;
-        host.running_patch = running_patch;
         host.budget_hooks = budget_hooks;
         input = service<al_input_t>(AL_INPUT_INTERFACE, AL_INPUT_VERSION);  // now, so AL installs its input layer
         host.hotkey = set_hotkey;

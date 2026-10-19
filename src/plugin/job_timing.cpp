@@ -3,7 +3,6 @@
 #include "frame_budget.hpp"
 #include "log.hpp"
 #include "sampler.hpp"
-#include "worker_spin.hpp"
 #include <windows.h>
 #include <intrin.h>
 #include <algorithm>
@@ -146,7 +145,6 @@ bool threads_created(std::uintptr_t smain) noexcept {
 void execute(ExecuteJob original, std::uintptr_t smain, int mode, std::uintptr_t jobs, std::uint32_t count, std::uintptr_t extra,
              bool alone) {
     if (!alone) {
-        worker_spin::before_round(smain, jobs, count);  // spinning job threads claim their places
         original(smain, mode, jobs, count, extra);
         return;
     }

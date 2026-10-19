@@ -134,9 +134,7 @@ void control() {
     CHECK(parse_control("unit_us=20")->unit_us == 20u);
     CHECK(!parse_control("unit_us=0"));
     CHECK(!parse_control("unit_us=100001"));
-    CHECK(parse_control("spin_us=300")->spin_us == 300u);
-    CHECK(!parse_control("spin_us=9"));
-    CHECK(!parse_control("spin_us=5001"));
+    CHECK(!parse_control("spin_us=300"));  // spin_workers' parameter, removed in v0.16.0
     CHECK(!parse_control("unknown=1"));
     CHECK(!parse_control("toggles"));
     CHECK(parse_control("\xEF\xBB\xBFtoggles=2")->toggles == 2u);  // UTF-8 BOM

@@ -77,8 +77,6 @@ set(CPUOPT_PLUGIN_SOURCES
     src/plugin/server_time.cpp
     src/plugin/server_time.hpp
     src/plugin/spin_probe.cpp
-    src/plugin/steam_running.cpp
-    src/plugin/steam_running.hpp
     src/plugin/spin_probe.hpp
     src/plugin/system_info.cpp
     src/plugin/system_info.hpp
@@ -86,8 +84,6 @@ set(CPUOPT_PLUGIN_SOURCES
     src/plugin/thread_census.hpp
     src/plugin/unit_lines.cpp
     src/plugin/unit_lines.hpp
-    src/plugin/worker_spin.cpp
-    src/plugin/worker_spin.hpp
 )
 
 # An Astera Loader plugin: <game>\AsteraLoader\plugins\cpuopt\cpuopt.dll (an MO2

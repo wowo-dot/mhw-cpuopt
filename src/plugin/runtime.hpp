@@ -4,10 +4,8 @@
 #include "job_cap.hpp"
 #include "prim_stores.hpp"
 #include "server_time.hpp"
-#include "steam_running.hpp"
 #include "unit_lines.hpp"
 #include "contacts.hpp"
-#include "worker_spin.hpp"
 #include "../core/settings.hpp"
 #include <windows.h>
 #include <cstdint>
@@ -31,17 +29,13 @@ struct Host {
     std::string order_site;  // the camera round's call site: "ok" or why not
     prim_stores::Discovery prim;    // sPrimitive's record loop, searched at PRE_MAIN
     server_time::Discovery server;  // the game's two server time calls, searched at PRE_MAIN
-    worker_spin::Discovery spin;    // the job threads' wait, searched at PRE_MAIN
     unit_lines::Discovery units;    // sMhUnit's line threshold, searched at PRE_MAIN
-    steam_running::Discovery running;  // the two IsSteamRunning calls, searched at PRE_MAIN
     contacts::Discovery contacts;      // sCollision's parallel flags, searched at PRE_MAIN
     frame_budget::Discovery budget;    // the limiter's function and cD3DRender::present
     // Put the prim_stores change and the server_time detours in or out;
     // false with the reason when they cannot. Any thread.
     bool (*prim_patch)(bool on, const char** reason) noexcept {};
     bool (*server_hooks)(bool on, const char** reason) noexcept {};
-    bool (*spin_patch)(bool on, const char** reason) noexcept {};
-    bool (*running_patch)(bool on, const char** reason) noexcept {};
     bool (*budget_hooks)(bool on, const char** reason) noexcept {};
     // Player mode: the hotkey for the master switch changed (0: none). Any thread.
     void (*hotkey)(std::uint32_t key) noexcept {};
