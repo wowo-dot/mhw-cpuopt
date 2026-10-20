@@ -5,7 +5,8 @@ Builds nothing: it packs build/bin/Release/cpuopt.dll after checking that
 - the work tree is clean (tracked files) and the DLL was built at HEAD (its
   commit stamp is HEAD's, without "-dirty": reconfigure after committing);
 - no shipped file holds this machine's paths (the repository, the user
-  profile).
+  profile);
+- the DLL imports no function that Wine and Proton lack (WINE_ABSENT).
 
 --tested TAG --dll FILE packs the DLL that ran in game instead (a run
 folder's copy), so the release is byte for byte what was tested: its stamp
@@ -23,6 +24,7 @@ import argparse
 import hashlib
 import os
 import re
+import struct
 import subprocess
 import sys
 import zipfile
@@ -32,6 +34,15 @@ ROOT = Path(__file__).resolve().parent.parent
 DLL = ROOT / 'build' / 'bin' / 'Release' / 'cpuopt.dll'
 OUT = ROOT / 'local' / 'release'
 STAMP = (2026, 1, 1, 0, 0, 0)
+
+# Windows functions Wine 11.0 and Proton 10 do not export (their kernel32 and
+# kernelbase .spec files, 2026-10-20). Wine fills such an import with a stub
+# that ends the process with 0x80000100 when called, so the code looks these
+# up with GetProcAddress instead.
+WINE_ABSENT = {'GetProcessDefaultCpuSets', 'GetThreadSelectedCpuSets',
+               'PssCaptureSnapshot', 'PssDuplicateSnapshot', 'PssFreeSnapshot', 'PssQuerySnapshot',
+               'PssWalkMarkerCreate', 'PssWalkMarkerFree', 'PssWalkMarkerGetPosition',
+               'PssWalkMarkerSeekToBeginning', 'PssWalkMarkerSetPosition', 'PssWalkSnapshot'}
 
 
 def git(*args):
@@ -55,6 +66,42 @@ def private_markers():
             markers.add(form.encode('utf-8').lower())
             markers.add(form.encode('utf-16-le').lower())
     return markers
+
+
+def imported_names(data):
+    """The names of the functions a PE32+ file imports by name (not by ordinal)."""
+    pe = struct.unpack_from('<I', data, 0x3C)[0]
+    if data[pe:pe + 4] != b'PE\0\0':
+        raise ValueError('not a PE file')
+    sections, = struct.unpack_from('<H', data, pe + 6)
+    optional_size, = struct.unpack_from('<H', data, pe + 20)
+    optional = pe + 24
+    if struct.unpack_from('<H', data, optional)[0] != 0x20B:
+        raise ValueError('not a 64-bit PE file')
+    table = [struct.unpack_from('<IIII', data, optional + optional_size + 40 * i + 8) for i in range(sections)]
+
+    def at(rva):
+        for virtual_size, address, raw_size, raw in table:
+            if address <= rva < address + max(virtual_size, raw_size):
+                return raw + rva - address
+        raise ValueError(f'RVA {rva:#x} is in no section')
+
+    names = set()
+    directory, = struct.unpack_from('<I', data, optional + 120)  # data directory 1: imports
+    if not directory:
+        return names
+    descriptor = at(directory)
+    while True:
+        lookup, _, _, dll_name, address_table = struct.unpack_from('<5I', data, descriptor)
+        if not dll_name:
+            return names
+        entry = at(lookup or address_table)
+        while thunk := struct.unpack_from('<Q', data, entry)[0]:
+            if not thunk >> 63:
+                name = at(thunk) + 2  # after the hint
+                names.add(data[name:data.index(b'\0', name)].decode('ascii'))
+            entry += 8
+        descriptor += 20
 
 
 def main():
@@ -85,6 +132,9 @@ def main():
         raise SystemExit(f'the DLL was not built at {stamp}' + ('' if args.tested else ': run cmake -S . -B build, then build'))
     if (stamp + '-dirty').encode() in data:
         raise SystemExit('the DLL was built from a dirty tree')
+    absent = sorted(imported_names(data) & WINE_ABSENT)
+    if absent:
+        raise SystemExit(f'the DLL imports {", ".join(absent)}: Wine and Proton lack it, look it up at run time')
     head = stamp
 
     files = {'cpuopt.dll': data, 'README.md': (ROOT / 'README.md').read_bytes(),

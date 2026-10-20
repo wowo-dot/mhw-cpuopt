@@ -87,9 +87,10 @@ Reflex on, a shorter CPU frame most likely means lower input latency too.
 The Mods page's "Limited by" line shows live what holds your frame rate,
 and the benchmark (below) measures both.
 
-**Status:** experimental, 0.16.0. Tested with MHW 421810, the
-final version, on Windows. On Linux with Proton the first try did not
-reach the title screen; that is being looked into.
+**Status:** experimental, 0.16.1. Tested with MHW 421810, the
+final version, on Windows. On Linux with Proton, 0.16.0 and earlier
+closed the game during start-up; 0.16.1 fixes the cause but is not yet
+tested there.
 
 ## What it changes
 
@@ -122,8 +123,8 @@ You need:
 
 - Monster Hunter: World on Steam, version 421810 (the current one).
 - [Astera Loader](https://github.com/wowo-dot/AsteraLoader) 0.2.2 or newer
-  (on Linux with Proton, 0.2.3 or newer for the loader itself; cpuopt's
-  first try there did not reach the title screen, see Status above).
+  (on Linux with Proton, 0.2.3 or newer for the loader itself, and cpuopt
+  0.16.1 or newer, see Status above).
 - Recommended: [CMFM](https://github.com/wowo-dot/CMFM) 0.1.1 or newer, the
   in-game Mods menu (0.1.0's page takes no input when it is the only mod
   page). Without it, settings are in `cpuopt.ini`.

@@ -128,6 +128,15 @@ Both measuring switches stay on in both halves of every A/B.
         says what ran (the Proton tester's log on 2026-10-18 stopped before
         its start record).
      Player-visible switches stay as they are.
+   - Proton (found 2026-10-20 from the Proton tester's 0.16.0 logs; fixed
+     in 0.16.1, not yet tested there): both of the tester's runs ended with
+     `0x80000100`, Wine's `EXCEPTION_WINE_STUB`. cpuopt imported
+     `GetProcessDefaultCpuSets`, which neither Wine 11.0 nor Proton 10
+     exports (a commented-out stub in their `kernelbase.spec`), and the
+     player worker calls it in its start record right after init. 0.16.1
+     looks it up with `GetProcAddress` (`null` in the record when it is
+     missing), and `tools/package.py` refuses a DLL that imports it or any
+     other function on its `WINE_ABSENT` list.
    - For Astera Loader (the user's project): `AL_PATCH_CALL` only takes
      E8/E9 rel32 calls; accepting FF 15 (call through the import table, 6
      bytes) would remove the need for plugins' own stubs at Steam and

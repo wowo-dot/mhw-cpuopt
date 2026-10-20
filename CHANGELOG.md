@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.16.1: Linux start-up fix
+
+- Fixed: on Linux with Proton (or Wine), the game closed during start-up
+  with cpuopt installed, before the title screen. cpuopt's first record in
+  its log asked Windows for the game's default CPU sets through a function
+  that Wine and Proton do not have, and Wine ends the game at the first
+  call to a missing function. cpuopt now checks that the function exists
+  before calling it. Windows is not affected.
+
+Known:
+
+- Not yet tested on Linux with Proton.
+
 ## 0.16.0: the first public release
 
 For Monster Hunter: World 421810 (the final version) on Windows, with Astera

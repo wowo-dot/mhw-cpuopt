@@ -113,13 +113,24 @@ void cpu_sets(std::string& out) {
     out += ']';
     json::key(out, "cpu_set_columns");
     out += "[\"group\",\"logical\",\"core\",\"llc\",\"efficiency\",\"parked\",\"allocated\",\"allocated_to_process\"]";
-    // Default CPU sets of the process (empty: no restriction set this way).
-    ULONG count{};
-    GetProcessDefaultCpuSets(process, nullptr, 0, &count);
-    std::vector<ULONG> defaults(count);
+    // Default CPU sets of the process (empty: no restriction set this way;
+    // null: no such function). Looked up, not imported: Wine and Proton
+    // export no GetProcessDefaultCpuSets, and Wine ends the process with
+    // 0x80000100 at the first call through an import it could not resolve.
+    using DefaultCpuSets = BOOL(WINAPI*)(HANDLE, PULONG, ULONG, PULONG);
+    const auto kernel32 = GetModuleHandleW(L"kernel32.dll");
+    const auto get_defaults =
+        kernel32 ? reinterpret_cast<DefaultCpuSets>(GetProcAddress(kernel32, "GetProcessDefaultCpuSets")) : nullptr;
     json::key(out, "process_default_cpu_sets");
+    if (!get_defaults) {
+        out += "null";
+        return;
+    }
+    ULONG count{};
+    get_defaults(process, nullptr, 0, &count);
+    std::vector<ULONG> defaults(count);
     out += '[';
-    if (count && GetProcessDefaultCpuSets(process, defaults.data(), count, &count)) {
+    if (count && get_defaults(process, defaults.data(), count, &count)) {
         for (ULONG i = 0; i < count; ++i) {
             const auto it = std::find_if(ids.begin(), ids.end(), [&](const auto& p) { return p.first == defaults[i]; });
             if (i) out += ',';
