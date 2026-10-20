@@ -93,8 +93,8 @@ Both measuring switches stay on in both halves of every A/B.
    line of help per optimization, everything on/off with a hotkey, a live
    status line, the experimental 300 fps cap removal) and a small log.
 5. **Release (done: v0.16.0 released on GitHub on 2026-10-20 after al-43,
-   the release candidate's 48-minute session; the repo is public; Nexus later,
-   with a CMFM update):** the player guide, tester
+   the release candidate's 48-minute session; the repo is public; on Nexus
+   Mods the same day, mod 8874, with the same zip):** the player guide, tester
    notes, the Mods page's benchmark (8 off/on pairs, a report testers send
    back) and `tools/package.py` are done. Two testers so far, both Intel and
    GPU-limited (engine notes, "Closed beta, first results"); a 5800X with

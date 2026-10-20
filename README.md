@@ -128,8 +128,11 @@ You need:
   in-game Mods menu (0.1.0's page takes no input when it is the only mod
   page). Without it, settings are in `cpuopt.ini`.
 
-Then put `cpuopt.dll` here, or install the zip as a mod in Mod Organizer 2
-(it has this layout):
+Download the zip from the
+[GitHub releases](https://github.com/wowo-dot/mhw-cpuopt/releases) or from
+[Nexus Mods](https://www.nexusmods.com/monsterhunterworld/mods/8874) (the
+same archive). Then put `cpuopt.dll` here, or install the zip as a mod in
+Mod Organizer 2 (it has this layout):
 
 ```
 <game folder>\AsteraLoader\plugins\cpuopt\cpuopt.dll
