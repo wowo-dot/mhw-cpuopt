@@ -833,6 +833,63 @@ DLSS mod with Streamline). No crash or conflict was reported.
   their fps cannot rise. The README now says who gains fps; a live "Limited
   by" line on the Mods page is proposed (roadmap).
 
+### Parallel hit detection: the race, and the contact guard (2026-10-21, v0.17.0)
+
+A player on cpuopt 0.16.x (Intel 12th-gen laptop, P and E cores) crashed
+twice in the Arch-Tempered Velkhana fight at the same instruction:
+`subss xmm3, [r12+240h]` at exe+0x12D61E3 in `sub_1412D5E90`, r12 = 0, on
+the game thread. With parallel_contacts off the crashes stopped (the DLSS
+project's crash analysis, 2026-10-20). Checked in this project's clean
+database:
+
+- **The race the crash came from.** `sub_1412D5370` writes the hit records of
+  the object that was hit (112 bytes each at +0x17F0, at most 128, the count
+  at +0x4FF0, a critical section at +0x5750). It takes a slot with
+  `lock xadd` on the count, makes two virtual calls, then fills the record
+  without a lock, the partner pointer (+0x40) among the last fields. Only
+  when the list is full does it take the critical section, and then it
+  compacts the list in place, copying records another thread may still be
+  writing (a null or stale +0x40) and zeroing the tail. The reader
+  (`sub_1412D5E90`, `sub_1412DEF10`) checks most fields but loads +0x40 and
+  reads +0x240 from it without a check. With one thread (the shipped game)
+  none of this can happen.
+- **The whole family is unsafe.** In the parallel pass,
+  `executeTargetActiveNodeContact` runs one job per active node on all job
+  threads; the geometry (BVH queries, `cCollisionNodeObject::hitCheck`)
+  takes a stack per thread and is built for it, but `hitCheckCallback` calls
+  the active node's callback with code 0 for every contact and then the hit
+  node's own callback (node +0x80 / +0xD0, code 1, any object's reaction),
+  and the job calls the active node's callback with codes 4 and 2. The four
+  callbacks `enumContact` registers all write shared state without a lock
+  for code 0: the hit callback `sub_1412D6D20` (the records above and the
+  attack history at target +0xA40); `sub_142396960` (a check-then-write
+  nearest contact); `sub_1425109C0` (`array[count++]`, clamped from 9 to 7
+  after the store, slot 8 being the count itself: a second thread can read a
+  pointer as the count and write out of bounds); `sub_1426A16C0`,
+  uGeometry2Collider (an allocation appended to a shared `MtArray`, Reserve
+  and ++ without a lock). Only enumContact and `sub_142489260` (a one-off
+  check on its caller's thread) create active nodes, but enumContact_0 is
+  also referenced from data.
+- **Why the 9950X3D never crashed:** the overflow has to land while another
+  thread is between its slot and its +0x40 store; slow efficiency cores
+  widen that window.
+
+**The contact guard (contact_guard.hpp, v0.17.0):** one recursive lock
+(SRW, a per-thread depth) around `hitCheckCallback` whole (codes 0 and 1),
+the four known callbacks (codes 4 and 2), and any job whose callback is none
+of the four (whole job, counted); the geometry stays parallel. The lock is
+taken only while the contact flag is set: contacts.cpp switches it on before
+it sets the flag and off after it clears it, at BEGIN on the game thread.
+The flag is set only once all seven hooks are active (fail closed: "no
+guard"). A counting detour on the record writer gives the overflows; in
+research mode the guard also times waits and holds and counts same-object
+overlaps (two threads in the guarded code for one object: the races it
+prevents). plugin_tests: four threads never meet inside the guarded fakes
+while locking (up to four do without it), nested calls do not lock twice,
+unknown jobs run serialised. Not measured in game yet: the lock's cost
+against al-23's 140 us a frame, and whether the overlaps and overflows show
+on the 9950X3D.
+
 ### The GPU side, first look (al-34 to al-39, v0.14.4 to v0.14.6; 2026-10-17)
 
 Setup: the RTX 5090's clock locked at 1200 MHz by the user (`nvidia-smi

@@ -116,6 +116,7 @@ struct State {
     unsigned max_fps{1000};               // toggle uncap: the cap to set
     unsigned margin_us{1000};             // toggle sleep_limiter: the spin left before the deadline (al-22)
     unsigned contacts_mode{1};            // toggle parallel_contacts: bit 0 contact pass, bit 1 setup pass (al-23: 1)
+    bool guard{}, guard_tried{};          // the contact guard's detours are in / were tried
     unsigned follow{};                    // follow mode: the followed class's vtable RVA (0 off)
     unsigned follow_us{20};               // follow mode: the gap between samples
     bool wc_scan{};                       // toggle sample_profile: the write-combined scan
@@ -196,6 +197,7 @@ void write_window(State& s) {
     frame_cap::append(out);
     limiter::append(out);
     contacts::append(out);
+    contact_guard::append(out);
     json::key(out, "prim_stores");
     out += s.prim ? "true" : "false";
     if (s.poller) append_poller(out, frame_clock::take(), ms);
@@ -261,7 +263,18 @@ void apply_control(State& s, const Control& c, bool initial, std::string out) {
     if (c.max_fps) s.max_fps = *c.max_fps;
     if (c.margin_us) s.margin_us = *c.margin_us;
     if (c.contacts) s.contacts_mode = *c.contacts;
-    contacts::request(on(parallel_contacts) ? s.contacts_mode : 0);  // applied on the game thread at the next frame
+    // Parallel hit detection: the contact guard's detours go in first, once
+    // (they stay, passing through while the flag is off); contacts.cpp sets
+    // the engine's flag only while they are active (contact_guard::ready).
+    if (on(parallel_contacts) && !s.guard_tried && host.guard_hooks) {
+        const char* why = "";
+        s.guard = host.guard_hooks(&why);
+        s.guard_tried = true;
+        switched("guard_hooks", s.guard, why);
+    }
+    contact_guard::set_detail(!s.player);
+    contacts::request(on(parallel_contacts) && s.guard ? s.contacts_mode : 0);  // applied on the game thread at the next frame
+    mark(parallel_contacts, on(parallel_contacts) && !s.guard);
     if (c.follow) s.follow = *c.follow;
     if (c.follow_us) s.follow_us = *c.follow_us;
     sampler::set_follow_gap(s.follow_us);
@@ -419,6 +432,8 @@ void log_discoveries(const State& s) {
         event_log.write(unit_lines::discovery_event(host.units, now_ms(), host.scanner));
         event_log.write(contacts::discovery_event(host.contacts, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
                                                   host.scanner));
+        event_log.write(contact_guard::discovery_event(host.guard, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
+                                                       host.scanner));
 }
 
 DWORD WINAPI worker(void* parameter) noexcept {
@@ -598,6 +613,7 @@ void status_event() {
     json::number(out, std::uint64_t(failed.load()));
     unit_lines::append(out);
     contacts::append(out);
+    contact_guard::append(out);
     limiter::append(out);
     frame_cap::append(out);
     cpu_limit::append(out);

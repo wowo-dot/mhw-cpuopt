@@ -24,6 +24,15 @@ namespace cpuopt::contacts {
 // way. Both paths are the engine's own; the BVH queries they make take a
 // stack per job thread (sub_1425B8CD0).
 //
+// The engine's parallel contact pass was never run by the shipped game, and
+// its callbacks are not safe on several threads (crash on hybrid Intel CPUs,
+// 2026-10-20; contact_guard.hpp has the audit). From v0.17.0 the contact flag
+// is set only while contact_guard's hooks are active (ready()), and the
+// guard's lock is switched on before the flag is set and off after it is
+// cleared, both here at BEGIN; without the guard the state is "no guard" and
+// the flag stays 0. The setup pass (bit 1) is not covered by the guard:
+// research only.
+//
 // The switch sets the flags chosen by control.ini contacts (bit 0 the
 // contact pass, bit 1 the setup pass; 3, both, is what the engine would set)
 // at al.frame BEGIN on the game thread, where no collision runs, after

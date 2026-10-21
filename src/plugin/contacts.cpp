@@ -1,13 +1,14 @@
 #include "contacts.hpp"
 #include "../core/json.hpp"
+#include "contact_guard.hpp"
 #include <windows.h>
 #include <atomic>
 #include <cstring>
 
 namespace cpuopt::contacts {
 namespace {
-enum State : int { no_target, waiting, off, applied, engine, layout_mismatch, restored };
-constexpr const char* state_names[] = {"no target", "waiting", "off", "applied", "engine's own", "layout mismatch", "restored"};
+enum State : int { no_target, waiting, off, applied, engine, layout_mismatch, restored, no_guard };
+constexpr const char* state_names[] = {"no target", "waiting", "off", "applied", "engine's own", "layout mismatch", "restored", "no guard"};
 std::atomic<std::uintptr_t> global{}, vtable{};
 std::atomic<int> state{no_target};
 std::atomic<unsigned> requested{};
@@ -73,6 +74,10 @@ bool locate(std::uintptr_t (&flags)[2], bool& mismatch) noexcept {
 }
 
 void apply(unsigned want) noexcept {
+    // The contact pass runs the engine's callbacks on the job threads: only
+    // with the contact guard's lock ready (contact_guard.hpp), else not at all.
+    const bool unguarded = (want & contact_pass) && !contact_guard::ready();
+    if (unguarded) want &= ~contact_pass;
     std::uintptr_t flags[2]{};
     bool mismatch{};
     if (!locate(flags, mismatch)) {
@@ -96,6 +101,7 @@ void apply(unsigned want) noexcept {
         if (written_at[i] && written_at[i] != flags[i]) written_at[i] = 0;  // another sCollision: the old one is gone
         if (want & (1U << i)) {
             if (values[i] == 0) {  // set, or set again after the engine's setup cleared it
+                if (i == 0) contact_guard::set_locking(true);  // the lock before the flag
                 if (!write_u8(flags[i], 1)) {
                     undo();
                     state.store(layout_mismatch);
@@ -113,7 +119,10 @@ void apply(unsigned want) noexcept {
         }
         seen[i].store(values[i]);
     }
-    state.store(!want ? off : ours ? applied : engines ? engine : off);
+    // Locking while the contact flag is set, ours or the engine's; off after
+    // it was cleared (here, at BEGIN: no collision runs now).
+    contact_guard::set_locking(values[0] == 1);
+    state.store(unguarded && !(want & setup_pass) ? no_guard : !want ? off : ours ? applied : engines ? engine : off);
 }
 }  // namespace
 

@@ -13,6 +13,7 @@
 #include "../src/plugin/frame_budget.hpp"
 #include "../src/plugin/frame_cap.hpp"
 #include "../src/plugin/limiter.hpp"
+#include "../src/plugin/contact_guard.hpp"
 #include "../src/plugin/contacts.hpp"
 #include "../src/plugin/frame_clock.hpp"
 #include "../src/plugin/image_scan.hpp"
@@ -34,6 +35,7 @@
 #include <cstring>
 #include <ctime>
 #include <memory>
+#include <thread>
 #include <random>
 #include <sstream>
 #include <string>
@@ -841,6 +843,163 @@ void unit_lines_test() {
     fake_unit_smain = 0;
 }
 
+// contact_guard: the contact pass's callbacks one at a time while locking,
+// nested calls passing, jobs with an unknown callback whole under the lock,
+// the record writer's overflow count, same-object overlaps, and nothing at
+// all while not locking.
+namespace guard_test {
+using Fn10 = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t,
+                                std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
+using Job = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t);
+std::atomic<int> inside{}, worst{};
+std::atomic<bool> nest{};
+volatile std::uint64_t spin_sink{};
+void busy() {
+    for (int i = 0; i < 300; ++i) spin_sink = spin_sink * 31 + static_cast<std::uint64_t>(i);
+}
+void enter() {
+    const int now = inside.fetch_add(1) + 1;
+    int seen = worst.load();
+    while (now > seen && !worst.compare_exchange_weak(seen, now)) {}
+    busy();
+    inside.fetch_sub(1);
+}
+std::uintptr_t fake_hit(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t,
+                        std::uintptr_t, std::uintptr_t, std::uintptr_t) {
+    enter();
+    return 7;
+}
+std::uintptr_t fake_hit_check(std::uintptr_t a1, std::uintptr_t, std::uintptr_t a3, std::uintptr_t a4, std::uintptr_t, std::uintptr_t,
+                              std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t) {
+    enter();
+    // Like the real one: the active node's callback from inside (nested: no second lock).
+    if (nest.load()) return reinterpret_cast<Fn10>(cpuopt::contact_guard::detour(cpuopt::contact_guard::hit))(a1, 0, a3, a4, 0, 0, 0, 0, 0, 0);
+    return 5;
+}
+HANDLE held_event{}, release_event{};
+std::uintptr_t fake_hit_check_waits(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t,
+                                    std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t) {
+    SetEvent(held_event);
+    WaitForSingleObject(release_event, 5000);
+    return 0;
+}
+std::uintptr_t fake_job(std::uintptr_t, std::uintptr_t) {
+    enter();
+    return 3;
+}
+std::uintptr_t fake_records(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t,
+                            std::uintptr_t, std::uintptr_t, std::uintptr_t) {
+    return 1;
+}
+// Objects the detours read: a node with its owner at +0x80, an active node
+// info with its context and callback, the pointer to it hitCheckCallback gets.
+std::uintptr_t node[32]{}, info[8]{}, info_ref{}, other_info[8]{}, other_ref{};
+std::uintptr_t known_callback_marker[2]{}, unknown_callback_marker[2]{};
+}  // namespace guard_test
+
+void contact_guard_test() {
+    namespace cg = cpuopt::contact_guard;
+    using namespace guard_test;
+    *cg::next(cg::hit_check) = reinterpret_cast<void*>(&fake_hit_check);
+    *cg::next(cg::hit) = reinterpret_cast<void*>(&fake_hit);
+    *cg::next(cg::job) = reinterpret_cast<void*>(&fake_job);
+    *cg::next(cg::records) = reinterpret_cast<void*>(&fake_records);
+    const auto hit_check = reinterpret_cast<Fn10>(cg::detour(cg::hit_check));
+    const auto hit = reinterpret_cast<Fn10>(cg::detour(cg::hit));
+    const auto job = reinterpret_cast<Job>(cg::detour(cg::job));
+    const auto records = reinterpret_cast<Fn10>(cg::detour(cg::records));
+    // The known callbacks: the hit callback's site is our marker.
+    cg::Discovery d;
+    d.found = true;
+    d.sites[cg::hit] = reinterpret_cast<std::uintptr_t>(&known_callback_marker);
+    cg::set_target(d);
+    node[cg::node_owner / 8] = 0x5000;
+    info[cg::info_context / 8] = 0x6000;
+    info[cg::info_callback / 8] = reinterpret_cast<std::uintptr_t>(&known_callback_marker);
+    info_ref = reinterpret_cast<std::uintptr_t>(&info);
+    other_info[cg::info_context / 8] = 0x7000;
+    other_info[cg::info_callback / 8] = reinterpret_cast<std::uintptr_t>(&unknown_callback_marker);
+    other_ref = reinterpret_cast<std::uintptr_t>(&other_info);
+    const auto n = reinterpret_cast<std::uintptr_t>(&node);
+    const auto hammer = [&](int rounds) {
+        std::atomic<bool> go{};
+        std::vector<std::thread> threads;
+        for (int t = 0; t < 4; ++t)
+            threads.emplace_back([&, t] {
+                while (!go.load()) {}
+                for (int i = 0; i < rounds; ++i) {
+                    if ((i + t) % 3 == 0) hit_check(0, 0, n, 0, 0, 0, reinterpret_cast<std::uintptr_t>(&info_ref), 0, 0, 0);
+                    else if ((i + t) % 3 == 1) hit(0x6000, 4, 0, n, 0, 0, 0, 0, 0, 0);
+                    else job(0, reinterpret_cast<std::uintptr_t>(&other_info));
+                }
+            });
+        go.store(true);
+        for (auto& th : threads) th.join();
+    };
+    const auto field = [](const std::string& out, const char* key) {
+        return number_after(out, key);
+    };
+    // Not locking: everything passes through, nothing counted, threads overlap.
+    std::string drain = "{";
+    cg::append(drain);
+    cg::set_locking(false);
+    worst.store(0);
+    hammer(3000);
+    std::string out = "{";
+    cg::append(out);
+    std::printf("contact guard, not locking: most callbacks at once %d\n", worst.load());
+    CHECK(worst.load() > 1 && field(out, "acquired") == 0);
+    // Locking: never two at once, nested calls pass, unknown jobs whole under the lock.
+    cg::set_locking(true);
+    nest.store(true);
+    worst.store(0);
+    hammer(3000);
+    nest.store(false);
+    out = "{";
+    cg::append(out);
+    std::printf("contact guard, locking: most at once %d; %s\n", worst.load(), out.c_str() + 1);
+    CHECK(worst.load() == 1);
+    CHECK(field(out, "unknown_jobs") == 4000 && field(out, "acquired") == 12000 && field(out, "contended") > 0);
+    CHECK(out.find("\"unknown_rva\":") != std::string::npos);
+    // A job with a known callback runs without the lock (its callbacks take it).
+    CHECK(job(0, reinterpret_cast<std::uintptr_t>(&info)) == 3);
+    out = "{";
+    cg::append(out);
+    CHECK(field(out, "acquired") == 0 && field(out, "unknown_jobs") == 0);
+    // The record writer: counts calls and a full list.
+    std::vector<std::uint8_t> target(cg::record_count + 8);
+    *reinterpret_cast<std::uint32_t*>(target.data() + cg::record_count) = 130;
+    CHECK(records(reinterpret_cast<std::uintptr_t>(target.data()), 0, 0, 0, 0, 0, 0, 0, 0, 0) == 1);
+    *reinterpret_cast<std::uint32_t*>(target.data() + cg::record_count) = 12;
+    records(reinterpret_cast<std::uintptr_t>(target.data()), 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    out = "{";
+    cg::append(out);
+    CHECK(field(out, "overflows") == 1 && field(out, "fullest") == 130 && out.find("\"records\":2") != std::string::npos);
+    // Detail: a second thread for the same object while the first holds the
+    // lock is an overlap; the wait and hold times show.
+    cg::set_detail(true);
+    *cg::next(cg::hit_check) = reinterpret_cast<void*>(&fake_hit_check_waits);
+    held_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    release_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::thread first([&] { hit_check(0, 0, n, 0, 0, 0, reinterpret_cast<std::uintptr_t>(&info_ref), 0, 0, 0); });
+    WaitForSingleObject(held_event, 5000);
+    std::thread second([&] { hit_check(0, 0, n, 0, 0, 0, reinterpret_cast<std::uintptr_t>(&info_ref), 0, 0, 0); });
+    Sleep(50);
+    SetEvent(release_event);
+    first.join();
+    second.join();
+    out = "{";
+    cg::append(out);
+    std::printf("contact guard, detail: %s\n", out.c_str() + 1);
+    CHECK(out.find("\"overlaps\":{\"hit_check\":2,") != std::string::npos);  // the same context and the same owner
+    CHECK(out.find("\"wait_us\":") != std::string::npos && number_after(out, "contended") == 1);
+    CloseHandle(held_event);
+    CloseHandle(release_event);
+    cg::set_detail(false);
+    cg::set_locking(false);
+    *cg::next(cg::hit_check) = reinterpret_cast<void*>(&fake_hit_check);
+}
+
 // cpu_limit: the process confined to its first N logical processors, and
 // its own affinity back.
 void cpu_limit_test() {
@@ -1143,8 +1302,21 @@ void contacts_test() {
     CHECK(state() == "waiting");  // no sMain yet
     fake_contacts_smain = reinterpret_cast<std::uintptr_t>(smain.get());
     *reinterpret_cast<std::uintptr_t*>(smain.get() + ct::collision_offset) = reinterpret_cast<std::uintptr_t>(collision.get());
+    // No contact guard: the contact flag stays 0 (fail closed); the setup pass is not the guard's.
+    namespace cg = cpuopt::contact_guard;
+    ct::request(ct::contact_pass);
     ct::on_begin();
-    CHECK(state() == "applied" && contact == 1 && setup == 1);
+    CHECK(state() == "no guard" && contact == 0 && setup == 0 && !cg::locking());
+    ct::request(3);
+    ct::on_begin();
+    CHECK(contact == 0 && setup == 1 && !cg::locking());
+    ct::request(0);
+    ct::on_begin();
+    // With the guard ready: the lock is on while the contact flag is set.
+    cg::set_ready_probe([]() noexcept { return true; });
+    ct::request(3);
+    ct::on_begin();
+    CHECK(state() == "applied" && contact == 1 && setup == 1 && cg::locking());
     ct::request(ct::contact_pass);
     ct::on_begin();
     CHECK(contact == 1 && setup == 0);
@@ -1156,7 +1328,7 @@ void contacts_test() {
     CHECK(out.find("\"writes\":1") != std::string::npos);  // the contact flag again (state() reads reset the count)
     ct::request(0);
     ct::on_begin();
-    CHECK(state() == "off" && contact == 0 && setup == 0);
+    CHECK(state() == "off" && contact == 0 && setup == 0 && !cg::locking());
     setup = 1;  // the engine's own: left alone, on and off
     ct::request(3);
     ct::on_begin();
@@ -1530,6 +1702,7 @@ int main() {
     frame_cap_test();
     limiter_test();
     contacts_test();
+    contact_guard_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);

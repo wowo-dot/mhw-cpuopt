@@ -12,6 +12,7 @@
 #include "limiter.hpp"
 #include "menu.hpp"
 #include "cmfm/cmfm.h"
+#include "contact_guard.hpp"
 #include "contacts.hpp"
 #include "frame_clock.hpp"
 #include "frame_events.hpp"
@@ -53,6 +54,8 @@ std::uint32_t query_hook{}, date_hook{};     // al.hooks handles, 0 until first 
 std::uintptr_t prim_target{}, query_target{}, date_target{};  // found at PRE_MAIN
 cpuopt::frame_budget::Discovery budget{};    // the limiter's function and cD3DRender::present
 std::uint32_t budget_handles[2]{};           // al.hooks handles, 0 until first switched on
+cpuopt::contact_guard::Discovery guard{};    // the contact pass's callbacks, found at PRE_MAIN
+std::uint32_t guard_handles[cpuopt::contact_guard::site_count]{};  // al.hooks handles, once registered
 SRWLOCK switch_lock = SRWLOCK_INIT;
 std::uintptr_t validated_renderer{};  // game thread only
 
@@ -176,6 +179,56 @@ bool budget_hooks(bool on, const char** reason) noexcept {
     }
     ReleaseSRWLockExclusive(&switch_lock);
     return ok;
+}
+
+// The contact guard's detours (contact_guard.hpp): all seven or none,
+// registered once and left in (they pass through while the flag is off).
+bool guard_hooks(const char** reason) noexcept {
+    namespace cg = cpuopt::contact_guard;
+    AcquireSRWLockExclusive(&switch_lock);
+    bool ok = true;
+    if (!hooks) {
+        ok = false;
+        *reason = "no al.hooks";
+    } else if (!guard.found) {
+        ok = false;
+        *reason = "the contact pass's callbacks not found";
+    } else if (!guard_handles[0]) {
+        static const std::string patterns[cg::site_count] = {
+            std::string(cg::signatures[0]), std::string(cg::signatures[1]), std::string(cg::signatures[2]), std::string(cg::signatures[3]),
+            std::string(cg::signatures[4]), std::string(cg::signatures[5]), std::string(cg::signatures[6])};
+        for (unsigned i = 0; i < cg::site_count && ok; ++i) {
+            const auto site = static_cast<cg::Site>(i);
+            al_hook_t h{};
+            h.size = sizeof(h);
+            h.name = cg::site_names[i];
+            h.pattern = patterns[i].c_str();
+            h.address = reinterpret_cast<void*>(guard.sites[i]);
+            h.detour = cg::detour(site);
+            h.next = cg::next(site);
+            guard_handles[i] = hooks->hook(self, &h);
+            ok = guard_handles[i] != 0;
+        }
+        if (!ok) {  // all or none
+            for (auto& h : guard_handles) {
+                if (h) hooks->set_enabled(self, h, 0);
+                h = 0;
+            }
+        }
+        *reason = ok ? "hooks registered" : "al.hooks refused a hook (see the plugin log)";
+    } else {
+        *reason = "hooks already in";
+    }
+    ReleaseSRWLockExclusive(&switch_lock);
+    return ok;
+}
+// Whether every guard hook is active (the contacts switch asks before it
+// sets the engine's flag).
+bool guard_ready() noexcept {
+    if (!hooks || !guard_handles[0]) return false;
+    for (const auto h : guard_handles)
+        if (!h || hooks->state(self, h) != AL_HOOK_ACTIVE) return false;
+    return true;
 }
 
 // The server_time detours (server_time.hpp): both or neither.
@@ -449,6 +502,19 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             host.contacts = cpuopt::contacts::discover(sites, counts, host.job.found ? base + host.job.global_rva : 0);
             cpuopt::contacts::set_target(host.contacts);
         }
+        // The contact pass's callbacks, for the contact guard: seven signatures.
+        {
+            namespace cg = cpuopt::contact_guard;
+            std::uintptr_t sites[cg::site_count]{}, hit[2]{};
+            unsigned counts[cg::site_count]{};
+            for (unsigned i = 0; i < cg::site_count; ++i) {
+                counts[i] = find(cg::signatures[i], hit, 2);
+                sites[i] = hit[0];
+            }
+            guard = cg::discover(sites, counts);
+            cg::set_target(guard);
+            host.guard = guard;
+        }
         // The frame budget's two functions.
         {
             std::uintptr_t timing[2]{}, present[2]{};
@@ -467,6 +533,8 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         host.prim_patch = prim_patch;
         host.server_hooks = server_hooks;
         host.budget_hooks = budget_hooks;
+        host.guard_hooks = guard_hooks;
+        cpuopt::contact_guard::set_ready_probe(&guard_ready);
         input = service<al_input_t>(AL_INPUT_INTERFACE, AL_INPUT_VERSION);  // now, so AL installs its input layer
         host.hotkey = set_hotkey;
         if (!cpuopt::runtime::start(reinterpret_cast<HMODULE>(&__ImageBase), host, reason)) {

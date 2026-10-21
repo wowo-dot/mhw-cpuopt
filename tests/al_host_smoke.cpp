@@ -603,9 +603,9 @@ int wmain(int argc, wchar_t** argv) {
     al_init_t start{sizeof(al_init_t), 0, self, folder.c_str(), folder.c_str(), nullptr};
     CHECK(init(&api, &start) == AL_OK);
     CHECK(last_status == AL_STATUS_ACTIVE);
-    CHECK(scans == 20);  // the frame counter, the four job_cap signatures, executeJob, the camera call site,
+    CHECK(scans == 27);  // the frame counter, the four job_cap signatures, executeJob, the camera call site,
                          // sPrimitive's loop, the two server time calls, the four sMhUnit signatures, the
-                         // four sCollision ones and the frame budget's two functions
+                         // four sCollision ones, the seven of the contact guard and the frame budget's two
     if (player) return player_flow(info, folder);
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && present_callback);
     CHECK(present_mask == (AL_D3D12_EVENT_BIT(AL_D3D12_PRE_PRESENT) | AL_D3D12_EVENT_BIT(AL_D3D12_POST_PRESENT)));

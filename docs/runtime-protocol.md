@@ -118,6 +118,17 @@
   ([rva, flagged, flagged on the game thread, register mask, all]), for
   `profile_report.py --wc N`. A flagged instruction is a candidate: the
   disassembly says whether it reads that memory or only writes it.
+- `contact_guard` (from v0.17.0): the seven signatures of the contact
+  guard at PRE_MAIN (counts, RVAs); `guard_hooks` when its detours are
+  registered (once, the first time parallel_contacts is on). In each window
+  and status line, `contact_guard`: ready (every hook active), locking (the
+  contact flag is set), calls per detour while locking, acquired (outermost
+  lock takes), contended, unknown_jobs (jobs whose callback is none of the
+  four known, run whole under the lock; unknown_rva the last one),
+  overflows (record writer calls that found its 128 records full) and
+  fullest; in research mode also wait_us, hold_us and overlaps per detour
+  (a second thread for the same object while the first was in: the races
+  the lock prevented).
 - `stopping` / `stopped` at EXITING (the last window, sampler joined),
   `shutdown` at SHUTDOWN, `exit` from DllMain.
 
@@ -152,7 +163,7 @@
 | 4096 | budget | research: the game thread's frame split into limiter, job rounds, Present path (GPU wait, swapchain call) and serial work; the CPU frame (interval minus limiter and GPU wait). Two detours: sMain's frame timing and cD3DRender::present | |
 | 8192 | uncap | research: the engine's frame cap (sMain mMaxFps) set to max_fps on the game thread, the game's value back when off and at exit; hands off if the options change it | max_fps (1000) |
 | 16384 | sleep_limiter | the frame limiter waits on a high-resolution timer until margin_us before its deadline instead of spinning; the game's function still does its own timing (the frame-timing detour). al-22: game thread -38% (margin 500, -0.3% fps at the cap) or -21% (1000, no loss) at a 300 cap | margin_us (1000) |
-| 32768 | parallel_contacts | sCollision's contact pass (contacts bit 0) and setup pass (bit 1) as job rounds: the collider flags the engine sets itself with more than one job thread, left at 0 because its setup runs before the job threads exist; set at al.frame BEGIN, put back when off and at exit. al-23 (Velkhana): the contact round waits 45 us for 183 us of work the game thread did alone, about 140 us a frame back; hits normal, through a quest end and loads | contacts (1; al-23: the setup pass adds nothing) |
+| 32768 | parallel_contacts | sCollision's contact pass (contacts bit 0) and setup pass (bit 1) as job rounds: the collider flags the engine sets itself with more than one job thread, left at 0 because its setup runs before the job threads exist; set at al.frame BEGIN, put back when off and at exit. al-23 (Velkhana): the contact round waits 45 us for 183 us of work the game thread did alone, about 140 us a frame back. From v0.17.0 only with the contact guard's seven hooks active (contact_guard.hpp: the pass's callbacks under one lock; v0.16 crashed on hybrid Intel CPUs without it); the guard's hooks stay in once registered and pass through while the flag is off | contacts (1; al-23: the setup pass adds nothing; the setup pass is not guarded, research only) |
 
 Toggles add up: 8 + 16 + 32 + 64 = 120 is every optimization switch of
 v0.6; 376 adds unit_threshold, the best measured set (al-15). A
