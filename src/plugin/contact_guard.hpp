@@ -33,7 +33,8 @@ namespace cpuopt::contact_guard {
 // - sub_1426A16C0 (uGeometry2Collider): an allocation appended to a shared
 //   MtArray (Reserve and ++ without a lock).
 //
-// So every callback runs under one recursive lock while the parallel pass
+// So every callback runs under one lock (a critical section that spins
+// before it sleeps; nested calls on one thread pass) while the parallel pass
 // is on: hitCheckCallback whole (codes 0 and 1), the four callbacks (codes
 // 4 and 2), and any job whose callback is none of the four whole (counted:
 // enumContact_0 is also reached through a table, so other callbacks may
@@ -110,6 +111,10 @@ bool ready() noexcept;
 void set_locking(bool on) noexcept;
 bool locking() noexcept;
 void set_detail(bool on) noexcept;  // research mode: timing and overlaps
+// Research only (control.ini contacts_guard=0): the parallel pass without
+// the lock, as v0.16 ran it, to reproduce the race; the counting stays.
+// Player mode never sets it.
+void set_bypass(bool on) noexcept;
 // "contact_guard": {...} into an open JSON object; resets the window's counts.
 void append(std::string& out);
 }  // namespace cpuopt::contact_guard

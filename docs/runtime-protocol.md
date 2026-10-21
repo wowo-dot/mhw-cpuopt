@@ -128,7 +128,9 @@
   overflows (record writer calls that found its 128 records full) and
   fullest; in research mode also wait_us, hold_us and overlaps per detour
   (a second thread for the same object while the first was in: the races
-  the lock prevented).
+  the lock prevented). control.ini `contacts_guard=0` (research only) runs
+  the parallel pass without the lock, as v0.16 did, to reproduce the race;
+  the window then says `"bypass":true`.
 - `stopping` / `stopped` at EXITING (the last window, sampler joined),
   `shutdown` at SHUTDOWN, `exit` from DllMain.
 

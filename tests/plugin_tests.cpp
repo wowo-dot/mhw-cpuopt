@@ -961,6 +961,15 @@ void contact_guard_test() {
     CHECK(worst.load() == 1);
     CHECK(field(out, "unknown_jobs") == 4000 && field(out, "acquired") == 12000 && field(out, "contended") > 0);
     CHECK(out.find("\"unknown_rva\":") != std::string::npos);
+    // Research bypass (contacts_guard=0): locking, but no lock: threads meet again, still counted.
+    cg::set_bypass(true);
+    worst.store(0);
+    hammer(3000);
+    cg::set_bypass(false);
+    out = "{";
+    cg::append(out);
+    std::printf("contact guard, bypass: most at once %d\n", worst.load());
+    CHECK(worst.load() > 1 && field(out, "acquired") == 0 && out.find("\"bypass\"") == std::string::npos);
     // A job with a known callback runs without the lock (its callbacks take it).
     CHECK(job(0, reinterpret_cast<std::uintptr_t>(&info)) == 3);
     out = "{";

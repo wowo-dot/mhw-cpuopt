@@ -16,11 +16,26 @@ using Fn10 = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, 
 using Job = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t);
 void* next_fn[site_count]{};
 
-std::atomic<bool> locking_on{}, detail_on{}, ready_seen{};
+std::atomic<bool> locking_on{}, detail_on{}, ready_seen{}, bypass_on{};
 std::atomic<bool (*)() noexcept> probe{};
 std::uintptr_t known[4]{};  // the four callbacks' addresses: hit, nearest, list, geometry
 
-SRWLOCK lock = SRWLOCK_INIT;
+// The lock: a critical section that spins before it sleeps. The guarded
+// callbacks hold it about 70 ns each, some 700 times a frame in a fight; an
+// SRW lock's waiters went to sleep and were woken for each (al-46: 1.2 ms of
+// waiting a frame summed over the job threads for 48 us held), while a
+// spinning waiter usually gets it within a few hundred ns. After the spin it
+// sleeps as before, so a holder that Windows interrupted costs a short spin,
+// not a core. 4000 spins, as the Windows heap's lock.
+constexpr DWORD spin_count = 4000;
+struct Lock {
+    CRITICAL_SECTION cs;
+    Lock() noexcept { InitializeCriticalSectionEx(&cs, spin_count, CRITICAL_SECTION_NO_DEBUG_INFO); }
+    ~Lock() { DeleteCriticalSection(&cs); }
+    Lock(const Lock&) = delete;
+    Lock& operator=(const Lock&) = delete;
+};
+Lock lock;
 thread_local unsigned depth{};
 
 // Window counters.
@@ -68,10 +83,10 @@ public:
                     keys_[count_++] = k;
                 }
         }
-        if (!TryAcquireSRWLockExclusive(&lock)) {
+        if (!TryEnterCriticalSection(&lock.cs)) {
             contended.v.fetch_add(1, std::memory_order_relaxed);
             const auto t = detail_ ? qpc_now() : 0;
-            AcquireSRWLockExclusive(&lock);
+            EnterCriticalSection(&lock.cs);
             if (detail_) wait_qpc.v.fetch_add(static_cast<std::uint64_t>(qpc_now() - t), std::memory_order_relaxed);
         }
         acquired.v.fetch_add(1, std::memory_order_relaxed);
@@ -81,7 +96,7 @@ public:
     ~Hold() {
         if (took_) {
             if (detail_) hold_qpc.v.fetch_add(static_cast<std::uint64_t>(qpc_now() - from_), std::memory_order_relaxed);
-            ReleaseSRWLockExclusive(&lock);
+            LeaveCriticalSection(&lock.cs);
         }
         for (unsigned i = 0; i < count_; ++i) inflight[slot_of(keys_[i])].fetch_sub(1, std::memory_order_acq_rel);
         --depth;
@@ -105,6 +120,7 @@ std::uintptr_t callback_detour(std::uintptr_t a1, std::uintptr_t a2, std::uintpt
     const auto original = reinterpret_cast<Fn10>(next_fn[S]);
     if (!locking_on.load(std::memory_order_acquire)) return original(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
     calls[S].v.fetch_add(1, std::memory_order_relaxed);
+    if (bypass_on.load(std::memory_order_relaxed)) return original(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
     // The hit node is the fourth argument only for codes 0 and 4 (code 2,
     // the job's end, passes three).
     const bool has_node = (a2 & 0xFFFFFFFFu) == 0 || (a2 & 0xFFFFFFFFu) == 4;
@@ -121,6 +137,7 @@ std::uintptr_t hit_check_detour(std::uintptr_t a1, std::uintptr_t a2, std::uintp
     const auto original = reinterpret_cast<Fn10>(next_fn[hit_check]);
     if (!locking_on.load(std::memory_order_acquire)) return original(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
     calls[hit_check].v.fetch_add(1, std::memory_order_relaxed);
+    if (bypass_on.load(std::memory_order_relaxed)) return original(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
     std::uintptr_t context{}, owner{};
     if (detail_on.load(std::memory_order_relaxed)) {
         const auto info = a7 ? read_ptr(a7) : 0;
@@ -143,6 +160,7 @@ std::uintptr_t job_detour(std::uintptr_t list, std::uintptr_t info) {
     const auto original = reinterpret_cast<Job>(next_fn[job]);
     if (!locking_on.load(std::memory_order_acquire)) return original(list, info);
     calls[job].v.fetch_add(1, std::memory_order_relaxed);
+    if (bypass_on.load(std::memory_order_relaxed)) return original(list, info);
     const auto callback = info ? read_ptr(info + info_callback) : 0;
     if (!callback || known_callback(callback)) return original(list, info);
     unknown_jobs.v.fetch_add(1, std::memory_order_relaxed);
@@ -238,6 +256,7 @@ bool ready() noexcept {
 void set_locking(bool on) noexcept { locking_on.store(on, std::memory_order_release); }
 bool locking() noexcept { return locking_on.load(std::memory_order_acquire); }
 void set_detail(bool on) noexcept { detail_on.store(on); }
+void set_bypass(bool on) noexcept { bypass_on.store(on); }
 
 void append(std::string& out) {
     json::key(out, "contact_guard");
@@ -246,6 +265,10 @@ void append(std::string& out) {
     out += ready_seen.load() ? "true" : "false";
     json::key(out, "locking");
     out += locking_on.load() ? "true" : "false";
+    if (bypass_on.load()) {
+        json::key(out, "bypass");
+        out += "true";
+    }
     json::key(out, "calls");
     out += '{';
     for (unsigned i = 0; i < site_count; ++i) {

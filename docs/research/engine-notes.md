@@ -886,9 +886,33 @@ research mode the guard also times waits and holds and counts same-object
 overlaps (two threads in the guarded code for one object: the races it
 prevents). plugin_tests: four threads never meet inside the guarded fakes
 while locking (up to four do without it), nested calls do not lock twice,
-unknown jobs run serialised. Not measured in game yet: the lock's cost
-against al-23's 140 us a frame, and whether the overlaps and overflows show
-on the 9950X3D.
+unknown jobs run serialised.
+
+**In game (al-45 hub, al-46 Arch-Tempered Velkhana; the user's full mod
+set, the DLSS mod, offline):** no crash in 34 minutes with the guard. In
+the fight's first ~100 s (226.7 fps): 693 lock takes a frame, a third of
+them contended; the lock held 48 us a frame, the waiting summed over the
+job threads 1,246 us a frame (an SRW lock's waiters sleep and are woken);
+the hit record list **overflowed 229 times, fullest 128**, so the crash's
+condition is reached on the 9950X3D too; same-object overlaps (races the
+lock prevented) on 9.35 M of 11.2 M hitCheckCallback calls, the fight being
+mostly two objects. Only the hit callback ran; no job had an unknown
+callback. On/off pairs in the fight (4.5 pairs, 21 and 18 windows):
+cpu_frame p50 3.91 against 4.00 ms, the game thread's serial work 1.38
+against 1.53 ms, job rounds 1.98 against 1.74 ms: about 90 us a frame on
+average (al-23 unguarded: 140 us), one pair for, two against, one even:
+within the noise.
+
+**v0.17.0, the lock spins:** a critical section with a spin count of 4000
+(InitializeCriticalSectionEx, as the Windows heap's lock) instead of the
+SRW lock: the callbacks hold it about 70 ns, so a waiter usually gets it
+while spinning instead of sleeping and being woken; after the spin it
+sleeps as before. Mutual exclusion and nesting unchanged (the per-thread
+depth stays). A research-only control.ini `contacts_guard=0` runs the pass
+without the lock to reproduce the race on purpose. To do: the stress test
+(the game on 4 logical processors with 16 job threads, so threads are
+interrupted mid-record as on slow cores: unguarded it should fail, guarded
+not), the spinning lock's gain in the fight, a tester on a hybrid Intel CPU.
 
 ### The GPU side, first look (al-34 to al-39, v0.14.4 to v0.14.6; 2026-10-17)
 

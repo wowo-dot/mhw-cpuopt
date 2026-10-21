@@ -78,6 +78,9 @@ std::optional<Control> parse_control(std::string_view text) {
         } else if (key == "follow_us") {
             c.follow_us = number(value);
             if (!c.follow_us || *c.follow_us < 5 || *c.follow_us > 1000) return std::nullopt;
+        } else if (key == "contacts_guard") {
+            c.contacts_guard = number(value);
+            if (!c.contacts_guard || *c.contacts_guard > 1) return std::nullopt;
         } else if (key == "wc_scan") {
             c.wc_scan = number(value);
             if (!c.wc_scan || *c.wc_scan > 1) return std::nullopt;

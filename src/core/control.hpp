@@ -24,6 +24,8 @@ namespace cpuopt {
 //   follow=<vtable RVA>           toggles time_jobs + sample_profile: sample the thread running a job
 //                                 of this class while it runs (0 off; hex with 0x)
 //   follow_us=<5..1000>           follow mode: the gap between its samples
+//   contacts_guard=<0|1>          toggle parallel_contacts: 0 runs the parallel contact pass without
+//                                 the contact guard's lock, to reproduce the race (research only)
 //   wc_scan=<0|1>                 toggle sample_profile: flag samples whose registers point into
 //                                 write-combined memory (sampler.hpp)
 // Blank lines, [sections] and lines starting with ';' or '#' are ignored. A
@@ -34,7 +36,7 @@ struct Control {
     std::optional<unsigned> window_ms;
     std::optional<unsigned> job_threads;
     std::optional<unsigned> job_order, order_us;
-    std::optional<unsigned> inline_us, time_ms, unit_us, cpu_count, sample_jobs, max_fps, margin_us, follow, follow_us, contacts, wc_scan;
+    std::optional<unsigned> inline_us, time_ms, unit_us, cpu_count, sample_jobs, max_fps, margin_us, follow, follow_us, contacts, wc_scan, contacts_guard;
     bool operator==(const Control&) const = default;
 };
 std::optional<Control> parse_control(std::string_view text);

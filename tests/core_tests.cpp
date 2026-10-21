@@ -131,6 +131,7 @@ void control() {
     CHECK(parse_control("wc_scan=1")->wc_scan == 1u);
     CHECK(parse_control("wc_scan=0")->wc_scan == 0u);
     CHECK(!parse_control("wc_scan=2"));
+    CHECK(parse_control("contacts_guard=0")->contacts_guard == 0u && !parse_control("contacts_guard=2"));
     CHECK(parse_control("unit_us=20")->unit_us == 20u);
     CHECK(!parse_control("unit_us=0"));
     CHECK(!parse_control("unit_us=100001"));

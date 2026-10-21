@@ -117,6 +117,7 @@ struct State {
     unsigned margin_us{1000};             // toggle sleep_limiter: the spin left before the deadline (al-22)
     unsigned contacts_mode{1};            // toggle parallel_contacts: bit 0 contact pass, bit 1 setup pass (al-23: 1)
     bool guard{}, guard_tried{};          // the contact guard's detours are in / were tried
+    bool guard_lock{true};                // research: control.ini contacts_guard (0: the race, unguarded)
     unsigned follow{};                    // follow mode: the followed class's vtable RVA (0 off)
     unsigned follow_us{20};               // follow mode: the gap between samples
     bool wc_scan{};                       // toggle sample_profile: the write-combined scan
@@ -272,7 +273,9 @@ void apply_control(State& s, const Control& c, bool initial, std::string out) {
         s.guard_tried = true;
         switched("guard_hooks", s.guard, why);
     }
+    if (c.contacts_guard) s.guard_lock = *c.contacts_guard != 0;
     contact_guard::set_detail(!s.player);
+    contact_guard::set_bypass(!s.player && !s.guard_lock);
     contacts::request(on(parallel_contacts) && s.guard ? s.contacts_mode : 0);  // applied on the game thread at the next frame
     mark(parallel_contacts, on(parallel_contacts) && !s.guard);
     if (c.follow) s.follow = *c.follow;
@@ -378,6 +381,8 @@ void apply_control(State& s, const Control& c, bool initial, std::string out) {
     json::number(out, std::uint64_t(s.follow_us));
     json::key(out, "wc_scan");
     out += s.wc_scan ? "true" : "false";
+    json::key(out, "contacts_guard");
+    out += s.guard_lock ? "true" : "false";
     out += '}';
     event_log.write(out);
 }
