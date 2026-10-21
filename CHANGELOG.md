@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.17.0 (test build): Parallel hit detection made safe
+
+- Fixed: with **Parallel hit detection** on, the game could crash in big
+  fights (reported in the Arch-Tempered Velkhana fight on an Intel laptop
+  CPU). The switch turns on the game's own multi-threaded hit detection,
+  which the game never uses by itself, and the code that reacts to a hit
+  was written for one thread: when many hits landed at once, two threads
+  could write the same hit list, and a half-written entry crashed the game.
+  The same kind of problem was found in the three other reactions that run
+  there. cpuopt now runs every hit reaction one at a time, while the
+  expensive part, finding the hits, stays on all threads. If cpuopt cannot
+  set that up, Parallel hit detection stays off.
+- The hit reactions wait for each other only briefly (a lock that spins
+  before it sleeps), so the switch still gives back about 0.12 ms a frame in
+  the Velkhana fight on the test PC.
+- Includes the Linux start-up fix from 0.16.1 (below).
+
+If you turned Parallel hit detection off because of the crash, this build is
+meant to be tried with it on again.
+
 ## 0.16.1: Linux start-up fix
 
 - Fixed: on Linux with Proton (or Wine), the game closed during start-up
