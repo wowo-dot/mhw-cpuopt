@@ -14,6 +14,7 @@
 #include "cmfm/cmfm.h"
 #include "contact_guard.hpp"
 #include "contacts.hpp"
+#include "multi_hit.hpp"
 #include "frame_clock.hpp"
 #include "frame_events.hpp"
 #include "image_scan.hpp"
@@ -56,6 +57,8 @@ cpuopt::frame_budget::Discovery budget{};    // the limiter's function and cD3DR
 std::uint32_t budget_handles[2]{};           // al.hooks handles, 0 until first switched on
 cpuopt::contact_guard::Discovery guard{};    // the contact pass's callbacks, found at PRE_MAIN
 std::uint32_t guard_handles[cpuopt::contact_guard::site_count]{};  // al.hooks handles, once registered
+cpuopt::multi_hit::Discovery multi{};        // cpObjCollision::move, found at PRE_MAIN
+std::uint32_t multi_handle{};                // al.hooks handle, once registered
 SRWLOCK switch_lock = SRWLOCK_INIT;
 std::uintptr_t validated_renderer{};  // game thread only
 
@@ -231,6 +234,35 @@ bool guard_ready() noexcept {
     return true;
 }
 
+// The multi-hit detour (multi_hit.hpp): registered once and left in.
+bool multi_hook(const char** reason) noexcept {
+    AcquireSRWLockExclusive(&switch_lock);
+    bool ok = true;
+    if (!hooks) {
+        ok = false;
+        *reason = "no al.hooks";
+    } else if (!multi.found) {
+        ok = false;
+        *reason = "cpObjCollision::move not found";
+    } else if (!multi_handle) {
+        static const std::string pattern(cpuopt::multi_hit::move_signature);
+        al_hook_t h{};
+        h.size = sizeof(h);
+        h.name = "cpObjCollision::move (cpuopt multi-hit timing)";
+        h.pattern = pattern.c_str();
+        h.address = reinterpret_cast<void*>(multi.site);
+        h.detour = cpuopt::multi_hit::detour();
+        h.next = cpuopt::multi_hit::next();
+        multi_handle = hooks->hook(self, &h);
+        ok = multi_handle != 0;
+        *reason = ok ? "hook registered" : "al.hooks refused the hook (see the plugin log)";
+    } else {
+        *reason = "hook already in";
+    }
+    ReleaseSRWLockExclusive(&switch_lock);
+    return ok;
+}
+
 // The server_time detours (server_time.hpp): both or neither.
 bool server_hooks(bool on, const char** reason) noexcept {
     AcquireSRWLockExclusive(&switch_lock);
@@ -338,6 +370,7 @@ void AL_CALL on_frame(al_plugin_t*, al_frame_event_t event, const al_frame_info_
         cpuopt::job_cap::on_begin();  // before the update: no job round runs now
         cpuopt::frame_cap::on_begin();  // nor frame timing
         cpuopt::contacts::on_begin();   // nor collision
+        cpuopt::multi_hit::on_begin();
         std::uint64_t counter{};
         if (cpuopt::frame_clock::read(validated_renderer, counter)) cpuopt::frame_events::on_render_counter(counter);
     } else if (event == AL_FRAME_END) {
@@ -515,6 +548,14 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             cg::set_target(guard);
             host.guard = guard;
         }
+        // cpObjCollision::move, for multi-hit timing.
+        {
+            std::uintptr_t hit[2]{};
+            const auto moves = find(cpuopt::multi_hit::move_signature, hit, 2);
+            multi = cpuopt::multi_hit::discover(hit[0], moves);
+            cpuopt::multi_hit::set_target(multi);
+            host.multi = multi;
+        }
         // The frame budget's two functions.
         {
             std::uintptr_t timing[2]{}, present[2]{};
@@ -534,6 +575,7 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
         host.server_hooks = server_hooks;
         host.budget_hooks = budget_hooks;
         host.guard_hooks = guard_hooks;
+        host.multi_hook = multi_hook;
         cpuopt::contact_guard::set_ready_probe(&guard_ready);
         input = service<al_input_t>(AL_INPUT_INTERFACE, AL_INPUT_VERSION);  // now, so AL installs its input layer
         host.hotkey = set_hotkey;

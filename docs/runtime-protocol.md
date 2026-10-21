@@ -131,6 +131,14 @@
   the lock prevented). control.ini `contacts_guard=0` (research only) runs
   the parallel pass without the lock, as v0.16 did, to reproduce the race;
   the window then says `"bypass":true`.
+- `multi_hit` (from v0.18.0): the move signature at PRE_MAIN (count, move and
+  global RVAs); `multi_hook` when the detour goes in. In each window and
+  status line, `multi_hit`: carry (toggle 65536), counting (research runs),
+  calls (moves seen), fresh (new timed cache entries: multi-hit ticks),
+  expired (entries the game cleared by timer), continued (a fresh entry the
+  frame after its attack's expiry), interval_ratio (the previous entry's
+  age at expiry over the new one's timer: 1.0 at 60 fps; for Pierce Lv3
+  1.111 at 144 fps without the carry), carried (overshoots given back).
 - `stopping` / `stopped` at EXITING (the last window, sampler joined),
   `shutdown` at SHUTDOWN, `exit` from DllMain.
 
@@ -166,6 +174,7 @@
 | 8192 | uncap | research: the engine's frame cap (sMain mMaxFps) set to max_fps on the game thread, the game's value back when off and at exit; hands off if the options change it | max_fps (1000) |
 | 16384 | sleep_limiter | the frame limiter waits on a high-resolution timer until margin_us before its deadline instead of spinning; the game's function still does its own timing (the frame-timing detour). al-22: game thread -38% (margin 500, -0.3% fps at the cap) or -21% (1000, no loss) at a 300 cap | margin_us (1000) |
 | 32768 | parallel_contacts | sCollision's contact pass (contacts bit 0) and setup pass (bit 1) as job rounds: the collider flags the engine sets itself with more than one job thread, left at 0 because its setup runs before the job threads exist; set at al.frame BEGIN, put back when off and at exit. al-23 (Velkhana): the contact round waits 45 us for 183 us of work the game thread did alone, about 140 us a frame back. From v0.17.0 only with the contact guard's seven hooks active (contact_guard.hpp: the pass's callbacks under one lock; v0.16 crashed on hybrid Intel CPUs without it); the guard's hooks stay in once registered and pass through while the flag is off | contacts (1; al-23: the setup pass adds nothing; the setup pass is not guarded, research only) |
+| 65536 | multi_hit_timing | from v0.18.0: multi-hit attacks tick on the 60 fps schedule at any frame rate. A detour on cpObjCollision::move finds the multi-hit cache entries the game clears when their timer runs out and gives the time past zero back to the same attack's next entry on that object, the next frame only (multi_hit.hpp). The detour goes in once in every research run (its counters) and when the switch is on | |
 
 Toggles add up: 8 + 16 + 32 + 64 = 120 is every optimization switch of
 v0.6; 376 adds unit_threshold, the best measured set (al-15). A

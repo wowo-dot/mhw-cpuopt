@@ -118,6 +118,7 @@ struct State {
     unsigned contacts_mode{1};            // toggle parallel_contacts: bit 0 contact pass, bit 1 setup pass (al-23: 1)
     bool guard{}, guard_tried{};          // the contact guard's detours are in / were tried
     bool guard_lock{true};                // research: control.ini contacts_guard (0: the race, unguarded)
+    bool multi{}, multi_tried{};          // the multi-hit detour is in / was tried
     unsigned follow{};                    // follow mode: the followed class's vtable RVA (0 off)
     unsigned follow_us{20};               // follow mode: the gap between samples
     bool wc_scan{};                       // toggle sample_profile: the write-combined scan
@@ -199,6 +200,7 @@ void write_window(State& s) {
     limiter::append(out);
     contacts::append(out);
     contact_guard::append(out);
+    multi_hit::append(out);
     json::key(out, "prim_stores");
     out += s.prim ? "true" : "false";
     if (s.poller) append_poller(out, frame_clock::take(), ms);
@@ -278,6 +280,17 @@ void apply_control(State& s, const Control& c, bool initial, std::string out) {
     contact_guard::set_bypass(!s.player && !s.guard_lock);
     contacts::request(on(parallel_contacts) && s.guard ? s.contacts_mode : 0);  // applied on the game thread at the next frame
     mark(parallel_contacts, on(parallel_contacts) && !s.guard);
+    // Multi-hit timing: the move detour goes in once, in research runs (its
+    // counters) and wherever the switch is on; otherwise it passes through.
+    if ((on(multi_hit_timing) || !s.player) && !s.multi_tried && host.multi_hook) {
+        const char* why = "";
+        s.multi = host.multi_hook(&why);
+        s.multi_tried = true;
+        switched("multi_hook", s.multi, why);
+    }
+    multi_hit::set_counting(s.multi && !s.player);
+    multi_hit::set_carry(s.multi && on(multi_hit_timing));
+    mark(multi_hit_timing, on(multi_hit_timing) && !s.multi);
     if (c.follow) s.follow = *c.follow;
     if (c.follow_us) s.follow_us = *c.follow_us;
     sampler::set_follow_gap(s.follow_us);
@@ -439,6 +452,8 @@ void log_discoveries(const State& s) {
                                                   host.scanner));
         event_log.write(contact_guard::discovery_event(host.guard, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
                                                        host.scanner));
+        event_log.write(multi_hit::discovery_event(host.multi, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), now_ms(),
+                                                   host.scanner));
 }
 
 DWORD WINAPI worker(void* parameter) noexcept {
@@ -619,6 +634,7 @@ void status_event() {
     unit_lines::append(out);
     contacts::append(out);
     contact_guard::append(out);
+    multi_hit::append(out);
     limiter::append(out);
     frame_cap::append(out);
     cpu_limit::append(out);

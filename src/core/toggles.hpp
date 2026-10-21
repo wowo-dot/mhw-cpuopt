@@ -36,8 +36,10 @@ enum Toggle : unsigned {
                               // control.ini margin_us before its deadline instead of spinning (limiter.hpp)
     parallel_contacts = 32768U,  // sCollision's contact and setup passes as job rounds, the flags the
                                  // engine sets with more than one job thread (contacts.hpp)
+    multi_hit_timing = 65536U,   // multi-hit attacks tick on the 60 fps schedule at any frame rate: a detour
+                                 // on cpObjCollision::move carries the multi-hit timer's overshoot (multi_hit.hpp)
 };
-inline constexpr unsigned toggle_mask = 65535U & ~(128U | 512U);  // every defined bit
+inline constexpr unsigned toggle_mask = (65535U | 65536U) & ~(128U | 512U);  // every defined bit
 
 inline std::atomic<unsigned> toggles{};
 inline bool on(Toggle t) noexcept { return (toggles.load(std::memory_order_relaxed) & t) != 0; }

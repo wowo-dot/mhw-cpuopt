@@ -914,6 +914,54 @@ without the lock to reproduce the race on purpose. To do: the stress test
 interrupted mid-record as on slow cores: unguarded it should fail, guarded
 not), the spinning lock's gain in the fight, a tester on a hybrid Intel CPU.
 
+### Multi-hit timing and the frame rate (2026-10-21, v0.18.0)
+
+Moonbunnie's research ("Monster Hunter: World - Effects of FPS", with the
+MHW Modding Discord, building on Phemeto's video) measured that multi-hit
+damage depends on the frame rate: Pierce Ammo Lv3 ticks at full rate only at
+multiples of 20 fps, element ammo at multiples of 5, and at 61 fps Pierce
+Lv3 waits for a 4th frame (0.0655 s instead of 0.05). Checked in the clean
+database:
+
+- An attack's multi-hit interval is `cAttackParam` `mMultiHitFrame` (+0xE4,
+  a float in 60 fps frames; `mIsUseMultiHit` +0xE0). The hit callback
+  (`sub_1412D6D20`) reads it and the record writer stores it as the hit's
+  `mTimer`, with `mAge` 0.
+- Each hit object keeps a multi-hit cache: `cpObjCollision` +0x9F0, 32
+  `cCache` entries of 0x70 bytes (`mUID` +0x50, the attacking node's UID
+  from the node's +0x70; `mTimer` +0x54; `mAge` +0x58; `mIsUseTimer`
+  +0x6C). The hit callback drops a hit whose UID is in the object's cache
+  (0x1412D7108); `sub_1412D7A30` copies an accepted hit into a free entry.
+  (The 128-entry list at +0x17F0 is this frame's hits, emptied by the
+  update at its end; its overflow compaction drops duplicates of one attack
+  on one node, not ticks.)
+- `cpObjCollision::move` (`sub_1412DD520`) ages the cache once a frame:
+  step = the object's factor (+0x9E8, reset to 1.0 each frame) x the frames
+  elapsed at 60 fps (a global's +0x94); `mAge += step`; with `mIsUseTimer`
+  (and the attacker's collision component allowing it) `mTimer -= step`,
+  and at `mTimer <= 0` `cCache::clear` removes the entry. The time past
+  zero is thrown away, so an attack that keeps touching re-hits after
+  ceil(M / step) rendered frames: Pierce Lv3 (M = 3) 20 ticks a second at
+  60 fps, 18 at 144, 15.25 at 61, 15 at 30, matching the spreadsheet.
+- An existing mod (Tic Rate Fix, Nexus 3474, 2020, by AsteriskAmpersand and
+  Moonbunnie; analysed statically with the user's OK) patches the same two
+  places: `cCache::clear` keeps the negative `mTimer` in the freed entry,
+  and the copy into an entry adds it (capped at -4 frames) to the next hit
+  stored in that same entry, whichever attack that is.
+
+**multi_hit_timing (toggle 65536, v0.18.0):** a detour on
+`cpObjCollision::move` reads the cache before the game's aging, finds the
+entries the game then cleared by timer, and keeps their overshoot (step -
+`mTimer` before) by hit object and UID; on the object's next move, the next
+frame, a fresh entry (`mAge` 0) of the same UID starts with `mTimer` less
+the overshoot. Only the immediately following hit of the same attack gets
+it, so an attack that stopped touching gains nothing, and the object's
+slow-down factor stays in the step. plugin_tests (the game's aging
+simulated, an attack touching every frame, M = 3, 10 s): 60 fps 200 and 200
+ticks; 144 fps 180 without, 200 with (interval ratio 1.111 and 1.000); 61
+fps 153 and 200; an attack that paused a frame gets no carry. Not measured
+in game yet: the counters at 60 and 144 fps, the switch off and on.
+
 ### The GPU side, first look (al-34 to al-39, v0.14.4 to v0.14.6; 2026-10-17)
 
 Setup: the RTX 5090's clock locked at 1200 MHz by the user (`nvidia-smi

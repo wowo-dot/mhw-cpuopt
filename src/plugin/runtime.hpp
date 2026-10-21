@@ -3,6 +3,7 @@
 #include "frame_budget.hpp"
 #include "frame_clock.hpp"
 #include "job_cap.hpp"
+#include "multi_hit.hpp"
 #include "prim_stores.hpp"
 #include "server_time.hpp"
 #include "unit_lines.hpp"
@@ -33,6 +34,7 @@ struct Host {
     unit_lines::Discovery units;    // sMhUnit's line threshold, searched at PRE_MAIN
     contacts::Discovery contacts;      // sCollision's parallel flags, searched at PRE_MAIN
     contact_guard::Discovery guard;    // the contact pass's callbacks, searched at PRE_MAIN
+    multi_hit::Discovery multi;        // cpObjCollision::move, searched at PRE_MAIN
     frame_budget::Discovery budget;    // the limiter's function and cD3DRender::present
     // Put the prim_stores change and the server_time detours in or out;
     // false with the reason when they cannot. Any thread.
@@ -43,6 +45,9 @@ struct Host {
     // time parallel_contacts is on, then left in (they pass through while
     // the flag is off). False with the reason when they cannot be.
     bool (*guard_hooks)(const char** reason) noexcept {};
+    // The multi-hit detour (multi_hit.hpp): registered once, left in (it
+    // passes through unless counting or carrying).
+    bool (*multi_hook)(const char** reason) noexcept {};
     // Player mode: the hotkey for the master switch changed (0: none). Any thread.
     void (*hotkey)(std::uint32_t key) noexcept {};
 };

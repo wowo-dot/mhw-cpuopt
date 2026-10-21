@@ -15,6 +15,7 @@
 #include "../src/plugin/limiter.hpp"
 #include "../src/plugin/contact_guard.hpp"
 #include "../src/plugin/contacts.hpp"
+#include "../src/plugin/multi_hit.hpp"
 #include "../src/plugin/frame_clock.hpp"
 #include "../src/plugin/image_scan.hpp"
 #include "../src/plugin/frame_events.hpp"
@@ -30,6 +31,7 @@
 #include "../src/plugin/thread_census.hpp"
 #include <windows.h>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1020,6 +1022,128 @@ void contact_guard_test() {
     cg::set_locking(false);
 }
 
+// multi_hit against a stand-in cpObjCollision and the game's own aging (as
+// cpObjCollision::move does it): an attack that keeps touching ticks every
+// ceil(M / step) frames without the carry and on the 60 fps schedule with it.
+namespace multi_test {
+std::uint8_t object[0x1800]{};
+struct Holder {
+    std::uint8_t pad[0x94]{};
+    float delta{};
+} holder;
+std::uintptr_t holder_ptr{};
+std::uintptr_t slot(unsigned i) { return reinterpret_cast<std::uintptr_t>(object) + 0x9F0 + i * 0x70; }
+template <class T> T& field(unsigned i, unsigned offset) { return *reinterpret_cast<T*>(slot(i) + offset); }
+// The game's aging: every entry gets older, a timed one runs down and goes at zero.
+std::uintptr_t fake_move(std::uintptr_t obj) {
+    const float step = *reinterpret_cast<float*>(obj + 0x9E8) * holder.delta;
+    for (unsigned i = 0; i < 32; ++i) {
+        if (!field<std::uint32_t>(i, 0x50)) continue;
+        field<float>(i, 0x58) += step;
+        if (field<std::uint8_t>(i, 0x6C) != 1) continue;
+        field<float>(i, 0x54) -= step;
+        if (field<float>(i, 0x54) <= 0.0f) {
+            field<std::uint64_t>(i, 0x50) = 0;  // mUID and mTimer, as cCache::clear
+            field<std::uint64_t>(i, 0x58) = 0;
+            field<std::uint8_t>(i, 0x6C) = 0;
+        }
+    }
+    return 0x55;
+}
+// One run: an attack (UID 77, M frames) touching the object every frame.
+unsigned run(float fps, unsigned frames, float m, bool carry, std::string& out) {
+    namespace mh = cpuopt::multi_hit;
+    std::memset(object, 0, sizeof(object));
+    *reinterpret_cast<float*>(object + 0x9E8) = 1.0f;
+    holder.delta = 60.0f / fps;
+    mh::set_carry(carry);
+    mh::set_counting(true);
+    std::string drain = "{";
+    mh::append(drain);
+    const auto move = reinterpret_cast<std::uintptr_t (*)(std::uintptr_t)>(mh::detour());
+    unsigned ticks = 0;
+    for (unsigned f = 0; f < frames; ++f) {
+        mh::on_begin();
+        CHECK(move(reinterpret_cast<std::uintptr_t>(object)) == 0x55);
+        bool present = false;
+        for (unsigned i = 0; i < 32; ++i) present = present || field<std::uint32_t>(i, 0x50) == 77;
+        if (!present) {  // the contact pass: the attack hits again, a fresh entry
+            for (unsigned i = 0; i < 32; ++i)
+                if (!field<std::uint32_t>(i, 0x50)) {
+                    field<std::uint32_t>(i, 0x50) = 77;
+                    field<float>(i, 0x54) = m;
+                    field<float>(i, 0x58) = 0.0f;
+                    field<std::uint8_t>(i, 0x6C) = 1;
+                    break;
+                }
+            ++ticks;
+        }
+    }
+    out = "{";
+    mh::append(out);
+    mh::set_carry(false);
+    mh::set_counting(false);
+    return ticks;
+}
+}  // namespace multi_test
+
+void multi_hit_test() {
+    namespace mh = cpuopt::multi_hit;
+    using namespace multi_test;
+    holder_ptr = reinterpret_cast<std::uintptr_t>(&holder);
+    // Discovery: the global's rel32 inside the signature's bytes.
+    static std::uint8_t code[0x100]{};
+    const auto site = reinterpret_cast<std::uintptr_t>(code);
+    const std::int32_t rel = static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(&holder_ptr) - static_cast<std::intptr_t>(site + mh::global_next));
+    std::memcpy(code + mh::global_rel, &rel, 4);
+    CHECK(!mh::discover(site, 2).found && !mh::discover(site, 0).found);
+    const auto d = mh::discover(site, 1);
+    CHECK(d.found && d.global == reinterpret_cast<std::uintptr_t>(&holder_ptr));
+    mh::set_target(d);
+    *mh::next() = reinterpret_cast<void*>(&fake_move);
+    std::string out;
+    // 60 fps: 3 frames a tick either way (600 frames: 200 ticks).
+    const auto at60 = run(60.0f, 600, 3.0f, false, out);
+    const auto at60c = run(60.0f, 600, 3.0f, true, out);
+    // 144 fps, 10 s: 8 frames a tick without the carry (180), 7.2 on average with it (200).
+    const auto at144 = run(144.0f, 1440, 3.0f, false, out);
+    std::printf("multi_hit, 144 fps without the carry: %u ticks; %s\n", at144, out.c_str() + 1);
+    CHECK(out.find("\"interval_ratio\":1.111") != std::string::npos);
+    const auto at144c = run(144.0f, 1440, 3.0f, true, out);
+    std::printf("multi_hit, 144 fps with the carry: %u ticks; %s\n", at144c, out.c_str() + 1);
+    const auto ratio = std::atof(out.c_str() + out.find("\"interval_ratio\":") + 17);
+    // 61 fps: 4 frames a tick without (about 153 in 10 s), 20 a second with.
+    const auto at61 = run(61.0f, 610, 3.0f, false, out);
+    const auto at61c = run(61.0f, 610, 3.0f, true, out);
+    std::printf("multi_hit ticks: 60 fps %u / %u, 144 fps %u / %u, 61 fps %u / %u (without / with the carry)\n", at60, at60c, at144, at144c, at61,
+                at61c);
+    CHECK(at60 == 200 && at60c == 200);
+    CHECK(at144 == 180 && at144c >= 199 && at144c <= 201);
+    CHECK(at61 >= 152 && at61 <= 154 && at61c >= 199 && at61c <= 201);
+    CHECK(ratio > 0.99 && ratio < 1.01);
+    // An attack that stopped touching gets nothing back: after a gap, a new
+    // hit starts with the whole interval (no carry from two frames before).
+    std::memset(object, 0, sizeof(object));
+    *reinterpret_cast<float*>(object + 0x9E8) = 1.0f;
+    holder.delta = 60.0f / 144.0f;
+    mh::set_carry(true);
+    const auto move = reinterpret_cast<std::uintptr_t (*)(std::uintptr_t)>(mh::detour());
+    field<std::uint32_t>(0, 0x50) = 77;
+    field<float>(0, 0x54) = 0.1f;  // runs out this frame, 0.317 past zero
+    field<std::uint8_t>(0, 0x6C) = 1;
+    mh::on_begin();
+    move(reinterpret_cast<std::uintptr_t>(object));
+    mh::on_begin();
+    move(reinterpret_cast<std::uintptr_t>(object));  // a frame without a hit
+    field<std::uint32_t>(1, 0x50) = 77;
+    field<float>(1, 0x54) = 3.0f;
+    field<std::uint8_t>(1, 0x6C) = 1;
+    mh::on_begin();
+    move(reinterpret_cast<std::uintptr_t>(object));
+    CHECK(std::fabs(field<float>(1, 0x54) - (3.0f - 60.0f / 144.0f)) < 1e-5f);  // only the game's own step
+    mh::set_carry(false);
+}
+
 // cpu_limit: the process confined to its first N logical processors, and
 // its own affinity back.
 void cpu_limit_test() {
@@ -1723,6 +1847,7 @@ int main() {
     limiter_test();
     contacts_test();
     contact_guard_test();
+    multi_hit_test();
     census_and_sampler_test();
     start_event_test();
     std::printf(failures ? "plugin_tests: %d failure(s)\n" : "plugin_tests: ok\n", failures);
