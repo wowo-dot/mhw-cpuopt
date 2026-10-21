@@ -27,6 +27,7 @@ constexpr Field fields[] = {
     {"cache_ccd", Kind::flag, 0, 0, "on CPUs with a 3D V-Cache die (7950X3D, 9950X3D...) the game stays on it"},
     {"parallel_contacts", Kind::flag, 0, 0, "hit detection runs on all job threads, as the engine meant to"},
     {"sleep_limiter", Kind::flag, 0, 0, "with a frame limit, the game sleeps instead of spinning while it waits"},
+    {"multi_hit_timing", Kind::flag, 0, 0, "multi-hit attacks (pierce, element ammo...) tick as at 60 fps at any frame rate"},
     {"remove_fps_cap", Kind::flag, 0, 0, "lifts the engine's 300 fps limit (only with the in-game frame rate at no limit)"},
     {"limiter_margin_us", Kind::number, 50, 2000, "sleep_limiter: wakes this long before the frame is due (50 to 2000)"},
     {"unit_us", Kind::number, 10, 200, "unit_threshold: the threshold in microseconds (10 to 200)"},
@@ -35,7 +36,8 @@ constexpr Field fields[] = {
 constexpr const char* heading_before[] = {
     "# cpuopt: CPU optimizations for Monster Hunter: World (an Astera Loader plugin).\n"
     "# Change these here or in the game's Mods menu (with CMFM). Switches: on or off.\n\n",
-    nullptr, "\n# Optimizations\n", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, "\n# Experimental\n", "\n# Advanced\n", nullptr, nullptr,
+    nullptr, "\n# Optimizations\n", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, "\n# Fixes\n", "\n# Experimental\n", "\n# Advanced\n",
+    nullptr, nullptr,
 };
 static_assert(std::size(heading_before) == std::size(fields));
 
@@ -48,6 +50,7 @@ bool* flag_of(Settings& s, std::string_view key) {
     if (key == "cache_ccd") return &s.cache_ccd;
     if (key == "parallel_contacts") return &s.parallel_contacts;
     if (key == "sleep_limiter") return &s.sleep_limiter;
+    if (key == "multi_hit_timing") return &s.multi_hit_timing;
     if (key == "remove_fps_cap") return &s.remove_fps_cap;
     return nullptr;
 }
@@ -237,7 +240,8 @@ std::optional<std::string> ini_lookup(std::string_view text, std::string_view ke
 }
 
 unsigned toggles_of(const Settings& s) noexcept {
-    unsigned t = s.remove_fps_cap ? unsigned(uncap) : 0U;  // not under the master switch
+    unsigned t = s.remove_fps_cap ? unsigned(uncap) : 0U;  // these two not under the master switch
+    if (s.multi_hit_timing) t |= multi_hit_timing;
     if (!s.enabled) return t;
     if (s.effect_stores) t |= plain_prim_stores;
     if (s.job_order) t |= order_jobs;

@@ -600,7 +600,8 @@ extern "C" AL_PLUGIN_EXPORT al_result_t AL_CALL al_plugin_init(const al_api_t* h
             if (!host.server.found) a.why[menu::row_server_time] = not_found;
             if (!host.job.found || !host.units.found) a.why[menu::row_unit_threshold] = not_found;
             if (!cpuopt::cpu_limit::find_cache_ccd().found) a.why[menu::row_cache_ccd] = "This CPU has no separate cache die: nothing to do here.";
-            if (!host.contacts.found) a.why[menu::row_parallel_contacts] = not_found;
+            if (!host.contacts.found || !host.guard.found) a.why[menu::row_parallel_contacts] = not_found;
+            if (!host.multi.found) a.why[menu::row_multi_hit_timing] = not_found;
             if (!host.budget.found) a.why[menu::row_sleep_limiter] = not_found;
             if (!host.job.found) a.why[menu::row_remove_fps_cap] = not_found;
             std::string why;

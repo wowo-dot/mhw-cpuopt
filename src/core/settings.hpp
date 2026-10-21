@@ -11,9 +11,9 @@ namespace cpuopt {
 // Switches take on/off (also true/false, yes/no, 1/0).
 //
 // `enabled` is the master switch over the optimizations (its hotkey,
-// toggle_key, flips it in game); remove_fps_cap is a separate, experimental
-// switch that the master leaves alone, so an on/off comparison keeps the
-// same frame limit in both states.
+// toggle_key, flips it in game); multi_hit_timing (a fix, not an
+// optimization) and remove_fps_cap (experimental) are separate switches the
+// master leaves alone, so an on/off comparison keeps them in both states.
 struct Settings {
     bool enabled{true};
     std::uint32_t toggle_key{};  // a CMFM KEY value: virtual-key code | CMFM_KEY_CTRL/SHIFT/ALT bits; 0 none
@@ -24,6 +24,7 @@ struct Settings {
     bool cache_ccd{true};          // cache_ccd
     bool parallel_contacts{true};  // parallel_contacts, contact pass
     bool sleep_limiter{true};      // sleep_limiter
+    bool multi_hit_timing{true};   // multi_hit_timing: multi-hit attacks tick as at 60 fps
     bool remove_fps_cap{false};    // uncap, only from the game's "no limit" 300
     unsigned limiter_margin_us{1000};  // 50..2000
     unsigned unit_us{40};              // 10..200

@@ -29,6 +29,13 @@ What it fixes:
   thread although the engine has a parallel version, a frame limiter that
   keeps a core busy while it waits, an update threshold that keeps work off
   the job threads.
+- **A frame-rate bug (from 0.18.0):** multi-hit attacks (pierce and
+  element ammo, and more) lose ticks at frame rates other than 60: about 10%
+  at 144 fps, up to a quarter at odd rates like 61. cpuopt keeps them on the
+  60 fps schedule (measured: Pierce Lv3 at 144 fps from 18 back to 20 ticks
+  a second). This is the only switch that changes what happens in a fight
+  rather than how fast the game runs: it makes every frame rate behave as
+  60 fps does, for monsters' multi-hit attacks on you too.
 - **On dual-die X3D CPUs** (7900X3D, 7950X3D, 9900X3D, 9950X3D): Windows
   often spreads the game over both dies; cpuopt keeps it on the die with
   the large cache.
@@ -96,7 +103,9 @@ tested there.
 
 Each optimization is a switch on its own page in the game's Mods menu (with
 [CMFM](https://github.com/wowo-dot/CMFM)) or in `cpuopt.ini`; all of them
-are on by default except the experimental one.
+are on by default except the experimental one. The multi-hit fix is on by
+default too, in its own "Fixes" section, and stays as you set it when the
+on/off hotkey flips the optimizations.
 
 | Switch | What it does | Measured |
 |---|---|---|
@@ -107,6 +116,7 @@ are on by default except the experimental one.
 | Stay on the cache die | On CPUs with two dies where one has 3D V-Cache (7900X3D, 7950X3D, 9900X3D, 9950X3D), the game runs on the cache die only, with its job threads sized to it. Greyed out on other CPUs. | +40% where Windows spread the game over both dies |
 | Parallel hit detection | The engine has a parallel version of its collision pass but never turns it on, because it decides before its job threads exist. cpuopt sets the engine's own flag after they do, and runs the hit reactions, which the game wrote for one thread, one at a time (from 0.17.0; 0.16 could crash in big fights without that). | about 0.12 ms a frame back in fights |
 | Sleeping frame limiter | With a frame rate limit set, the game keeps a core busy while it waits for the next frame. cpuopt sleeps on a precise timer until 1 ms before, then lets the game finish the wait. | same frame pacing with about a fifth less game-thread CPU time at a 300 fps limit |
+| Multi-hit timing as at 60 fps (fix, on) | A multi-hit attack may hit the same target again once its timer, counted in 60 fps frames, runs out, but only on a frame, and the game throws the time past zero away: every tick waits for the next whole frame. cpuopt gives that time back to the same attack's next tick, so ticks land on the 60 fps schedule at any frame rate. Moonbunnie's "Effects of FPS" research measured the problem first. | Pierce Lv3 at 144 fps: tick interval 11% too long without it, on schedule with it; uncapped: 3.7% too long without |
 | Remove 300 fps limit (experimental, off) | The engine stops at 300 fps even with the frame rate set to No Limit. This raises that to 1000. A lower limit you set in the options stays. | for fast PCs and measuring |
 
 Every change is made in memory at code that cpuopt finds by its bytes and

@@ -190,12 +190,15 @@ void settings() {
     CHECK(odd.enabled && odd.unit_us == 40 && !odd.cache_ccd);
     CHECK(problems == "line 1: bad value for enabled\nline 2: bad value for unit_us\nline 3: unknown key nope\n");
     // The switches.
-    CHECK(cpuopt::toggles_of(defaults) == (16u | 8u | 32u | 256u | 2048u | 32768u | 16384u));
+    CHECK(cpuopt::toggles_of(defaults) == (16u | 8u | 32u | 256u | 2048u | 32768u | 16384u | 65536u));
     Settings off = defaults;
     off.enabled = false;
-    CHECK(cpuopt::toggles_of(off) == 0u);
+    CHECK(cpuopt::toggles_of(off) == 65536u);  // the multi-hit fix is not under the master
     off.remove_fps_cap = true;
-    CHECK(cpuopt::toggles_of(off) == 8192u);  // the cap switch is not under the master
+    CHECK(cpuopt::toggles_of(off) == (8192u | 65536u));  // nor the cap switch
+    off.multi_hit_timing = false;
+    CHECK(cpuopt::toggles_of(off) == 8192u);
+    CHECK(cpuopt::parse_settings("multi_hit_timing = off\n").multi_hit_timing == false && cpuopt::parse_settings("").multi_hit_timing);
     // Key names.
     CHECK(cpuopt::key_name(0) == "None" && cpuopt::key_name(0x100 | 0x78) == "Ctrl+F9");
     CHECK(cpuopt::key_name(0x600 | 'K') == "Shift+Alt+K" && cpuopt::key_name(0x05) == "Mouse4");

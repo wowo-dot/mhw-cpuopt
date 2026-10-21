@@ -390,7 +390,7 @@ std::string replaced(std::string text, const std::string& from, const std::strin
 int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     CHECK(last_status == AL_STATUS_ACTIVE);
     CHECK(frame_callbacks[AL_FRAME_BEGIN] && frame_callbacks[AL_FRAME_END] && !present_callback);  // no Present timing
-    CHECK(added_title == "CPU optimizations" && added_rows == 18 && added_page.get && added_page.set && added_page.get_text);
+    CHECK(added_title == "CPU optimizations" && added_rows == 20 && added_page.get && added_page.set && added_page.get_text);
     CHECK(added_page.press && added_page.on_event && added_page.locked);
     if (!too_long.empty()) std::printf("  too long for CMFM: %s\n", too_long.c_str());
     CHECK(too_long.empty());
@@ -520,8 +520,8 @@ int player_flow(const al_plugin_info_t* info, const std::wstring& folder) {
     std::printf("al_host_smoke (player): %zu bytes of cpuopt-session.log, EXITING took %.1f ms\n", log.size(), exiting_ms);
     CHECK(log.find("{\"event\":\"init\",") == 0 && log.find("\"mode\":\"player\"") != std::string::npos);  // the first line
     CHECK(log.find("\n{\"event\":\"start\"") != std::string::npos);
-    CHECK(log.find("\"toggles\":51512,\"requested_toggles\":51512,\"marker\":\"player\"") != std::string::npos);
-    CHECK(log.find("\"toggles\":0,\"requested_toggles\":0,\"marker\":\"player\"") != std::string::npos);
+    CHECK(log.find("\"toggles\":117048,\"requested_toggles\":117048,\"marker\":\"player\"") != std::string::npos);  // 51512 + multi-hit timing
+    CHECK(log.find("\"toggles\":65536,\"requested_toggles\":65536,\"marker\":\"player\"") != std::string::npos);  // all optimizations off: the fix stays
     CHECK(log.find("\"unit_us\":50") != std::string::npos);  // the hand edit
     CHECK(log.find("\"event\":\"settings_saved\"") != std::string::npos && log.find("\"event\":\"settings_read\"") != std::string::npos);
     CHECK(log.find("\"event\":\"cmfm_page\",") != std::string::npos && log.find("\"added\":1") != std::string::npos);

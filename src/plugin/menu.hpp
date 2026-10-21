@@ -21,6 +21,7 @@ enum Row : unsigned {
     row_parallel_contacts,
     row_sleep_limiter,
     row_remove_fps_cap,
+    row_multi_hit_timing,
     row_count
 };
 struct Availability {

@@ -24,6 +24,8 @@ enum Id : std::uint32_t {
     id_cache_ccd,
     id_parallel_contacts,
     id_sleep_limiter,
+    id_fixes = 18,
+    id_multi_hit_timing,
     id_experimental = 20,
     id_remove_fps_cap,
     id_benchmark = 30,
@@ -38,6 +40,7 @@ std::atomic<std::int64_t> last_begin{};
 int row_of(std::uint32_t id) {
     if (id >= id_effect_stores && id <= id_sleep_limiter) return static_cast<int>(id - id_effect_stores);
     if (id == id_remove_fps_cap) return row_remove_fps_cap;
+    if (id == id_multi_hit_timing) return row_multi_hit_timing;
     return -1;
 }
 bool* flag_of(Settings& s, std::uint32_t id) {
@@ -51,12 +54,13 @@ bool* flag_of(Settings& s, std::uint32_t id) {
     case id_parallel_contacts: return &s.parallel_contacts;
     case id_sleep_limiter: return &s.sleep_limiter;
     case id_remove_fps_cap: return &s.remove_fps_cap;
+    case id_multi_hit_timing: return &s.multi_hit_timing;
     default: return nullptr;
     }
 }
 constexpr unsigned toggle_of_row[row_count] = {cpuopt::plain_prim_stores, cpuopt::order_jobs, cpuopt::reuse_server_time,
                                               cpuopt::unit_threshold,   cpuopt::cache_ccd,  cpuopt::parallel_contacts,
-                                              cpuopt::sleep_limiter,    cpuopt::uncap};
+                                              cpuopt::sleep_limiter,    cpuopt::uncap,      cpuopt::multi_hit_timing};
 static_assert(toggle_of_row[row_unit_threshold] == 256U && toggle_of_row[row_parallel_contacts] == 32768U);
 
 cmfm_result_t CMFM_CALL get(void*, std::uint32_t id, cmfm_value_t* value) {
@@ -215,6 +219,11 @@ bool add(const void* cmfm, const Availability& a, const char* version, std::stri
             d.parallel_contacts),
         row(id_sleep_limiter, CMFM_TYPE_BOOL, "Sleeping frame limiter",
             "With a frame rate limit, the game sleeps while it waits instead of keeping a core busy. Same frame pacing.", d.sleep_limiter),
+        row(id_fixes, CMFM_TYPE_SECTION, "Fixes", nullptr),
+        row(id_multi_hit_timing, CMFM_TYPE_BOOL, "Multi-hit timing as at 60 fps",
+            "Multi-hit attacks (pierce and element ammo, and more) lose ticks at frame rates other than 60. This keeps them on the "
+            "60 fps schedule. Monsters' multi-hits on you too.",
+            d.multi_hit_timing),
         row(id_experimental, CMFM_TYPE_SECTION, "Experimental", nullptr),
         row(id_remove_fps_cap, CMFM_TYPE_BOOL, "Remove 300 fps limit",
             "Lifts the engine's 300 fps limit while the in-game frame rate is set to no limit. A lower limit you chose stays.",

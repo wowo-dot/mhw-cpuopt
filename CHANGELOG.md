@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.18.0 (test build): multi-hit timing as at 60 fps
+
+- New, on by default: **Multi-hit timing as at 60 fps** (Mods page, Fixes;
+  `multi_hit_timing` in cpuopt.ini). Multi-hit attacks (pierce and element
+  ammo, and more) lose ticks at frame rates other than 60: the game counts
+  each attack's tick interval in 60 fps frames but lets it hit again only on
+  a frame and throws the time past zero away, so every tick waits for the
+  next whole frame (Moonbunnie's "Effects of FPS" research measured this
+  first). cpuopt gives that time back to the same attack's next tick. Measured
+  on the test PC with Pierce Ammo Lv3 on the training dummy: at 144 fps the
+  tick interval was 11% too long without the fix and on schedule with it;
+  uncapped (about 260 fps) 3.7% too long without. At 60 fps nothing changes.
+  It works both ways: monsters' multi-hit attacks on you also tick as at
+  60 fps. It is not under "All optimizations", so the on/off hotkey and the
+  benchmark compare speed only.
+- Parallel hit detection is greyed out, and stays off, if the hit-detection
+  guard from 0.17.0 cannot be set up on this game version.
+- Includes 0.17.0's Parallel hit detection fix and the Linux start-up fix.
+
 ## 0.17.0 (test build): Parallel hit detection made safe
 
 - Fixed: with **Parallel hit detection** on, the game could crash in big
