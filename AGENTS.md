@@ -149,7 +149,14 @@ rules come first.
     `local/` and are never committed, shared or sent anywhere;
   - the layer changes timing: benchmark and measure without it loaded.
 - Point the tools at the game's code only, never at NVIDIA binaries or other
-  mods' DLLs.
+  mods' DLLs, with one exception: another mod's binary may be analysed
+  statically (strings, patterns, disassembly of what it writes into the
+  game) when the user OKs that mod by name, to understand what it changes
+  and how it compares or conflicts with cpuopt. Its file stays under
+  `local/` in a folder of its own, is never run outside the user's own
+  launches, its code is never copied into cpuopt or redistributed, and
+  findings go into our notes with credit to its authors. OKed: Tic Rate Fix
+  (`DPSTickFix.dll`, Nexus mod 3474, 2026-10-21).
 
 ## Implementation Conventions
 
