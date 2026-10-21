@@ -995,9 +995,20 @@ void contact_guard_test() {
     CHECK(out.find("\"wait_us\":") != std::string::npos && number_after(out, "contended") == 1);
     CloseHandle(held_event);
     CloseHandle(release_event);
+    // One thread alone: an object that is both the context and the hit owner
+    // is no overlap with itself, and the job's end (code 2, three arguments)
+    // has no hit node to read (al-45: every call counted as an overlap).
+    *cg::next(cg::hit_check) = reinterpret_cast<void*>(&fake_hit_check);
+    node[cg::node_owner / 8] = 0x6000;  // the same as info's context
+    hit_check(0, 0, n, 0, 0, 0, reinterpret_cast<std::uintptr_t>(&info_ref), 0, 0, 0);
+    hit(0x6000, 4, 0, n, 0, 0, 0, 0, 0, 0);
+    hit(0x6000, 2, 0, reinterpret_cast<std::uintptr_t>(&info_ref), 0, 0, 0, 0, 0, 0);  // a4: whatever was in r9
+    out = "{";
+    cg::append(out);
+    CHECK(out.find("\"overlaps\":{\"hit_check\":0,\"job\":0,\"hit\":0,") != std::string::npos);
+    node[cg::node_owner / 8] = 0x5000;
     cg::set_detail(false);
     cg::set_locking(false);
-    *cg::next(cg::hit_check) = reinterpret_cast<void*>(&fake_hit_check);
 }
 
 // cpu_limit: the process confined to its first N logical processors, and

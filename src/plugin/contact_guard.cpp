@@ -60,6 +60,7 @@ public:
         if (depth++ > 0) return;
         if (detail_on.load(std::memory_order_relaxed)) {
             detail_ = true;
+            if (key2 == key1) key2 = 0;  // one object once: not an overlap with itself
             for (auto k : {key1, key2})
                 if (k) {
                     auto& slot = inflight[slot_of(k)];
@@ -104,7 +105,10 @@ std::uintptr_t callback_detour(std::uintptr_t a1, std::uintptr_t a2, std::uintpt
     const auto original = reinterpret_cast<Fn10>(next_fn[S]);
     if (!locking_on.load(std::memory_order_acquire)) return original(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
     calls[S].v.fetch_add(1, std::memory_order_relaxed);
-    const auto target = S == hit && a4 && detail_on.load(std::memory_order_relaxed) ? read_ptr(a4 + node_owner) : 0;
+    // The hit node is the fourth argument only for codes 0 and 4 (code 2,
+    // the job's end, passes three).
+    const bool has_node = (a2 & 0xFFFFFFFFu) == 0 || (a2 & 0xFFFFFFFFu) == 4;
+    const auto target = S == hit && has_node && a4 && detail_on.load(std::memory_order_relaxed) ? read_ptr(a4 + node_owner) : 0;
     Hold h(S, a1, target);
     return original(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
 }
