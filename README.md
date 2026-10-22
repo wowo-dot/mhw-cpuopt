@@ -70,8 +70,9 @@ Ryzen, will be added as players send them (`docs/sending-results.md`).
   single biggest cost there: the game thread gained 32 to 56% (part of it
   from staying on the cache die, below). In Elder's Recess, the most
   effect-heavy area, the 13700K showed none of the bug's frame-time spikes
-  and gained 9%; the i5-12400F gained 8%, and the first non-X3D Ryzen, a
-  Ryzen 5 5600, 4%. So the big gain is not simply a Ryzen one. Whether it
+  and gained 9%; in scenes their testers did not name, the i5-12400F
+  gained 8% and the first non-X3D Ryzen, a Ryzen 5 5600, 4%. So the big
+  gain is not simply a Ryzen one. Whether it
   comes with the 3D V-Cache, with the newest Ryzen generation or with the
   scene is still open; results from more CPUs will tell.
 - **Dual-die X3D CPUs gain the most** when nothing else keeps the game on
