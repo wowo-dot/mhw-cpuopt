@@ -992,11 +992,12 @@ Confirmed from its code:
   in ICE." and stops.
 - The value does not occur anywhere in the clean 421810 image (the whole
   90 MB title-screen memory copy, every section, `.data` included), nor
-  does the replacement value. So on 421810, the version cpuopt is made
-  for, it most likely takes the "TempPatch" path and changes nothing. Not
-  yet confirmed at the moment it loads: one launch with it enabled shows
-  the line in Astera Loader's log (its Stracker layer passes plugin `LOG`
-  lines on).
+  does the replacement value. **Confirmed in game (al-50, 2026-10-22):**
+  with it enabled on 421810 (Stracker logLevel INFO for that launch),
+  loader.log says "Game version 421810", "CRC Bypass Loading...",
+  "TempPatch of CRC Bypass Loaded!", "DONE !"; Astera Loader logs "loaded
+  !CRCBypass.dll in 71.0 ms". It writes nothing to the game on 421810: a
+  71 ms scan at startup, then no effect.
 - No overlap with cpuopt either way: it writes only those table records
   (data, and only when the value is found); cpuopt's sites are code. cpuopt
   runs without it (every profile here and most testers), and the 12400F
