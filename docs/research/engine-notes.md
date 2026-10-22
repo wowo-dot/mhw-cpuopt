@@ -829,6 +829,22 @@ DLSS mod with Streamline). No crash or conflict was reported.
   in v0.16.0); the report's list of on switches named "stay on the cache
   die" (0.14.1's bug, fixed in 0.14.2). Frame-time spikes of 20-64 ms in
   both halves alike.
+- **Ryzen 5 5600 (Zen 3, 6 cores, one die, 32 MB L3, no 3D V-Cache), Radeon
+  RX 7600, 1920x1080 Borderless, no frame rate limit, no DLSS mod (an AMD
+  card), Stracker plugins (BetterInputs, Monster and Quest Loader)
+  (v0.16.0, sixth tester's report forwarded on 2026-10-22, scene not
+  stated; 8 pairs of 6 s):** 83.5 to 84.8 fps (+1.6%, pairs -5.1 to
+  +6.1%: within the noise); the game thread's CPU time per frame 10.46 to
+  10.03 ms (-4.2%; busy 88% to 86%), all threads 40.8 to 40.5 ms (-0.8%);
+  job rounds 5.16 to 4.64 ms, its own work 2.25 to 1.94 ms, Present (the
+  GPU wait) 4.53 to 5.16 ms. Held by the graphics card in both halves (the
+  CPU alone about 100 fps), close to even. p99 34-36 ms and maxima to 48 ms
+  in both halves alike. The effect ring is write-combined here too. The
+  first non-X3D Ryzen gains about what the Intel CPUs gain (-4 to -9%), not
+  the 9950X3D's -22% (al-26, the kept set without cache_ccd) or more: the
+  large effect-loop cost is so far a 9950X3D finding (Zen 5 with 3D V-Cache
+  on two PCs), not a Ryzen one. Unknown: the scene (the effect loop's cost
+  scales with effects on screen; Elder's Recess for comparison).
 - Most players with mid-range graphics cards at 1440p are GPU-limited, so
   their fps cannot rise. The README now says who gains fps; a live "Limited
   by" line on the Mods page is proposed (roadmap).

@@ -53,6 +53,7 @@ rate cannot rise.
 | Ryzen 9 9950X3D (test PC) | RTX 5090, DLSS quality, Ancient Forest, nothing pinning the game | 147 → 265 fps (**+80%**) | 6.81 → 3.75 ms (-45%) | the CPU |
 | Ryzen 9 9950X3D (test PC) | the same, Ancient Forest, with a Process Lasso rule already keeping MHW on the cache die | 172 → 271 fps (**+58%**) | 5.03 → 3.44 ms (-32%) | the CPU |
 | Ryzen 9 9950X3D (test PC) | the same, Arch-Tempered Velkhana fight in Elder's Recess | 175 → 286 fps (**+63%**) | 5.70 → 3.15 ms (-45%) | the graphics card (97% busy) |
+| Ryzen 5 5600 | RX 7600, 1920x1080, scene not stated | 84 → 85 fps (+2%, within the noise) | 10.46 → 10.03 ms (-4%) | the graphics card, in both |
 | Core i7-13700K | RTX 3080 Ti, DLSS performance, Elder's Recess | 159 → 159 fps (+0%) | 5.68 → 5.15 ms (-9%) | the graphics card, in both |
 | Core i5-12400F | RTX 3060, 1920x1080, V-Sync on | 82 → 83 fps (+1%) | 6.90 → 6.38 ms (-8%) | the graphics card or V-Sync, in both |
 | Core i5-12600KF | RTX 3060 Ti, Reflex on, Elder's Recess, the game held to 6 threads by another tool | 116 → 116 fps (+0%) | not measured (Reflex) | the graphics card, in both |
@@ -64,16 +65,15 @@ Ryzen, will be added as players send them (`docs/sending-results.md`).
 
 ### Why it depends on your CPU
 
-- **The effect bug costs far more on the Ryzen measured so far (the
-  9950X3D, on two PCs) than on the Intel CPUs.** Reading that graphics
-  memory back was the single biggest cost on the 9950X3D. In the same
-  effect-heavy area, Elder's Recess, the 13700K showed none of its
-  frame-time spikes and its game thread gained 9%, where the 9950X3D on
-  the RTX 5080 PC gained 56% (32 to 56% across the Ryzen results). The
-  i5-12400F, an Intel CPU without efficiency cores, gained 8%: the same
-  small Intel figure. Our best
-  explanation is that such reads cost much less on these Intel CPUs; that
-  is not proven yet, and results from more CPUs will tell.
+- **The effect bug costs far more on the 9950X3D (two PCs) than on any
+  other CPU measured so far.** Reading that graphics memory back was the
+  single biggest cost there: the game thread gained 32 to 56% (part of it
+  from staying on the cache die, below). In Elder's Recess, the most
+  effect-heavy area, the 13700K showed none of the bug's frame-time spikes
+  and gained 9%; the i5-12400F gained 8%, and the first non-X3D Ryzen, a
+  Ryzen 5 5600, 4%. So the big gain is not simply a Ryzen one. Whether it
+  comes with the 3D V-Cache, with the newest Ryzen generation or with the
+  scene is still open; results from more CPUs will tell.
 - **Dual-die X3D CPUs gain the most** when nothing else keeps the game on
   the cache die: "Stay on the cache die" alone was worth up to +40% on the
   test PC. With a Process Lasso rule already doing that, the gain is
