@@ -156,7 +156,8 @@ rules come first.
   `local/` in a folder of its own, is never run outside the user's own
   launches, its code is never copied into cpuopt or redistributed, and
   findings go into our notes with credit to its authors. OKed: Tic Rate Fix
-  (`DPSTickFix.dll`, Nexus mod 3474, 2026-10-21).
+  (`DPSTickFix.dll`, Nexus mod 3474, 2026-10-21); Performance Booster and
+  Plugin Extender (`!CRCBypass.dll`, Nexus mod 3473, 2026-10-22).
 
 ## Implementation Conventions
 

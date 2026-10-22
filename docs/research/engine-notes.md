@@ -962,6 +962,49 @@ ticks; 144 fps 180 without, 200 with (interval ratio 1.111 and 1.000); 61
 fps 153 and 200; an attack that paused a frame gets no carry. Not measured
 in game yet: the counters at 60 and 144 fps, the switch off and on.
 
+### Performance Booster and Plugin Extender (Nexus 3473), statically (2026-10-22)
+
+The mod by AsteriskAmpersand and Moonbunnie (CRC values and offsets by
+Moonbunnie, ideas by Caliber), analysed statically with the user's OK after
+a player asked whether it works with cpuopt. File: `2024 Patch 15.23 1.25`,
+`nativePC\plugins\!CRCBypass.dll` (SHA-256 `6f5ec7d2…72d058`, PE time
+2024-10-10), a Stracker plugin (one export, `onLoad`; imports loader.dll's
+`LOG` and `GameVersion`). The closed beta's i5-12400F tester ran this same
+file, the i7-13700K tester an older one (`21d3fbd8…`).
+
+Confirmed from its code:
+
+- Its only write to game memory: it scans MonsterHunterWorld.exe's
+  committed pages (`K32GetModuleInformation`, `VirtualQuery`) for the
+  8-byte value `B1 5C EE 2B 82 1A 5F 6C`. At the first match it finds a
+  run of `CC` bytes at or after RVA 0x5B34C0 and, at 58 offsets from the
+  match (0x170 to 0x4D70, 0xF0 to 0x1F0 apart), rewrites a record as
+  `A1 51 2B 04 5B 9B 55 08`, the `CC` run's RVA, `04 00 00 00 00 00 00 00`:
+  by the record layout, each of the game's CRC check entries then hashes 4
+  bytes of int3 padding instead of its region (the checks keep running).
+  `VirtualProtect` is called only in that loop. No hooks, threads or code
+  patches; "Plugin Extender" is the consequence, other plugins' code
+  patches no longer trip the checks.
+- No match: nothing is written. It logs by game version: 421740 "Patch of
+  CRC Bypass Loaded!", 421810, 421652 and 421631 "TempPatch of CRC Bypass
+  Loaded!", any other "(CRC Bypass) found no candidate injection points -
+  Aborting." A version starting with 314 logs "CRC Bypass is not required
+  in ICE." and stops.
+- The value does not occur anywhere in the clean 421810 image (the whole
+  90 MB title-screen memory copy, every section, `.data` included), nor
+  does the replacement value. So on 421810, the version cpuopt is made
+  for, it most likely takes the "TempPatch" path and changes nothing. Not
+  yet confirmed at the moment it loads: one launch with it enabled shows
+  the line in Astera Loader's log (its Stracker layer passes plugin `LOG`
+  lines on).
+- No overlap with cpuopt either way: it writes only those table records
+  (data, and only when the value is found); cpuopt's sites are code. cpuopt
+  runs without it (every profile here and most testers), and the 12400F
+  tester ran both without a problem.
+- Not measured: the CRC checks' own cost on 421810. No profile here has
+  shown a CRC hotspot over game code (the one CRC32 found is the render
+  threads' descriptor cache, above).
+
 ### The GPU side, first look (al-34 to al-39, v0.14.4 to v0.14.6; 2026-10-17)
 
 Setup: the RTX 5090's clock locked at 1200 MHz by the user (`nvidia-smi
