@@ -95,10 +95,10 @@ Reflex on, a shorter CPU frame most likely means lower input latency too.
 The Mods page's "Limited by" line shows live what holds your frame rate,
 and the benchmark (below) measures both.
 
-**Status:** experimental, 0.16.1. Tested with MHW 421810, the
+**Status:** experimental, 0.18.0. Tested with MHW 421810, the
 final version, on Windows. On Linux with Proton, 0.16.0 and earlier
-closed the game during start-up; 0.16.1 fixes the cause but is not yet
-tested there.
+closed the game during start-up; 0.16.1 and newer fix the cause but are
+not yet tested there.
 
 ## What it changes
 

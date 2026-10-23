@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.18.0 (test build): multi-hit timing as at 60 fps
+## 0.18.0: multi-hit timing as at 60 fps, Parallel hit detection safe again
 
 - New, on by default: **Multi-hit timing as at 60 fps** (Mods page, Fixes;
   `multi_hit_timing` in cpuopt.ini). Multi-hit attacks (pierce and element
@@ -17,9 +17,17 @@
   benchmark compare speed only.
 - Parallel hit detection is greyed out, and stays off, if the hit-detection
   guard from 0.17.0 cannot be set up on this game version.
-- Includes 0.17.0's Parallel hit detection fix and the Linux start-up fix.
+- Includes 0.17.0's Parallel hit detection fix (below): the Intel laptop
+  that crashed played about 2 hours with it and the switch on, without a
+  crash. If you turned Parallel hit detection off because of the crash,
+  turn it back on.
+- Includes 0.16.1's Linux start-up fix.
 
-## 0.17.0 (test build): Parallel hit detection made safe
+Known:
+
+- Not yet tested on Linux with Proton.
+
+## 0.17.0 (test build, not published): Parallel hit detection made safe
 
 - Fixed: with **Parallel hit detection** on, the game could crash in big
   fights (reported in the Arch-Tempered Velkhana fight on an Intel laptop
@@ -39,7 +47,7 @@
 If you turned Parallel hit detection off because of the crash, this build is
 meant to be tried with it on again.
 
-## 0.16.1: Linux start-up fix
+## 0.16.1 (not published): Linux start-up fix
 
 - Fixed: on Linux with Proton (or Wine), the game closed during start-up
   with cpuopt installed, before the title screen. cpuopt's first record in
