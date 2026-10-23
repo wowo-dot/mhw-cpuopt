@@ -930,6 +930,32 @@ without the lock to reproduce the race on purpose. To do: the stress test
 interrupted mid-record as on slow cores: unguarded it should fail, guarded
 not), the spinning lock's gain in the fight, a tester on a hybrid Intel CPU.
 
+**The hybrid Intel tester's logs (Astera Loader core logs and crash
+reports, 14 to 22 Oct, received 2026-10-23):** 43 launches. The crash at
+exe+0x12D61E3 came three times, all on cpuopt 0.14.1 (not 0.16.x as first
+reported): 17 Oct after about 90 min, 20 Oct after 56 and 14 min. From
+21 Oct on cpuopt 0.17.0: 9 launches, 8 of them with the contact guard
+hooked (the hooks register only once Parallel hit detection is on), about
+2 hours in all (sessions of 80 and 32 min, the rest short): no crash at
+that address, and the tester reports none. Other crashes in the same logs
+are not ours:
+
+- 18 crashes while the game exits (10 on 0.14.1, 8 on 0.17.0; 18 of the 21
+  launches that reached the exit), all at exe+0x47890A on the game thread,
+  reading 0: `sMain::~sMain` > `sTicketManager::~sTicketManager` >
+  `sMhResource::releaseResource` > `rQuestNoList::~rQuestNoList`, which calls
+  the destructor of each entry in its list, and one entry's vtable pointer
+  is 0. The game is tearing down its quest-number list; cpuopt has stopped
+  by then (its log ends at EXITING half a second earlier) and touches no
+  resources. The tester runs Stracker's QuestLoader and MonsterLoader,
+  which add quests to that list; on the user's PC other Stracker plugins
+  (FextyMod, auto_food_skill) crash at exit the same way. Not proven from
+  these logs alone: every launch on Astera Loader 0.2.3 also had cpuopt,
+  so none shows the exit without it.
+- The loader put the three crashes at exe+0x12D61E3 down to the DLSS mod:
+  it names the first plugin on the stack, here the DLSS mod's frame
+  wrapper. They are the race above.
+
 ### Multi-hit timing and the frame rate (2026-10-21, v0.18.0)
 
 Moonbunnie's research ("Monster Hunter: World - Effects of FPS", with the
